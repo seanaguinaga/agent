@@ -6,6 +6,10 @@ import { v } from "convex/values";
 import { agent } from "../agents/simple";
 import { authorizeThreadAccess } from "../threads";
 import { paginationOptsValidator } from "convex/server";
+import {
+  assertConfiguredLanguageModel,
+  saveErrorMessage,
+} from "../errorHandling";
 
 /**
  * OPTION 1 (BASIC):
@@ -16,8 +20,13 @@ export const generateTextInAnAction = action({
   args: { prompt: v.string(), threadId: v.string() },
   handler: async (ctx, { prompt, threadId }) => {
     await authorizeThreadAccess(ctx, threadId);
-    const result = await agent.generateText(ctx, { threadId }, { prompt });
-    return result.text;
+    try {
+      assertConfiguredLanguageModel();
+      const result = await agent.generateText(ctx, { threadId }, { prompt });
+      return result.text;
+    } catch (error) {
+      return await saveErrorMessage(ctx, threadId, error, "Basic Agent");
+    }
   },
 });
 
@@ -48,7 +57,12 @@ export const sendMessage = mutation({
 export const generateResponse = internalAction({
   args: { promptMessageId: v.string(), threadId: v.string() },
   handler: async (ctx, { promptMessageId, threadId }) => {
-    await agent.generateText(ctx, { threadId }, { promptMessageId });
+    try {
+      assertConfiguredLanguageModel();
+      await agent.generateText(ctx, { threadId }, { promptMessageId });
+    } catch (error) {
+      await saveErrorMessage(ctx, threadId, error, "Basic Agent");
+    }
   },
 });
 

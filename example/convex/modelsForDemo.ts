@@ -46,6 +46,7 @@ function googleEmbeddingModel(providerOptions: {
 let languageModel: LanguageModelV3;
 let embeddingModel: EmbeddingModel | undefined;
 let queryEmbeddingModel: EmbeddingModel | undefined;
+let isUsingConfiguredLanguageModel = true;
 
 if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
   languageModel = google.chat(GOOGLE_ANSWER_MODEL_ID);
@@ -62,10 +63,8 @@ if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
     "meta-llama/llama-4-scout-17b-16e-instruct",
   );
 } else {
+  isUsingConfiguredLanguageModel = false;
   languageModel = mockModel({});
-  console.warn(
-    "Run `npx convex env set GOOGLE_GENERATIVE_AI_API_KEY=<your-api-key>`, `npx convex env set OPENAI_API_KEY=<your-api-key>`, or `npx convex env set GROQ_API_KEY=<your-api-key>` from the example directory to set the API key.",
-  );
 }
 
 // Backwards-compatible alias for APIs that still call this textEmbeddingModel.
@@ -82,6 +81,7 @@ export async function queryForSearch(query: string) {
 // If you want to use different models for examples, you can change them here.
 export {
   embeddingModel,
+  isUsingConfiguredLanguageModel,
   languageModel,
   queryEmbeddingModel,
   textEmbeddingModel,

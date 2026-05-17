@@ -8,6 +8,10 @@ import { z } from "zod/v3";
 import { weatherAgent } from "../agents/weather";
 import { fashionAgent } from "../agents/fashion";
 import { getAuthUserId } from "../utils";
+import {
+  assertConfiguredLanguageModel,
+  saveErrorMessage,
+} from "../errorHandling";
 
 /**
  * OPTION 1: Chain agent calls in a single action.
@@ -23,20 +27,25 @@ export const getAdvice = action({
   handler: async (ctx, { location, threadId }) => {
     const userId = await getAuthUserId(ctx);
 
-    // Note: the message is saved automatically, and clients will get the
-    // response via subscriptions automatically.
-    await weatherAgent.generateText(
-      ctx,
-      { threadId, userId },
-      { prompt: `What is the weather in ${location}?` },
-    );
+    try {
+      assertConfiguredLanguageModel();
+      // Note: the message is saved automatically, and clients will get the
+      // response via subscriptions automatically.
+      await weatherAgent.generateText(
+        ctx,
+        { threadId, userId },
+        { prompt: `What is the weather in ${location}?` },
+      );
 
-    // This includes previous message history from the thread automatically.
-    await fashionAgent.generateText(
-      ctx,
-      { threadId, userId },
-      { prompt: `What should I wear based on the weather?` },
-    );
+      // This includes previous message history from the thread automatically.
+      await fashionAgent.generateText(
+        ctx,
+        { threadId, userId },
+        { prompt: `What should I wear based on the weather?` },
+      );
+    } catch (error) {
+      await saveErrorMessage(ctx, threadId, error, "Weather Agent");
+    }
   },
 });
 
@@ -56,27 +65,45 @@ const workflow = new WorkflowManager(components.workflow);
 export const weatherAgentWorkflow = workflow.define({
   args: { location: v.string(), threadId: v.string() },
   handler: async (ctx, { location, threadId }): Promise<void> => {
+    try {
+      assertConfiguredLanguageModel();
+    } catch (error) {
+      await saveErrorMessage(ctx, threadId, error, "Weather Agent");
+      return;
+    }
     const weatherQ = await saveMessage(ctx, components.agent, {
       threadId,
       prompt: `What is the weather in ${location}?`,
     });
-    const forecast = await ctx.runAction(
-      internal.workflows.chaining.getForecast,
-      { promptMessageId: weatherQ.messageId, threadId },
-      { retry: true },
-    );
+    let forecast: { text: string };
+    try {
+      forecast = await ctx.runAction(
+        internal.workflows.chaining.getForecast,
+        { promptMessageId: weatherQ.messageId, threadId },
+        { retry: { maxAttempts: 2, initialBackoffMs: 1000, base: 2 } },
+      );
+    } catch (error) {
+      await saveErrorMessage(ctx, threadId, error, "Weather Agent");
+      return;
+    }
     const fashionQ = await saveMessage(ctx, components.agent, {
       threadId,
       prompt: `What should I wear based on the weather?`,
     });
-    const fashion = await ctx.runAction(
-      internal.workflows.chaining.getFashionAdvice,
-      { promptMessageId: fashionQ.messageId, threadId },
-      {
-        retry: { maxAttempts: 5, initialBackoffMs: 1000, base: 2 },
-        // runAfter: 2 * 1000, // To add artificial delay
-      },
-    );
+    let fashion: { object: unknown };
+    try {
+      fashion = await ctx.runAction(
+        internal.workflows.chaining.getFashionAdvice,
+        { promptMessageId: fashionQ.messageId, threadId },
+        {
+          retry: { maxAttempts: 2, initialBackoffMs: 1000, base: 2 },
+          // runAfter: 2 * 1000, // To add artificial delay
+        },
+      );
+    } catch (error) {
+      await saveErrorMessage(ctx, threadId, error, "Fashion Agent");
+      return;
+    }
     console.log("Weather forecast:", forecast);
     console.log("Fashion advice:", fashion.object);
   },

@@ -5,6 +5,7 @@
       "@/*": ["ui/*"]
     },
     "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
     "lib": ["DOM", "DOM.Iterable", "ESNext"],
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,

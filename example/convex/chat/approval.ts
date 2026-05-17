@@ -8,16 +8,140 @@
 // 5. AI SDK automatically handles the approval: executes tool (if approved)
 //    or creates execution-denied result (if denied), then continues generation
 import { paginationOptsValidator } from "convex/server";
-import {
-  listUIMessages,
-  syncStreams,
-  vStreamArgs,
-} from "@convex-dev/agent";
+import { listUIMessages, syncStreams, vStreamArgs } from "@convex-dev/agent";
 import { components, internal } from "../_generated/api";
 import { internalAction, mutation, query } from "../_generated/server";
+import type { MutationCtx } from "../_generated/server";
 import { v } from "convex/values";
 import { approvalAgent } from "../agents/approval";
 import { authorizeThreadAccess } from "../threads";
+
+type ApprovalLogContext = {
+  toolCallId?: string;
+  toolName?: string;
+  input?: unknown;
+  requestMessageId?: string;
+};
+
+type ApprovalBatchStatus = {
+  resolvedCount: number;
+  pendingApprovals: Array<
+    ApprovalLogContext & {
+      approvalId: string;
+    }
+  >;
+};
+
+async function findApprovalLogContext(
+  ctx: MutationCtx,
+  threadId: string,
+  approvalId: string,
+): Promise<ApprovalLogContext> {
+  const messages = await approvalAgent.listMessages(ctx, {
+    threadId,
+    paginationOpts: { cursor: null, numItems: 100 },
+  });
+  for (const message of messages.page) {
+    const content = message.message?.content;
+    if (!Array.isArray(content)) continue;
+    const approvalRequest = content.find(
+      (part: any) =>
+        part.type === "tool-approval-request" && part.approvalId === approvalId,
+    ) as { toolCallId?: string } | undefined;
+    if (!approvalRequest?.toolCallId) continue;
+    const toolCall = content.find(
+      (part: any) =>
+        part.type === "tool-call" &&
+        part.toolCallId === approvalRequest.toolCallId,
+    ) as
+      | {
+          toolName?: string;
+          input?: unknown;
+          args?: unknown;
+        }
+      | undefined;
+    return {
+      toolCallId: approvalRequest.toolCallId,
+      toolName: toolCall?.toolName,
+      input: toolCall?.input ?? toolCall?.args,
+      requestMessageId: message._id,
+    };
+  }
+  return {};
+}
+
+async function getApprovalBatchStatus(
+  ctx: MutationCtx,
+  threadId: string,
+  approvalResponseMessageId: string,
+): Promise<ApprovalBatchStatus> {
+  const messages = await approvalAgent.listMessages(ctx, {
+    threadId,
+    paginationOpts: { cursor: null, numItems: 100 },
+  });
+  const responseMessage = messages.page.find(
+    (message) => message._id === approvalResponseMessageId,
+  );
+  const responseContent = responseMessage?.message?.content;
+  const responseParts: Array<{ approvalId: string }> = Array.isArray(
+    responseContent,
+  )
+    ? (responseContent.filter(
+        (part: any) => part.type === "tool-approval-response",
+      ) as Array<{ approvalId: string }>)
+    : [];
+  const resolvedApprovalIds = new Set(
+    responseParts.map((part) => part.approvalId),
+  );
+  const firstApprovalId = responseParts[0]?.approvalId;
+  if (!firstApprovalId) {
+    return { resolvedCount: 0, pendingApprovals: [] };
+  }
+
+  for (const message of messages.page) {
+    const content = message.message?.content;
+    if (!Array.isArray(content)) continue;
+    const sameApprovalStep = content.some(
+      (part: any) =>
+        part.type === "tool-approval-request" &&
+        part.approvalId === firstApprovalId,
+    );
+    if (!sameApprovalStep) continue;
+
+    const pendingApprovals = content
+      .filter(
+        (part: any) =>
+          part.type === "tool-approval-request" &&
+          !resolvedApprovalIds.has(part.approvalId),
+      )
+      .map((approvalRequest: any) => {
+        const toolCall = content.find(
+          (part: any) =>
+            part.type === "tool-call" &&
+            part.toolCallId === approvalRequest.toolCallId,
+        ) as
+          | {
+              toolName?: string;
+              input?: unknown;
+              args?: unknown;
+            }
+          | undefined;
+        return {
+          approvalId: approvalRequest.approvalId,
+          toolCallId: approvalRequest.toolCallId,
+          toolName: toolCall?.toolName,
+          input: toolCall?.input ?? toolCall?.args,
+          requestMessageId: message._id,
+        };
+      });
+    return {
+      resolvedCount: resolvedApprovalIds.size,
+      pendingApprovals,
+    };
+  }
+
+  return { resolvedCount: resolvedApprovalIds.size, pendingApprovals: [] };
+}
 
 /**
  * Send a message and start generation.
@@ -73,9 +197,35 @@ export const submitApproval = mutation({
   returns: v.object({ messageId: v.string() }),
   handler: async (ctx, { threadId, approvalId, approved, reason }) => {
     await authorizeThreadAccess(ctx, threadId);
+    const approvalContext = await findApprovalLogContext(
+      ctx,
+      threadId,
+      approvalId,
+    );
     const { messageId } = approved
-      ? await approvalAgent.approveToolCall(ctx, { threadId, approvalId, reason })
+      ? await approvalAgent.approveToolCall(ctx, {
+          threadId,
+          approvalId,
+          reason,
+        })
       : await approvalAgent.denyToolCall(ctx, { threadId, approvalId, reason });
+    console.log("[tool-approval] decision saved", {
+      threadId,
+      approvalId,
+      ...approvalContext,
+      approved,
+      reason,
+      messageId,
+    });
+    if (!approved) {
+      console.warn("[tool-approval] denied state recorded", {
+        threadId,
+        approvalId,
+        ...approvalContext,
+        reason,
+        messageId,
+      });
+    }
     return { messageId };
   },
 });
@@ -90,6 +240,10 @@ export const continueAfterApprovals = internalAction({
     lastApprovalMessageId: v.string(),
   },
   handler: async (ctx, { threadId, lastApprovalMessageId }) => {
+    console.log("[tool-approval] continuing after approvals", {
+      threadId,
+      lastApprovalMessageId,
+    });
     const result = await approvalAgent.streamText(
       ctx,
       { threadId },
@@ -111,6 +265,25 @@ export const triggerContinuation = mutation({
   },
   handler: async (ctx, { threadId, lastApprovalMessageId }) => {
     await authorizeThreadAccess(ctx, threadId);
+    const batchStatus = await getApprovalBatchStatus(
+      ctx,
+      threadId,
+      lastApprovalMessageId,
+    );
+    if (batchStatus.pendingApprovals.length > 0) {
+      console.log("[tool-approval] continuation skipped; approvals pending", {
+        threadId,
+        lastApprovalMessageId,
+        resolvedCount: batchStatus.resolvedCount,
+        pendingApprovals: batchStatus.pendingApprovals,
+      });
+      return;
+    }
+    console.log("[tool-approval] scheduling continuation", {
+      threadId,
+      lastApprovalMessageId,
+      resolvedCount: batchStatus.resolvedCount,
+    });
     await ctx.scheduler.runAfter(
       0,
       internal.chat.approval.continueAfterApprovals,

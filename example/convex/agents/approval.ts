@@ -12,6 +12,10 @@ const deleteFileTool = createTool({
   }),
   needsApproval: () => true,
   execute: async (_ctx, input) => {
+    console.log("[tool-approval] approved action executed", {
+      toolName: "deleteFile",
+      input,
+    });
     return `Successfully deleted file: ${input.filename}`;
   },
 });
@@ -27,6 +31,10 @@ const transferMoneyTool = createTool({
     return input.amount > 100;
   },
   execute: async (_ctx, input) => {
+    console.log("[tool-approval] approved action executed", {
+      toolName: "transferMoney",
+      input,
+    });
     return `Transferred $${input.amount} to account ${input.toAccount}`;
   },
 });
@@ -37,7 +45,11 @@ const checkBalanceTool = createTool({
   inputSchema: z.object({
     accountId: z.string().describe("The account to check"),
   }),
-  execute: async (_ctx, _input) => {
+  execute: async (_ctx, input) => {
+    console.log("[tool-approval] action executed", {
+      toolName: "checkBalance",
+      input,
+    });
     return `Balance: $1,234.56`;
   },
 });
@@ -46,7 +58,8 @@ export const approvalAgent = new Agent(components.agent, {
   name: "Approval Demo Agent",
   instructions:
     "You are a helpful assistant that can delete files, transfer money, and check account balances. " +
-    "Always confirm what action you took after it completes.",
+    "Always confirm only actions that completed successfully. " +
+    "If a tool call is denied or blocked, clearly say that action was not performed and do not claim it succeeded.",
   tools: {
     deleteFile: deleteFileTool,
     transferMoney: transferMoneyTool,

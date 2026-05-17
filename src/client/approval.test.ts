@@ -19,13 +19,17 @@ const schema = defineSchema({});
 type DataModel = DataModelFromSchemaDefinition<typeof schema>;
 const action = actionGeneric as ActionBuilder<DataModel, "public">;
 const mutation = mutationGeneric as MutationBuilder<DataModel, "public">;
+const executionLog: string[] = [];
 
 // Tool that always requires approval
 const deleteFileTool = createTool({
   description: "Delete a file",
   inputSchema: z.object({ filename: z.string() }),
   needsApproval: () => true,
-  execute: async (_ctx, input) => `Deleted: ${input.filename}`,
+  execute: async (_ctx, input) => {
+    executionLog.push(`delete:${input.filename}`);
+    return `Deleted: ${input.filename}`;
+  },
 });
 
 // Track usage handler calls to verify the full flow is exercised
@@ -65,7 +69,10 @@ const renameFileTool = createTool({
     newName: z.string(),
   }),
   needsApproval: () => true,
-  execute: async (_ctx, input) => `Renamed: ${input.oldName} → ${input.newName}`,
+  execute: async (_ctx, input) => {
+    executionLog.push(`rename:${input.oldName}:${input.newName}`);
+    return `Renamed: ${input.oldName} → ${input.newName}`;
+  },
 });
 
 // --- Agents (separate mock model instances to avoid shared callIndex) ---
@@ -153,6 +160,7 @@ export const testApproveFlow = action({
       secondSavedCount: result2.savedMessages?.length ?? 0,
       totalThreadMessages: allMessages.page.length,
       threadMessageRoles: allMessages.page.map((m) => m.message?.role),
+      executionLog: [...executionLog],
       usageCallCount: usageCalls.length,
       // Verify usage data includes detail fields (AI SDK v6)
       lastUsage: usageCalls.at(-1),
@@ -199,6 +207,7 @@ export const testDenyFlow = action({
       secondText: result2.text,
       totalThreadMessages: allMessages.page.length,
       threadMessageRoles: allMessages.page.map((m) => m.message?.role),
+      executionLog: [...executionLog],
       usageCallCount: usageCalls.length,
       lastUsage: usageCalls.at(-1),
     };
@@ -291,7 +300,12 @@ const multiToolAgent = new Agent(components.agent, {
         },
       ],
       // Step 2: after both tools execute, model responds
-      [{ type: "text", text: "Done! Deleted old.txt and renamed a.txt to b.txt." }],
+      [
+        {
+          type: "text",
+          text: "Done! Deleted old.txt and renamed a.txt to b.txt.",
+        },
+      ],
     ],
   }),
   stopWhen: stepCountIs(5),
@@ -362,6 +376,93 @@ export const testMultiToolApproveFlow = action({
       toolMessageCount: allMessages.page.filter(
         (m) => m.message?.role === "tool",
       ).length,
+      executionLog: [...executionLog],
+    };
+  },
+});
+
+export const testMultiToolMixedApprovalFlow = action({
+  args: {},
+  handler: async (ctx) => {
+    const { thread } = await multiToolAgent.createThread(ctx, {
+      userId: "u-mixed",
+    });
+
+    const result1 = await thread.generateText({
+      prompt: "Delete old.txt and rename a.txt to b.txt",
+    });
+
+    const approvalParts = result1.savedMessages
+      ?.flatMap((m) =>
+        Array.isArray(m.message?.content)
+          ? (m.message.content as unknown[])
+          : [],
+      )
+      .filter(
+        (
+          p,
+        ): p is {
+          type: "tool-approval-request";
+          approvalId: string;
+          toolCallId: string;
+        } => (p as { type?: string }).type === "tool-approval-request",
+      );
+
+    if (!approvalParts || approvalParts.length !== 2) {
+      throw new Error(
+        `Expected 2 approval requests, got ${approvalParts?.length ?? 0}`,
+      );
+    }
+
+    const deleteApproval = approvalParts.find(
+      (part) => part.toolCallId === "tc-multi-1",
+    );
+    const renameApproval = approvalParts.find(
+      (part) => part.toolCallId === "tc-multi-2",
+    );
+    if (!deleteApproval || !renameApproval) {
+      throw new Error("Expected approvals for both tool calls");
+    }
+
+    await ctx.runMutation(
+      anyApi["approval.test"].submitApprovalForMultiToolAgent,
+      {
+        threadId: thread.threadId,
+        approvalId: deleteApproval.approvalId,
+      },
+    );
+    const { messageId } = await ctx.runMutation(
+      anyApi["approval.test"].submitDenialForMultiToolAgent,
+      {
+        threadId: thread.threadId,
+        approvalId: renameApproval.approvalId,
+        reason: "User denied rename",
+      },
+    );
+
+    await thread.generateText({
+      promptMessageId: messageId,
+    });
+
+    const allMessages = await multiToolAgent.listMessages(ctx, {
+      threadId: thread.threadId,
+      paginationOpts: { cursor: null, numItems: 40 },
+    });
+    const toolResultOutputs = allMessages.page.flatMap((m) => {
+      const content = m.message?.content;
+      if (!Array.isArray(content)) return [];
+      return content
+        .filter((p: any) => p.type === "tool-result")
+        .map((p: any) => ({
+          toolCallId: p.toolCallId,
+          toolName: p.toolName,
+          output: p.output,
+        }));
+    });
+
+    return {
+      executionLog: [...executionLog],
+      toolResultOutputs,
     };
   },
 });
@@ -376,15 +477,34 @@ export const submitApprovalForMultiToolAgent = mutation({
   },
 });
 
+export const submitDenialForMultiToolAgent = mutation({
+  args: {
+    threadId: v.string(),
+    approvalId: v.string(),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, { threadId, approvalId, reason }) => {
+    return multiToolAgent.denyToolCall(ctx, { threadId, approvalId, reason });
+  },
+});
+
 export const submitApprovalForApprovalAgent = mutation({
-  args: { threadId: v.string(), approvalId: v.string(), reason: v.optional(v.string()) },
+  args: {
+    threadId: v.string(),
+    approvalId: v.string(),
+    reason: v.optional(v.string()),
+  },
   handler: async (ctx, { threadId, approvalId, reason }) => {
     return approvalAgent.approveToolCall(ctx, { threadId, approvalId, reason });
   },
 });
 
 export const submitDenialForDenialAgent = mutation({
-  args: { threadId: v.string(), approvalId: v.string(), reason: v.optional(v.string()) },
+  args: {
+    threadId: v.string(),
+    approvalId: v.string(),
+    reason: v.optional(v.string()),
+  },
   handler: async (ctx, { threadId, approvalId, reason }) => {
     return denialAgent.denyToolCall(ctx, { threadId, approvalId, reason });
   },
@@ -396,8 +516,10 @@ const testApi: ApiFromModules<{
     testDenyFlow: typeof testDenyFlow;
     testApproveFlowWithInterveningMessage: typeof testApproveFlowWithInterveningMessage;
     testMultiToolApproveFlow: typeof testMultiToolApproveFlow;
+    testMultiToolMixedApprovalFlow: typeof testMultiToolMixedApprovalFlow;
     submitApprovalForApprovalAgent: typeof submitApprovalForApprovalAgent;
     submitApprovalForMultiToolAgent: typeof submitApprovalForMultiToolAgent;
+    submitDenialForMultiToolAgent: typeof submitDenialForMultiToolAgent;
     submitDenialForDenialAgent: typeof submitDenialForDenialAgent;
   };
 }>["fns"] = anyApi["approval.test"] as any;
@@ -405,6 +527,7 @@ const testApi: ApiFromModules<{
 describe("Tool Approval Workflow", () => {
   test("approve: generate → approval request → approve → tool executes → final text", async () => {
     usageCalls.length = 0;
+    executionLog.length = 0;
     const t = initConvexTest(schema);
     const result = await t.action(testApi.testApproveFlow, {});
 
@@ -427,6 +550,7 @@ describe("Tool Approval Workflow", () => {
       "assistant", // tool-call + approval-request
       "user", // prompt
     ]);
+    expect(result.executionLog).toEqual(["delete:test.txt"]);
     // Usage handler should be called for each generateText call
     expect(result.usageCallCount).toBeGreaterThanOrEqual(2);
     // Usage data should include AI SDK v6 detail fields
@@ -437,6 +561,7 @@ describe("Tool Approval Workflow", () => {
 
   test("deny: generate → approval request → deny → model acknowledges denial", async () => {
     usageCalls.length = 0;
+    executionLog.length = 0;
     const t = initConvexTest(schema);
     const result = await t.action(testApi.testDenyFlow, {});
 
@@ -453,6 +578,7 @@ describe("Tool Approval Workflow", () => {
       "assistant",
       "user",
     ]);
+    expect(result.executionLog).toEqual([]);
     // Usage handler exercised
     expect(result.usageCallCount).toBeGreaterThanOrEqual(2);
     expect(result.lastUsage!.inputTokenDetails).toBeDefined();
@@ -461,6 +587,7 @@ describe("Tool Approval Workflow", () => {
 
   test("multi-tool: approve two tool calls from the same step", async () => {
     usageCalls.length = 0;
+    executionLog.length = 0;
     const t = initConvexTest(schema);
     const result = await t.action(testApi.testMultiToolApproveFlow, {});
 
@@ -480,15 +607,50 @@ describe("Tool Approval Workflow", () => {
       "assistant", // tool-calls + approval-requests
       "user", // prompt
     ]);
+    expect(result.executionLog).toEqual([
+      "delete:old.txt",
+      "rename:a.txt:b.txt",
+    ]);
+  });
+
+  test("multi-tool: denied tool call from a mixed approval step does not execute", async () => {
+    usageCalls.length = 0;
+    executionLog.length = 0;
+    const t = initConvexTest(schema);
+    const result = await t.action(testApi.testMultiToolMixedApprovalFlow, {});
+
+    expect(result.executionLog).toEqual(["delete:old.txt"]);
+    expect(result.toolResultOutputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          toolCallId: "tc-multi-1",
+          toolName: "deleteFile",
+        }),
+        expect.objectContaining({
+          toolCallId: "tc-multi-2",
+          toolName: "renameFile",
+          output: {
+            type: "execution-denied",
+            reason: "User denied rename",
+          },
+        }),
+      ]),
+    );
   });
 
   test("approve remains valid with an intervening thread message", async () => {
     usageCalls.length = 0;
+    executionLog.length = 0;
     const t = initConvexTest(schema);
-    const result = await t.action(testApi.testApproveFlowWithInterveningMessage, {});
+    const result = await t.action(
+      testApi.testApproveFlowWithInterveningMessage,
+      {},
+    );
 
     expect(result.secondText).toBe("Done! I deleted test.txt.");
     expect(result.approvalResponseOrder).toBe(result.approvalRequestOrder);
-    expect(result.interveningOrder).toBeGreaterThan(result.approvalResponseOrder);
+    expect(result.interveningOrder).toBeGreaterThan(
+      result.approvalResponseOrder,
+    );
   });
 });

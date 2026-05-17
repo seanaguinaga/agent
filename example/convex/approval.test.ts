@@ -2,7 +2,11 @@
 import { describe, expect, test } from "vitest";
 import { Agent, createTool, stepCountIs, mockModel } from "@convex-dev/agent";
 import { anyApi, actionGeneric, mutationGeneric } from "convex/server";
-import type { ApiFromModules, ActionBuilder, MutationBuilder } from "convex/server";
+import type {
+  ApiFromModules,
+  ActionBuilder,
+  MutationBuilder,
+} from "convex/server";
 import { v } from "convex/values";
 import { components } from "./_generated/api.js";
 import { initConvexTest } from "./setup.test.js";
@@ -13,6 +17,7 @@ import type { DataModel } from "./_generated/dataModel.js";
 
 const action = actionGeneric as ActionBuilder<DataModel, "public">;
 const mutation = mutationGeneric as MutationBuilder<DataModel, "public">;
+const toolExecutionLog: string[] = [];
 
 // Same tools as the example approval agent
 const deleteFileTool = createTool({
@@ -22,6 +27,7 @@ const deleteFileTool = createTool({
   }),
   needsApproval: () => true,
   execute: async (_ctx, input) => {
+    toolExecutionLog.push(`delete:${input.filename}`);
     return `Successfully deleted file: ${input.filename}`;
   },
 });
@@ -36,6 +42,7 @@ const transferMoneyTool = createTool({
     return input.amount > 100;
   },
   execute: async (_ctx, input) => {
+    toolExecutionLog.push(`transfer:${input.amount}:${input.toAccount}`);
     return `Transferred $${input.amount} to account ${input.toAccount}`;
   },
 });
@@ -153,9 +160,7 @@ export const testApproveE2E = action({
     const approvalMsg = result1.savedMessages?.find(
       (m) =>
         Array.isArray(m.message?.content) &&
-        m.message!.content.some(
-          (p: any) => p.type === "tool-approval-request",
-        ),
+        m.message!.content.some((p: any) => p.type === "tool-approval-request"),
     );
     if (!approvalMsg)
       throw new Error("No approval request found in saved messages");
@@ -209,9 +214,7 @@ export const testDenyE2E = action({
     const approvalMsg = result1.savedMessages?.find(
       (m) =>
         Array.isArray(m.message?.content) &&
-        m.message!.content.some(
-          (p: any) => p.type === "tool-approval-request",
-        ),
+        m.message!.content.some((p: any) => p.type === "tool-approval-request"),
     );
     if (!approvalMsg) throw new Error("No approval request found");
     const approvalPart = (approvalMsg.message!.content as any[]).find(
@@ -312,6 +315,89 @@ export const testMultiToolApproveE2E = action({
       secondText: await result2.text,
       totalThreadMessages: allMessages.page.length,
       approvalCount: approvalParts.length,
+      toolExecutionLog: [...toolExecutionLog],
+    };
+  },
+});
+
+export const testMultiToolMixedApprovalE2E = action({
+  args: {},
+  handler: async (ctx) => {
+    const { thread } = await testMultiToolApprovalAgent.createThread(ctx, {
+      userId: "test user",
+    });
+
+    const result1 = await testMultiToolApprovalAgent.streamText(
+      ctx,
+      { threadId: thread.threadId },
+      { prompt: "Delete data.csv and transfer $500 to savings" },
+      { saveStreamDeltas: { chunking: "word", throttleMs: 100 } },
+    );
+    await result1.consumeStream();
+
+    const approvalParts: { approvalId: string; toolCallId: string }[] = [];
+    for (const m of result1.savedMessages ?? []) {
+      if (!Array.isArray(m.message?.content)) continue;
+      for (const part of m.message!.content as any[]) {
+        if (part.type === "tool-approval-request") {
+          approvalParts.push({
+            approvalId: part.approvalId,
+            toolCallId: part.toolCallId,
+          });
+        }
+      }
+    }
+    const deleteApproval = approvalParts.find(
+      (part) => part.toolCallId === "tc-multi-1",
+    );
+    const transferApproval = approvalParts.find(
+      (part) => part.toolCallId === "tc-multi-2",
+    );
+    if (!deleteApproval || !transferApproval) {
+      throw new Error("Expected approval requests for both tool calls");
+    }
+
+    await ctx.runMutation(
+      anyApi["approval.test"].submitApprovalForTestMultiToolAgent,
+      { threadId: thread.threadId, approvalId: deleteApproval.approvalId },
+    );
+    const { messageId } = await ctx.runMutation(
+      anyApi["approval.test"].submitDenialForTestMultiToolAgent,
+      {
+        threadId: thread.threadId,
+        approvalId: transferApproval.approvalId,
+        reason: "User denied transfer",
+      },
+    );
+
+    const result2 = await testMultiToolApprovalAgent.streamText(
+      ctx,
+      { threadId: thread.threadId },
+      { promptMessageId: messageId },
+      { saveStreamDeltas: { chunking: "word", throttleMs: 100 } },
+    );
+    await result2.consumeStream();
+
+    const allMessages = await testMultiToolApprovalAgent.listMessages(ctx, {
+      threadId: thread.threadId,
+      paginationOpts: { cursor: null, numItems: 30 },
+    });
+    const toolResultOutputs = allMessages.page.flatMap((m) => {
+      const content = m.message?.content;
+      if (!Array.isArray(content)) return [];
+      return content
+        .filter((part: any) => part.type === "tool-result")
+        .map((part: any) => ({
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          output: part.output,
+        }));
+    });
+
+    return {
+      secondText: await result2.text,
+      toolExecutionLog: [...toolExecutionLog],
+      toolResultOutputs,
     };
   },
 });
@@ -323,7 +409,11 @@ export const submitApprovalForTestApprovalAgent = mutation({
     reason: v.optional(v.string()),
   },
   handler: async (ctx, { threadId, approvalId, reason }) => {
-    return testApprovalAgent.approveToolCall(ctx, { threadId, approvalId, reason });
+    return testApprovalAgent.approveToolCall(ctx, {
+      threadId,
+      approvalId,
+      reason,
+    });
   },
 });
 
@@ -353,19 +443,37 @@ export const submitApprovalForTestMultiToolAgent = mutation({
   },
 });
 
+export const submitDenialForTestMultiToolAgent = mutation({
+  args: {
+    threadId: v.string(),
+    approvalId: v.string(),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, { threadId, approvalId, reason }) => {
+    return testMultiToolApprovalAgent.denyToolCall(ctx, {
+      threadId,
+      approvalId,
+      reason,
+    });
+  },
+});
+
 const testApi: ApiFromModules<{
   fns: {
     testApproveE2E: typeof testApproveE2E;
     testDenyE2E: typeof testDenyE2E;
     testMultiToolApproveE2E: typeof testMultiToolApproveE2E;
+    testMultiToolMixedApprovalE2E: typeof testMultiToolMixedApprovalE2E;
     submitApprovalForTestApprovalAgent: typeof submitApprovalForTestApprovalAgent;
     submitDenialForTestDenialAgent: typeof submitDenialForTestDenialAgent;
     submitApprovalForTestMultiToolAgent: typeof submitApprovalForTestMultiToolAgent;
+    submitDenialForTestMultiToolAgent: typeof submitDenialForTestMultiToolAgent;
   };
 }>["fns"] = anyApi["approval.test"] as any;
 
 describe("Example Approval E2E (exercises usageHandler + insertRawUsage)", () => {
   test("approve flow: streamText → approval → tool executes → usageHandler persists", async () => {
+    toolExecutionLog.length = 0;
     const t = initConvexTest();
     const result = await t.action(testApi.testApproveE2E, {});
 
@@ -389,6 +497,7 @@ describe("Example Approval E2E (exercises usageHandler + insertRawUsage)", () =>
   });
 
   test("multi-tool approval: two tools need approval → both approved → both execute", async () => {
+    toolExecutionLog.length = 0;
     const t = initConvexTest();
     const result = await t.action(testApi.testMultiToolApproveE2E, {});
 
@@ -397,16 +506,44 @@ describe("Example Approval E2E (exercises usageHandler + insertRawUsage)", () =>
       "Done! Deleted data.csv and transferred $500.",
     );
     expect(result.totalThreadMessages).toBeGreaterThanOrEqual(4);
+    expect(result.toolExecutionLog).toEqual([
+      "delete:data.csv",
+      "transfer:500:savings",
+    ]);
+  });
+
+  test("multi-tool approval: denied tool does not execute", async () => {
+    toolExecutionLog.length = 0;
+    const t = initConvexTest();
+    const result = await t.action(testApi.testMultiToolMixedApprovalE2E, {});
+
+    expect(result.toolExecutionLog).toEqual(["delete:data.csv"]);
+    expect(result.toolResultOutputs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          toolCallId: "tc-multi-1",
+          toolName: "deleteFile",
+        }),
+        expect.objectContaining({
+          toolCallId: "tc-multi-2",
+          toolName: "transferMoney",
+          output: {
+            type: "execution-denied",
+            reason: "User denied transfer",
+          },
+        }),
+      ]),
+    );
   });
 
   test("deny flow: streamText → denial → model responds → usageHandler persists", async () => {
+    toolExecutionLog.length = 0;
     const t = initConvexTest();
     const result = await t.action(testApi.testDenyE2E, {});
 
-    expect(result.secondText).toBe(
-      "Understood, I won't delete that file.",
-    );
+    expect(result.secondText).toBe("Understood, I won't delete that file.");
     expect(result.totalThreadMessages).toBeGreaterThanOrEqual(4);
+    expect(toolExecutionLog).toEqual([]);
 
     const rawUsageDocs = await t.run(async (ctx) => {
       return await ctx.db.query("rawUsage").collect();

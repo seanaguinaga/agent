@@ -64,7 +64,7 @@ if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
 } else {
   languageModel = mockModel({});
   console.warn(
-    "Run `npx convex env set GROQ_API_KEY=<your-api-key>` or `npx convex env set OPENAI_API_KEY=<your-api-key>` from the example directory to set the API key.",
+    "Run `npx convex env set GOOGLE_GENERATIVE_AI_API_KEY=<your-api-key>`, `npx convex env set OPENAI_API_KEY=<your-api-key>`, or `npx convex env set GROQ_API_KEY=<your-api-key>` from the example directory to set the API key.",
   );
 }
 
@@ -80,4 +80,9 @@ export async function queryForSearch(query: string) {
 }
 
 // If you want to use different models for examples, you can change them here.
-export { embeddingModel, languageModel, queryEmbeddingModel, textEmbeddingModel };
+export {
+  embeddingModel,
+  languageModel,
+  queryEmbeddingModel,
+  textEmbeddingModel,
+};

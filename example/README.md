@@ -21,7 +21,20 @@ The main difference from your app will be:
 
 ```bash
 git clone https://github.com/get-convex/agent.git
-cd agent
+cd agent/example
 npm run setup
-npm run dev
+npm run dev:backend
+```
+
+In another terminal:
+
+```bash
+npm run dev:frontend
+```
+
+If this checkout already has an `.env.local` from another Convex example,
+reconfigure the example before starting the backend:
+
+```bash
+npx convex dev --configure new --once
 ```

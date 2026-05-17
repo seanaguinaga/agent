@@ -3,13 +3,17 @@ import { RAG } from "@convex-dev/rag";
 import { v } from "convex/values";
 import { components, internal } from "../_generated/api";
 import { action, internalAction, mutation } from "../_generated/server";
-import { textEmbeddingModel } from "../modelsForDemo";
+import {
+  GOOGLE_EMBEDDING_DIMENSIONS,
+  queryForSearch,
+  textEmbeddingModel,
+} from "../modelsForDemo";
 import { agent } from "../agents/simple";
 import { authorizeThreadAccess } from "../threads";
 
 export const rag = new RAG(components.rag, {
   textEmbeddingModel,
-  embeddingDimension: 1536,
+  embeddingDimension: GOOGLE_EMBEDDING_DIMENSIONS,
 });
 
 /**
@@ -45,7 +49,7 @@ export const answerQuestionViaRAG = internalAction({
     // Search the RAG index for context.
     const context = await rag.search(ctx, {
       namespace: "global",
-      query: rawPrompt,
+      query: await queryForSearch(rawPrompt),
       limit: 2,
       chunkContext: { before: 1, after: 1 },
     });

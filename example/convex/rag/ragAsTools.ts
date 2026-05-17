@@ -7,11 +7,15 @@ import { components, internal } from "../_generated/api";
 import { action } from "../_generated/server";
 import { agent } from "../agents/simple";
 import { getAuthUserId } from "../utils";
-import { textEmbeddingModel } from "../modelsForDemo";
+import {
+  GOOGLE_EMBEDDING_DIMENSIONS,
+  queryForSearch,
+  textEmbeddingModel,
+} from "../modelsForDemo";
 
 const rag = new RAG(components.rag, {
   textEmbeddingModel,
-  embeddingDimension: 1536,
+  embeddingDimension: GOOGLE_EMBEDDING_DIMENSIONS,
 });
 
 export const sendMessage = action({
@@ -48,7 +52,7 @@ export const sendMessage = action({
             execute: async (ctx, input) => {
               const context = await rag.search(ctx, {
                 namespace: userId,
-                query: input.query,
+                query: await queryForSearch(input.query),
                 limit: 5,
               });
               // To show the context in the demo UI, we record the context used

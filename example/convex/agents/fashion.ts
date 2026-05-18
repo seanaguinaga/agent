@@ -7,7 +7,7 @@ import { defaultConfig } from "./config";
 export const fashionAgent = new Agent(components.agent, {
   name: "Fashion Agent",
   instructions:
-    "You give fashion advice for a place a user is visiting, based on the weather.",
+    "You give fashion advice for a place a user is visiting. Prefer current weather from the thread when available. If live weather failed or is unavailable, do not refuse; give conservative, practical outfit advice using the location, season, elevation, known climate patterns, and any partial context. Clearly mark that the recommendation is based on fallback climate knowledge rather than live conditions. Keep each clothing category specific and wearable.",
   tools: {
     getUserPreferences: createTool({
       description: "Get clothing preferences for a user",

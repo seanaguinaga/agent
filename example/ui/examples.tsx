@@ -12,6 +12,9 @@ const RateLimiting = lazy(() => import("./rate_limiting/RateLimiting"));
 const WeatherFashion = lazy(async () => ({
   default: (await import("./workflows/weatherFashion")).WeatherFashion,
 }));
+const AgentCoordination = lazy(async () => ({
+  default: (await import("./workflows/AgentCoordination")).AgentCoordination,
+}));
 const StreamArray = lazy(() => import("./objects/StreamArray"));
 const GenerateObject = lazy(() => import("./objects/GenerateObject"));
 const JevDecision = lazy(() => import("./decisions/JevDecision"));
@@ -330,6 +333,15 @@ export const examples = [
       "Weather and outfit advice in a durable workflow with retries.",
     source: "workflows/chaining.ts",
     element: <WeatherFashion />,
+  },
+  {
+    path: "/advanced-workflows",
+    group: "Tools & workflows",
+    title: "Agent coordination",
+    description:
+      "Routing, parallel fan-out, orchestration, ReAct, agent networks and durable pause/resume.",
+    source: "workflows/coordination.ts",
+    element: <AgentCoordination />,
   },
   {
     path: "/files-images",

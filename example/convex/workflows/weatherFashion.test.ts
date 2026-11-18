@@ -163,17 +163,12 @@ test("a follow-up that died without a reply is marked failed, with its error", a
   const t = initConvexTest();
   const threadId = await t.mutation(api.threads.createNewThread, {});
   const prompt = await savePrompt(t, threadId);
-  await followUpDied(t, threadId, prompt._id);
+  await trackJob(t, threadId, prompt._id, "w");
+  await followUpDied(t, threadId, prompt._id, "w");
 
   expect(await messages(t, threadId, "assistant")).toMatchObject([
     { order: prompt.order, status: "failed", error: "Action timed out" },
   ]);
-  expect(
-    await t.query(api.workflows.weatherFashion.replyError, {
-      threadId,
-      promptMessageId: prompt._id,
-    }),
-  ).toBe("Action timed out");
 });
 
 test("a follow-up that died mid-answer has its pending reply marked failed", async () => {
@@ -188,11 +183,71 @@ test("a follow-up that died mid-answer has its pending reply marked failed", asy
       metadata: { status: "pending" },
     }),
   );
-  await followUpDied(t, threadId, prompt._id);
+  await trackJob(t, threadId, prompt._id, "w");
+  await followUpDied(t, threadId, prompt._id, "w");
 
   expect(await messages(t, threadId, "assistant")).toMatchObject([
     { status: "failed", error: "Action timed out" },
   ]);
+});
+
+test("a late report from an old job leaves the newer attempt alone", async () => {
+  const t = initConvexTest();
+  const threadId = await t.mutation(api.threads.createNewThread, {});
+  const prompt = await savePrompt(t, threadId);
+  await t.run((ctx) =>
+    saveMessage(ctx, components.agent, {
+      threadId,
+      promptMessageId: prompt._id,
+      message: { role: "assistant", content: "Wool" },
+      metadata: { status: "pending" },
+    }),
+  );
+  await trackJob(t, threadId, prompt._id, "newer");
+  await followUpDied(t, threadId, prompt._id, "older");
+
+  expect(await messages(t, threadId, "assistant")).toMatchObject([
+    { status: "pending" },
+  ]);
+});
+
+test("asking again while an answer is on its way doesn't answer twice", async () => {
+  vi.useFakeTimers();
+  script.reply = "Bring gloves.";
+  const t = initConvexTest();
+  const threadId = await t.mutation(api.threads.createNewThread, {});
+  await t.mutation(api.workflows.weatherFashion.askFollowUp, {
+    threadId,
+    prompt: "What about gloves?",
+  });
+  const [prompt] = await messages(t, threadId, "user");
+  const queued = () =>
+    t.query(api.workflows.weatherFashion.followUpQueued, {
+      threadId,
+      promptMessageId: prompt!._id,
+    });
+  expect(await queued()).toBe(true);
+  await t.mutation(api.workflows.weatherFashion.retryFollowUp, {
+    threadId,
+    promptMessageId: prompt!._id,
+  });
+  await runEverything(t);
+
+  expect(await messages(t, threadId, "assistant")).toHaveLength(1);
+  expect(await queued()).toBe(false);
+});
+
+test("a question from another thread can't be retried here", async () => {
+  const t = initConvexTest();
+  const threadId = await t.mutation(api.threads.createNewThread, {});
+  const otherThreadId = await t.mutation(api.threads.createNewThread, {});
+  const prompt = await savePrompt(t, otherThreadId);
+  await expect(
+    t.mutation(api.workflows.weatherFashion.retryFollowUp, {
+      threadId,
+      promptMessageId: prompt._id,
+    }),
+  ).rejects.toThrow("That question isn't in this thread");
 });
 
 async function savePrompt(t: T, threadId: string) {
@@ -202,10 +257,31 @@ async function savePrompt(t: T, threadId: string) {
   return message;
 }
 
+/** Records a follow-up job as queued or answering, the way asking does. */
+async function trackJob(
+  t: T,
+  threadId: string,
+  promptMessageId: string,
+  workId: string,
+) {
+  await t.run((ctx) =>
+    ctx.db.insert("followUpJobs", {
+      threadId,
+      promptMessageId,
+      workId: workId as WorkId,
+    }),
+  );
+}
+
 /** What the workpool reports when the action dies without failing its reply. */
-async function followUpDied(t: T, threadId: string, promptMessageId: string) {
+async function followUpDied(
+  t: T,
+  threadId: string,
+  promptMessageId: string,
+  workId: string,
+) {
   await t.mutation(internal.workflows.weatherFashion.followUpDone, {
-    workId: "w" as WorkId,
+    workId: workId as WorkId,
     context: { threadId, promptMessageId },
     result: { kind: "failed", error: "Action timed out" },
   });

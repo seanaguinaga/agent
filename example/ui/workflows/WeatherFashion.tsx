@@ -84,6 +84,12 @@ export function WorkflowThread({ threadId }: { threadId: string }) {
   const workflowRunning =
     workflow === undefined || workflow?.type === "inProgress";
   const turns = groupTurns(results);
+  // Between steps there's no new turn yet: the last answer is done and the
+  // workflow hasn't saved its next question. Say so rather than sit silent.
+  const lastTurn = turns.at(-1);
+  const betweenSteps =
+    workflow?.type === "inProgress" &&
+    (!lastTurn || lastTurn.reply?.status === "success");
   const hasOutfit = turns.some(
     (t) => t.reply?.status === "success" && parseOutfit(t.reply.text),
   );
@@ -117,6 +123,11 @@ export function WorkflowThread({ threadId }: { threadId: string }) {
           />
         );
       })}
+      {betweenSteps && (
+        <p role="status" className="text-gray-500">
+          Working…
+        </p>
+      )}
       {hasOutfit && <FollowUpForm threadId={threadId} />}
     </section>
   );
@@ -136,6 +147,13 @@ function TurnView({
   workflowError: string | null;
 }) {
   const view = replyView(turn, { isLatest, workflowRunning });
+  // A follow-up may be waiting for a free slot in the workpool.
+  const queued = useQuery(
+    api.workflows.weatherFashion.followUpQueued,
+    view.kind === "working" && turn.prompt
+      ? { threadId, promptMessageId: turn.prompt.id }
+      : "skip",
+  );
   return (
     <div className="flex flex-col gap-3">
       {turn.prompt && (
@@ -145,7 +163,7 @@ function TurnView({
       )}
       {view.kind === "working" && (
         <p role="status" className="text-gray-500">
-          Working…
+          {queued ? "Queued…" : "Working…"}
         </p>
       )}
       {view.kind === "answer" && (
@@ -232,12 +250,6 @@ function FailedReply({
   promptMessageId?: string;
   workflowError: string | null;
 }) {
-  // The workflow reports its own failure; otherwise ask why this reply failed.
-  const replyError = useQuery(
-    api.workflows.weatherFashion.replyError,
-    workflowError || !promptMessageId ? "skip" : { threadId, promptMessageId },
-  );
-  const error = workflowError ?? replyError;
   const retryWorkflow = useMutation(api.workflows.weatherFashion.retryWorkflow);
   const retryFollowUp = useMutation(api.workflows.weatherFashion.retryFollowUp);
   const [retrying, setRetrying] = useState(false);
@@ -273,10 +285,10 @@ function FailedReply({
             Retry
           </button>
         )}
-        {error && (
+        {workflowError && (
           <details className="text-sm text-gray-500">
             <summary className="cursor-pointer">Details</summary>
-            <p className="mt-1">{error}</p>
+            <p className="mt-1">{workflowError}</p>
           </details>
         )}
       </div>

@@ -10,6 +10,7 @@ import { components, internal } from "../_generated/api";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { internalMutation, mutation, query } from "../_generated/server";
 import { fashionAgent } from "../agents/fashion";
+import { STOPPED_BY_USER } from "../chat/streamAbort";
 import { authorizeThreadAccess } from "../threads";
 import { workflow } from "./chaining";
 
@@ -19,15 +20,29 @@ import { workflow } from "./chaining";
  * automatically: the page offers Retry instead.
  */
 const followUpPool = new Workpool(components.followUpWorkpool, {
-  maxParallelism: 10,
+  // Size this to your plan: the Workpool docs suggest at most 20 on the free
+  // plan and 100 on Pro, across all pools.
+  maxParallelism: 100,
 });
 
+/** The question's unfinished job: queued or answering. */
+function followUpJob(ctx: QueryCtx, promptMessageId: string) {
+  return ctx.db
+    .query("followUpJobs")
+    .withIndex("by_promptMessageId", (q) =>
+      q.eq("promptMessageId", promptMessageId),
+    )
+    .unique();
+}
+
+/** Queues an answer to a saved question, unless one is already on its way. */
 async function enqueueFollowUp(
   ctx: MutationCtx,
   threadId: string,
   promptMessageId: string,
 ) {
-  await followUpPool.enqueueAction(
+  if (await followUpJob(ctx, promptMessageId)) return;
+  const workId = await followUpPool.enqueueAction(
     ctx,
     internal.workflows.weatherFashion.streamFollowUp,
     { threadId, promptMessageId },
@@ -37,6 +52,7 @@ async function enqueueFollowUp(
       context: { threadId, promptMessageId },
     },
   );
+  await ctx.db.insert("followUpJobs", { threadId, promptMessageId, workId });
 }
 
 async function workflowFor(ctx: QueryCtx, threadId: string) {
@@ -68,7 +84,7 @@ export const workflowStatus = query({
   args: { threadId: v.string() },
   returns: v.union(v.null(), vWorkflowStatus),
   handler: async (ctx, { threadId }) => {
-    await authorizeThreadAccess(ctx, threadId);
+    await authorizeThreadAccess(ctx, threadId, true);
     const workflowId = await workflowFor(ctx, threadId);
     if (!workflowId) return null;
     const status = await workflow.status(ctx, workflowId);
@@ -87,7 +103,7 @@ export const retryWorkflow = mutation({
   args: { threadId: v.string() },
   returns: v.null(),
   handler: async (ctx, { threadId }) => {
-    await authorizeThreadAccess(ctx, threadId);
+    await authorizeThreadAccess(ctx, threadId, true);
     const workflowId = await workflowFor(ctx, threadId);
     if (!workflowId) throw new Error("This thread has no workflow");
     const status = await workflow.status(ctx, workflowId);
@@ -117,7 +133,7 @@ export const askFollowUp = mutation({
   args: { threadId: v.string(), prompt: v.string() },
   returns: v.null(),
   handler: async (ctx, { threadId, prompt }) => {
-    await authorizeThreadAccess(ctx, threadId);
+    await authorizeThreadAccess(ctx, threadId, true);
     const { messageId } = await fashionAgent.saveMessage(ctx, {
       threadId,
       prompt,
@@ -133,9 +149,32 @@ export const retryFollowUp = mutation({
   args: { threadId: v.string(), promptMessageId: v.string() },
   returns: v.null(),
   handler: async (ctx, { threadId, promptMessageId }) => {
-    await authorizeThreadAccess(ctx, threadId);
+    await authorizeThreadAccess(ctx, threadId, true);
+    const [prompt] = await ctx.runQuery(
+      components.agent.messages.getMessagesByIds,
+      { messageIds: [promptMessageId] },
+    );
+    if (prompt?.threadId !== threadId || prompt.message?.role !== "user") {
+      throw new Error("That question isn't in this thread");
+    }
     await enqueueFollowUp(ctx, threadId, promptMessageId);
     return null;
+  },
+});
+
+/**
+ * Whether a question is still waiting for a free slot in the pool, so the
+ * page can say so instead of looking stuck.
+ */
+export const followUpQueued = query({
+  args: { threadId: v.string(), promptMessageId: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, { threadId, promptMessageId }) => {
+    await authorizeThreadAccess(ctx, threadId, true);
+    const job = await followUpJob(ctx, promptMessageId);
+    if (job?.threadId !== threadId) return false;
+    const status = await followUpPool.status(ctx, job.workId);
+    return status.state === "pending";
   },
 });
 
@@ -164,23 +203,6 @@ async function latestReplyTo(
 }
 
 /**
- * Why the answer to a prompt failed, for the page's "Details". `null` if it
- * didn't fail.
- */
-export const replyError = query({
-  args: { threadId: v.string(), promptMessageId: v.string() },
-  returns: v.union(v.null(), v.string()),
-  handler: async (ctx, { threadId, promptMessageId }) => {
-    await authorizeThreadAccess(ctx, threadId);
-    const reply = await latestReplyTo(ctx, threadId, promptMessageId);
-    // The first line is the message; the rest is a stack trace.
-    return reply?.status === "failed"
-      ? (reply.error?.split("\n")[0] ?? null)
-      : null;
-  },
-});
-
-/**
  * Runs once per follow-up job, whether it succeeded or failed.
  *
  * The agent normally marks its own reply as failed. If the action died before
@@ -192,10 +214,15 @@ export const followUpDone = internalMutation({
     v.object({ threadId: v.string(), promptMessageId: v.string() }),
   ),
   returns: v.null(),
-  handler: async (ctx, { context, result }) => {
-    if (result.kind !== "failed") return null;
+  handler: async (ctx, { workId, context, result }) => {
     const { threadId, promptMessageId } = context;
-    console.error("Follow-up failed:", context, result.error);
+    const job = await followUpJob(ctx, promptMessageId);
+    if (job?.workId !== workId) return null;
+    // Until this row goes, the question can't be asked again: whatever reply
+    // or stream is there now belongs to this job, not a newer attempt.
+    await ctx.db.delete("followUpJobs", job._id);
+    if (result.kind !== "failed") return null;
+
     const [prompt] = await ctx.runQuery(
       components.agent.messages.getMessagesByIds,
       { messageIds: [promptMessageId] },
@@ -207,6 +234,10 @@ export const followUpDone = internalMutation({
       reason: result.error,
     });
     const reply = await latestReplyTo(ctx, threadId, promptMessageId);
+    if (reply?.status === "failed" && reply.error === STOPPED_BY_USER) {
+      return null;
+    }
+    console.error("Follow-up failed:", context, result.error);
     if (!reply) {
       await fashionAgent.saveMessage(ctx, {
         threadId,

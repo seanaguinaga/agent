@@ -8,8 +8,8 @@ import { WorkflowThread } from "./WeatherFashion";
 const state = vi.hoisted(() => ({
   messages: [] as UIMessage[],
   workflow: undefined as unknown,
-  /** What `replyError` answers for a failed reply. */
-  replyError: null as string | null,
+  /** What `followUpQueued` answers for a turn that has no reply yet. */
+  queued: false,
   /** [function name, args] for every mutation the page calls. */
   calls: [] as [string, unknown][],
 }));
@@ -28,8 +28,8 @@ vi.mock("convex/react", async () => {
     useQuery: (ref: Parameters<typeof getFunctionName>[0], args: unknown) =>
       args === "skip"
         ? undefined
-        : getFunctionName(ref) === "workflows/weatherFashion:replyError"
-          ? state.replyError
+        : getFunctionName(ref) === "workflows/weatherFashion:followUpQueued"
+          ? state.queued
           : state.workflow,
     useMutation: (ref: Parameters<typeof getFunctionName>[0]) => {
       const call = (args: unknown) => {
@@ -44,7 +44,7 @@ vi.mock("convex-helpers/react", () => ({ usePaginatedQuery: vi.fn() }));
 beforeEach(() => {
   state.messages = [];
   state.workflow = { type: "completed" };
-  state.replyError = null;
+  state.queued = false;
   state.calls = [];
 });
 afterEach(cleanup);
@@ -214,19 +214,33 @@ test("a streaming answer can be stopped", () => {
   ]);
 });
 
-test("a failed follow-up says why under Details", () => {
+test("a follow-up waiting for a free slot says it's queued", () => {
   state.messages = [
     ...forecast,
     fashionQuestion,
     outfitReply,
     msg({ role: "user", order: 2, text: "What about gloves?" }),
-    msg({ role: "assistant", order: 2, status: "failed" }),
   ];
-  state.replyError = "Provider is down";
   render(<WorkflowThread threadId="t" />);
+  expect(screen.getByRole("status").textContent).toBe("Working…");
 
-  expect(screen.getByText("Details")).toBeTruthy();
-  expect(screen.getByText("Provider is down")).toBeTruthy();
+  cleanup();
+  state.queued = true;
+  render(<WorkflowThread threadId="t" />);
+  expect(screen.getByRole("status").textContent).toBe("Queued…");
+});
+
+test("between workflow steps the page says it's still working", () => {
+  state.workflow = { type: "inProgress" };
+  state.messages = [...forecast];
+  render(<WorkflowThread threadId="t" />);
+  expect(screen.getByRole("status").textContent).toBe("Working…");
+
+  // Once the workflow is done, a finished answer is just an answer.
+  cleanup();
+  state.workflow = { type: "completed" };
+  render(<WorkflowThread threadId="t" />);
+  expect(screen.queryByRole("status")).toBeNull();
 });
 
 test("a finished workflow shows the outfit card and takes follow-ups", () => {

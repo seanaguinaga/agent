@@ -12,6 +12,9 @@ import { agent } from "../agents/simple";
 import { smoothStream } from "ai";
 import { authorizeThreadAccess } from "../threads";
 
+/** The failure reason a reply carries when its user stopped it. */
+export const STOPPED_BY_USER = "Aborting explicitly";
+
 /**
  * Abort a stream by its order
  */
@@ -23,7 +26,7 @@ export const abortStreamByOrder = mutation({
       await abortStream(ctx, components.agent, {
         threadId,
         order,
-        reason: "Aborting explicitly",
+        reason: STOPPED_BY_USER,
       })
     ) {
       console.log("Aborted stream", threadId, order);

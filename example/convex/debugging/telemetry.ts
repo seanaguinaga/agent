@@ -13,18 +13,24 @@ import { action } from "../_generated/server";
 import { agent } from "../agents/simple";
 import { authorizeThreadAccess } from "../threads";
 
+const tracesEndpoint = process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+
 export const tracerProvider = new BasicTracerProvider({
   resource: resourceFromAttributes({ "service.name": "convex-agent" }),
-  spanProcessors: [
-    new SimpleSpanProcessor(
-      new OTLPTraceExporter({
-        url: process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
-        headers: {
-          Authorization: `Bearer ${process.env.OTEL_EXPORTER_OTLP_TRACES_TOKEN}`,
-        },
-      }),
-    ),
-  ],
+  // Without an endpoint the exporter retries a default localhost URL, and
+  // every `forceFlush` blocks its action for seconds. Export nothing instead.
+  spanProcessors: tracesEndpoint
+    ? [
+        new SimpleSpanProcessor(
+          new OTLPTraceExporter({
+            url: tracesEndpoint,
+            headers: {
+              Authorization: `Bearer ${process.env.OTEL_EXPORTER_OTLP_TRACES_TOKEN}`,
+            },
+          }),
+        ),
+      ]
+    : [],
 });
 trace.setGlobalTracerProvider(tracerProvider);
 registerTelemetry(new OpenTelemetry());

@@ -25,6 +25,11 @@ import type * as crons from "../crons.js";
 import type * as debugging_rawRequestResponseHandler from "../debugging/rawRequestResponseHandler.js";
 import type * as debugging_telemetry from "../debugging/telemetry.js";
 import type * as decisions_jev from "../decisions/jev.js";
+import type * as evals_cases from "../evals/cases.js";
+import type * as evals_fixtures from "../evals/fixtures.js";
+import type * as evals_grading from "../evals/grading.js";
+import type * as evals_runner from "../evals/runner.js";
+import type * as evals_tables from "../evals/tables.js";
 import type * as files_addFile from "../files/addFile.js";
 import type * as files_autoSave from "../files/autoSave.js";
 import type * as files_generateImage from "../files/generateImage.js";
@@ -54,6 +59,8 @@ import type * as usage_tracking_tables from "../usage_tracking/tables.js";
 import type * as usage_tracking_usageHandler from "../usage_tracking/usageHandler.js";
 import type * as utils from "../utils.js";
 import type * as workflows_chaining from "../workflows/chaining.js";
+import type * as workflows_outfit from "../workflows/outfit.js";
+import type * as workflows_weatherFashion from "../workflows/weatherFashion.js";
 
 import type {
   ApiFromModules,
@@ -79,6 +86,11 @@ declare const fullApi: ApiFromModules<{
   "debugging/rawRequestResponseHandler": typeof debugging_rawRequestResponseHandler;
   "debugging/telemetry": typeof debugging_telemetry;
   "decisions/jev": typeof decisions_jev;
+  "evals/cases": typeof evals_cases;
+  "evals/fixtures": typeof evals_fixtures;
+  "evals/grading": typeof evals_grading;
+  "evals/runner": typeof evals_runner;
+  "evals/tables": typeof evals_tables;
   "files/addFile": typeof files_addFile;
   "files/autoSave": typeof files_autoSave;
   "files/generateImage": typeof files_generateImage;
@@ -108,6 +120,8 @@ declare const fullApi: ApiFromModules<{
   "usage_tracking/usageHandler": typeof usage_tracking_usageHandler;
   utils: typeof utils;
   "workflows/chaining": typeof workflows_chaining;
+  "workflows/outfit": typeof workflows_outfit;
+  "workflows/weatherFashion": typeof workflows_weatherFashion;
 }>;
 
 /**

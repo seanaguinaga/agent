@@ -1,15 +1,32 @@
 // See the docs at https://docs.convex.dev/agents/tools
-import { tool } from "ai";
+import { createTool } from "@convex-dev/agent";
 import { z } from "zod/v3";
+import { evalWeatherFor } from "../evals/fixtures";
 
-export const getGeocoding = tool({
+export type WeatherReport = {
+  temperature: string;
+  feelsLike: string;
+  windSpeed: string;
+  windGust: string;
+  description: string;
+};
+
+export const getGeocoding = createTool({
   description: "Get the latitude and longitude of a location",
   inputSchema: z.object({
     location: z
       .string()
       .describe("The location to get the geocoding for, e.g. 'San Francisco'"),
   }),
-  execute: async ({ location }) => {
+  execute: async (ctx, { location }) => {
+    // Eval trials get fixed weather instead of calling the API.
+    const evalWeather = await evalWeatherFor(ctx);
+    if (evalWeather === null) {
+      throw new Error(`Location '${location}' not found`);
+    }
+    if (evalWeather) {
+      return { latitude: 1, longitude: 1, name: location };
+    }
     console.log("getting geocoding for location", location);
     const geocodingUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1`;
     const geocodingResponse = await fetch(geocodingUrl);
@@ -31,13 +48,20 @@ export const getGeocoding = tool({
   },
 });
 
-export const getWeather = tool({
+export const getWeather = createTool({
   description: "Get the weather for a location",
   inputSchema: z.object({
     latitude: z.number(),
     longitude: z.number(),
   }),
-  execute: async (args) => {
+  execute: async (ctx, args): Promise<WeatherReport> => {
+    const evalWeather = await evalWeatherFor(ctx);
+    if (evalWeather === null) {
+      throw new Error("No weather for these coordinates");
+    }
+    if (evalWeather) {
+      return evalWeather;
+    }
     console.log("getting weather for location", args);
     const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${args.latitude}&longitude=${args.longitude}&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,wind_gusts_10m,weather_code&wind_speed_unit=mph&temperature_unit=fahrenheit`;
 

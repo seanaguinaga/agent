@@ -6,12 +6,12 @@ import { type TelemetryOptions } from "ai";
 import { components, internal } from "../_generated/api";
 import { action, internalAction, mutation } from "../_generated/server";
 import { v } from "convex/values";
-import { z } from "zod/v3";
 import { weatherAgent } from "../agents/weather";
 import { fashionAgent } from "../agents/fashion";
 import { getAuthUserId } from "../utils";
 import { authorizeThreadAccess } from "../threads";
 import { tracerProvider } from "../debugging/telemetry";
+import { outfitSchema } from "./outfit";
 
 function telemetryFor(
   functionId: string,
@@ -154,23 +154,20 @@ export const startWorkflow = mutation({
   },
 });
 
-/** The structured outfit returned by `getFashionAdvice`. */
-export const outfitSchema = z.object({
-  hat: z.string(),
-  tops: z.string(),
-  bottoms: z.string(),
-  shoes: z.string(),
-});
-
 /**
  * Each durable step runs separately, so flush inside its action even on failure.
  * Retries produce separate traces correlated by threadId and promptMessageId.
+ *
+ * The forecast streams: deltas are saved as they're generated, so clients
+ * subscribed with `useUIMessages({ stream: true })` see it type out live.
  */
 export const getForecast = internalAction({
   args: { threadId: v.string(), promptMessageId: v.string() },
   handler: async (ctx, { threadId, promptMessageId }) => {
+    // A failed stream surfaces as a generic abort; keep the real cause.
+    let streamError: unknown;
     try {
-      const result = await weatherAgent.generateText(
+      const result = await weatherAgent.streamText(
         ctx,
         { threadId },
         {
@@ -181,14 +178,26 @@ export const getForecast = internalAction({
             threadId,
             promptMessageId,
           ),
+          onError: ({ error }) => {
+            streamError ??= error;
+          },
         },
+        { saveStreamDeltas: { chunking: "word", throttleMs: 100 } },
       );
+      // Read the whole stream so every step is saved before returning.
+      const [text, finishReason, warnings] = await Promise.all([
+        result.text,
+        result.finishReason,
+        result.warnings,
+      ]).catch((error: unknown) => {
+        throw streamError ?? error;
+      });
       return {
-        text: result.text,
+        text,
         promptMessageId: result.promptMessageId,
         order: result.order,
-        finishReason: result.finishReason,
-        warnings: result.warnings,
+        finishReason,
+        warnings,
         savedMessageIds: result.savedMessages?.map((m) => m._id) ?? [],
       };
     } finally {

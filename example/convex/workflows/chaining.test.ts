@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
-import { saveMessage } from "@convex-dev/agent";
+import { listMessages, saveMessage } from "@convex-dev/agent";
 import { api, components, internal } from "../_generated/api";
 import { initConvexTest } from "../setup.test";
 import { languageModel } from "../modelsForDemo";
@@ -23,8 +23,15 @@ vi.mock("../debugging/telemetry", async () => {
 
 vi.mock("../modelsForDemo", async () => {
   const { MockLanguageModelV4 } = await import("ai/test");
+  const { streamFromGenerate } = await import(
+    "../../testing/streamFromGenerate"
+  );
   const languageModel = new MockLanguageModelV4();
   languageModel.doGenerate = vi.fn();
+  // getForecast streams: replay whatever doGenerate is scripted to return.
+  languageModel.doStream = streamFromGenerate((options) =>
+    languageModel.doGenerate(options),
+  );
   return {
     languageModel,
     embeddingModel: undefined,
@@ -181,6 +188,35 @@ test("failed generation exports an error span and preserves the original error i
         (span) => span.name === "invoke_agent workflows/chaining/getForecast",
       )?.status.code,
   ).toBe(2);
+});
+
+test("a failed forecast stream records the model's error, not a generic abort", async () => {
+  const { t, threadId } = await setup();
+  const question = await t.run((ctx) =>
+    saveMessage(ctx, components.agent, { threadId, prompt: "Weather?" }),
+  );
+  vi.mocked(languageModel.doGenerate).mockRejectedValue(
+    new Error("model failed"),
+  );
+  vi.spyOn(console, "error").mockImplementation(() => {});
+
+  await expect(
+    t.action(internal.workflows.chaining.getForecast, {
+      threadId,
+      promptMessageId: question.messageId,
+    }),
+  ).rejects.toThrow("model failed");
+
+  const { page } = await t.run((ctx) =>
+    listMessages(ctx, components.agent, {
+      threadId,
+      paginationOpts: { cursor: null, numItems: 10 },
+    }),
+  );
+  const failed = page.filter((m) => m.status === "failed");
+  expect(failed.map((m) => m.error)).toEqual([
+    expect.stringContaining("model failed"),
+  ]);
 });
 
 test("a flush failure does not turn completed work into a retryable action failure", async () => {

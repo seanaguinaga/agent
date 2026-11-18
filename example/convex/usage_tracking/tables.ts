@@ -21,7 +21,10 @@ export default {
     // You can then fetch all the usage at the end of the billing period
     // and calculate the total cost.
     billingPeriod: v.string(), // When the usage period ended
-  }).index("billingPeriod_userId", ["billingPeriod", "userId"]),
+  })
+    .index("billingPeriod_userId", ["billingPeriod", "userId"])
+    // Used by ../evals/runner.ts to total tokens per eval run.
+    .index("by_userId", ["userId"]),
 
   invoices: defineTable({
     userId: v.string(),

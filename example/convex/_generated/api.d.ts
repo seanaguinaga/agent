@@ -60,6 +60,7 @@ import type * as usage_tracking_usageHandler from "../usage_tracking/usageHandle
 import type * as utils from "../utils.js";
 import type * as workflows_chaining from "../workflows/chaining.js";
 import type * as workflows_outfit from "../workflows/outfit.js";
+import type * as workflows_prompts from "../workflows/prompts.js";
 import type * as workflows_tables from "../workflows/tables.js";
 import type * as workflows_weatherFashion from "../workflows/weatherFashion.js";
 
@@ -122,6 +123,7 @@ declare const fullApi: ApiFromModules<{
   utils: typeof utils;
   "workflows/chaining": typeof workflows_chaining;
   "workflows/outfit": typeof workflows_outfit;
+  "workflows/prompts": typeof workflows_prompts;
   "workflows/tables": typeof workflows_tables;
   "workflows/weatherFashion": typeof workflows_weatherFashion;
 }>;

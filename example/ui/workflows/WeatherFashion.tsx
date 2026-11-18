@@ -1,7 +1,3 @@
-import { useState } from "react";
-import { useMutation, useQuery } from "convex/react";
-import { usePaginatedQuery } from "convex-helpers/react";
-import ReactMarkdown from "react-markdown";
 import {
   optimisticallySendMessage,
   useSmoothText,
@@ -10,27 +6,96 @@ import {
 } from "@convex-dev/agent/react";
 import {
   getToolName,
-  isToolUIPart,
   type DynamicToolUIPart,
   type ToolUIPart,
 } from "ai";
+import { usePaginatedQuery } from "convex-helpers/react";
+import { useMutation, useQuery } from "convex/react";
+import {
+  createContext,
+  useContext,
+  useMemo,
+  useState,
+} from "react";
+import ReactMarkdown from "react-markdown";
 import { api } from "../../convex/_generated/api";
 import type { WeatherReport } from "../../convex/tools/weather";
 import type { Outfit } from "../../convex/workflows/outfit";
+import { weatherQuestion } from "../../convex/workflows/prompts";
 import { groupTurns, parseOutfit, replyView, type Turn } from "./turns";
 
 export function WeatherFashion() {
-  const [threadId, setThreadId] = useState<string | null>(null);
+  const selection = useSelectionState();
   return (
-    <div className="max-w-4xl mx-auto flex flex-col gap-12">
-      <StartForm onStarted={setThreadId} />
-      {threadId && <WorkflowThread key={threadId} threadId={threadId} />}
-      <PreviousThreads onSelect={setThreadId} />
-    </div>
+    <SelectionContext value={selection}>
+      <div className="max-w-4xl mx-auto flex flex-col gap-12">
+        <StartForm />
+        <CurrentThread />
+        <PreviousThreads />
+      </div>
+    </SelectionContext>
   );
 }
 
-function StartForm({ onStarted }: { onStarted: (threadId: string) => void }) {
+/**
+ * Which thread is on screen. `question` is the one just asked, shown until
+ * the thread can show it itself, so it doesn't blink away while loading.
+ */
+type Selection =
+  | { kind: "none" }
+  | { kind: "asking"; question: string }
+  | { kind: "thread"; threadId: string; question?: string };
+
+function useSelectionState() {
+  const [selection, setSelection] = useState<Selection>({ kind: "none" });
+  return useMemo(
+    () => ({
+      selection,
+      ask: (question: string) => setSelection({ kind: "asking", question }),
+      started: (threadId: string) =>
+        setSelection((s) => ({
+          kind: "thread",
+          threadId,
+          question: s.kind === "asking" ? s.question : undefined,
+        })),
+      // Only undo the ask; leave a thread picked in the meantime alone.
+      failed: () =>
+        setSelection((s) => (s.kind === "asking" ? { kind: "none" } : s)),
+      select: (threadId: string) => setSelection({ kind: "thread", threadId }),
+    }),
+    [selection],
+  );
+}
+
+const SelectionContext = createContext<ReturnType<
+  typeof useSelectionState
+> | null>(null);
+
+function useSelection() {
+  const value = useContext(SelectionContext);
+  if (!value) throw new Error("useSelection must be inside <WeatherFashion>");
+  return value;
+}
+
+function CurrentThread() {
+  const { selection } = useSelection();
+  if (selection.kind === "asking") {
+    return <PendingTurn question={selection.question} />;
+  }
+  if (selection.kind === "thread") {
+    return (
+      <WorkflowThread
+        key={selection.threadId}
+        threadId={selection.threadId}
+        pendingQuestion={selection.question}
+      />
+    );
+  }
+  return null;
+}
+
+function StartForm() {
+  const { ask, started, failed } = useSelection();
   const [location, setLocation] = useState("");
   const startWorkflow = useMutation(api.workflows.chaining.startWorkflow);
   return (
@@ -41,10 +106,14 @@ function StartForm({ onStarted }: { onStarted: (threadId: string) => void }) {
         const value = location.trim();
         if (!value) return;
         setLocation("");
+        // Show the question now, the way chat apps do; the server saves the
+        // same text in `startWorkflow`.
+        ask(weatherQuestion(value));
         startWorkflow({ location: value })
-          .then(({ threadId }) => onStarted(threadId))
+          .then(({ threadId }) => started(threadId))
           .catch((error) => {
             console.error(error);
+            failed();
             setLocation(value);
           });
       }}
@@ -70,7 +139,14 @@ function StartForm({ onStarted }: { onStarted: (threadId: string) => void }) {
   );
 }
 
-export function WorkflowThread({ threadId }: { threadId: string }) {
+export function WorkflowThread({
+  threadId,
+  pendingQuestion,
+}: {
+  threadId: string;
+  /** Shown while the thread loads, so the question doesn't blink away. */
+  pendingQuestion?: string;
+}) {
   // The shared streaming query from chat/streaming.ts.
   const { results, status, loadMore } = useUIMessages(
     api.chat.streaming.listThreadMessages,
@@ -84,18 +160,16 @@ export function WorkflowThread({ threadId }: { threadId: string }) {
   const workflowRunning =
     workflow === undefined || workflow?.type === "inProgress";
   const turns = groupTurns(results);
-  // Between steps there's no new turn yet: the last answer is done and the
-  // workflow hasn't saved its next question. Say so rather than sit silent.
-  const lastTurn = turns.at(-1);
-  const betweenSteps =
-    workflow?.type === "inProgress" &&
-    (!lastTurn || lastTurn.reply?.status === "success");
   const hasOutfit = turns.some(
     (t) => t.reply?.status === "success" && parseOutfit(t.reply.text),
   );
 
   if (status === "LoadingFirstPage") {
-    return <p role="status">Loading conversation…</p>;
+    return pendingQuestion ? (
+      <PendingTurn question={pendingQuestion} />
+    ) : (
+      <Typing label="Loading conversation…" />
+    );
   }
   return (
     <section className="flex flex-col gap-6" aria-label="Workflow">
@@ -123,11 +197,6 @@ export function WorkflowThread({ threadId }: { threadId: string }) {
           />
         );
       })}
-      {betweenSteps && (
-        <p role="status" className="text-gray-500">
-          Working…
-        </p>
-      )}
       {hasOutfit && <FollowUpForm threadId={threadId} />}
     </section>
   );
@@ -154,19 +223,18 @@ function TurnView({
       ? { threadId, promptMessageId: turn.prompt.id }
       : "skip",
   );
+  // Until the answer has text to show, the dots stand in for it: through
+  // queueing, the reply starting, and its tool calls. They sit in one slot,
+  // so React keeps the same element the whole time and nothing moves.
+  const waiting =
+    view.kind === "working" || (view.kind === "answer" && !view.message.text);
   return (
     <div className="flex flex-col gap-3">
-      {turn.prompt && (
-        <p className="self-end max-w-lg rounded-lg bg-indigo-50 px-4 py-2 text-indigo-900">
-          {turn.prompt.text}
-        </p>
+      {turn.prompt && <Question text={turn.prompt.text} />}
+      {waiting && (
+        <Typing label={queued ? "Queued…" : "Working…"} visible={!!queued} />
       )}
-      {view.kind === "working" && (
-        <p role="status" className="text-gray-500">
-          {queued ? "Queued…" : "Working…"}
-        </p>
-      )}
-      {view.kind === "answer" && (
+      {view.kind === "answer" && !waiting && (
         <Reply threadId={threadId} message={view.message} />
       )}
       {view.kind === "failed" && (
@@ -181,7 +249,13 @@ function TurnView({
   );
 }
 
-function Reply({ threadId, message }: { threadId: string; message: UIMessage }) {
+function Reply({
+  threadId,
+  message,
+}: {
+  threadId: string;
+  message: UIMessage;
+}) {
   const streaming = message.status === "streaming";
   const [text] = useSmoothText(message.text, { startStreaming: streaming });
   const [reasoning] = useSmoothText(
@@ -191,9 +265,10 @@ function Reply({ threadId, message }: { threadId: string; message: UIMessage }) 
       .join("\n"),
     { startStreaming: streaming },
   );
-  const abortStreamByOrder = useMutation(api.chat.streamAbort.abortStreamByOrder);
+  const abortStreamByOrder = useMutation(
+    api.chat.streamAbort.abortStreamByOrder,
+  );
   const outfit = streaming ? undefined : parseOutfit(message.text);
-  const tools = message.parts.filter(isToolUIPart);
   return (
     <article className="rounded-xl border border-indigo-100 bg-white p-5 shadow-xs">
       {message.agentName && (
@@ -207,23 +282,19 @@ function Reply({ threadId, message }: { threadId: string; message: UIMessage }) 
           <p className="whitespace-pre-wrap">{reasoning}</p>
         </details>
       )}
-      {tools.length > 0 && (
+      {/* {tools.length > 0 && (
         <ul className="mb-3 flex flex-col gap-1 text-sm text-gray-600">
           {tools.map((part) => (
             <ToolStep key={part.toolCallId} part={part} />
           ))}
         </ul>
-      )}
+      )} */}
       {outfit ? (
         <OutfitCard outfit={outfit} />
-      ) : text ? (
+      ) : (
         <div className="prose prose-indigo max-w-none">
           <ReactMarkdown>{text}</ReactMarkdown>
         </div>
-      ) : (
-        <p role="status" className="text-gray-500">
-          Thinking…
-        </p>
       )}
       {streaming && (
         <button
@@ -236,6 +307,60 @@ function Reply({ threadId, message }: { threadId: string; message: UIMessage }) 
         </button>
       )}
     </article>
+  );
+}
+
+/** A question with the typing dots under it, before there's a thread to show. */
+function PendingTurn({ question }: { question: string }) {
+  return (
+    <section className="flex flex-col gap-3" aria-label="Workflow">
+      <Question text={question} />
+      <Typing label="Working…" />
+    </section>
+  );
+}
+
+function Question({ text }: { text: string }) {
+  return (
+    <p className="self-end max-w-lg rounded-lg bg-indigo-50 px-4 py-2 text-indigo-900">
+      {text}
+    </p>
+  );
+}
+
+/** Tailwind's `animate-bounce` runs for one second. */
+const BOUNCE_MS = 1000;
+
+/**
+ * Three pulsing dots where the answer will appear, like chat apps use
+ * instead of a status word. Screen readers still hear `label`.
+ */
+function Typing({
+  label,
+  visible = false,
+}: {
+  label: string;
+  visible?: boolean;
+}) {
+  // A new <Typing> mounts at each stage. Starting it mid-bounce, in step with
+  // the clock, keeps the swap from restarting the animation visibly.
+  const [phase] = useState(() => performance.now() % BOUNCE_MS);
+  return (
+    <p
+      role="status"
+      className="flex h-6 items-center gap-2 text-sm text-gray-500"
+    >
+      <span aria-hidden className="flex gap-1">
+        {[0, 150, 300].map((delay) => (
+          <span
+            key={delay}
+            className="size-1.5 animate-bounce rounded-full bg-gray-400"
+            style={{ animationDelay: `${delay - phase}ms` }}
+          />
+        ))}
+      </span>
+      <span className={visible ? undefined : "sr-only"}>{label}</span>
+    </p>
   );
 }
 
@@ -385,7 +510,8 @@ function FollowUpForm({ threadId }: { threadId: string }) {
   );
 }
 
-function PreviousThreads({ onSelect }: { onSelect: (threadId: string) => void }) {
+function PreviousThreads() {
+  const { select } = useSelection();
   const threads = usePaginatedQuery(
     api.threads.listThreads,
     {},
@@ -401,7 +527,7 @@ function PreviousThreads({ onSelect }: { onSelect: (threadId: string) => void })
           <button
             key={thread._id}
             className="flex flex-col p-4 rounded-lg border bg-white text-left hover:border-indigo-500"
-            onClick={() => onSelect(thread._id)}
+            onClick={() => select(thread._id)}
           >
             <span className="font-semibold line-clamp-2">
               {thread.title || "Untitled thread"}

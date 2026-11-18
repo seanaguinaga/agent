@@ -1,27 +1,20 @@
 // See the docs at https://docs.convex.dev/agents/workflows
-import { WorkflowId, WorkflowManager } from "@convex-dev/workflow";
 import { OpenTelemetry } from "@ai-sdk/otel";
 import { createThread, saveMessage, stepCountIs } from "@convex-dev/agent";
+import { WorkflowId, WorkflowManager } from "@convex-dev/workflow";
 import { type TelemetryOptions } from "ai";
+import { v } from "convex/values";
 import { components, internal } from "../_generated/api";
 import { action, internalAction, mutation } from "../_generated/server";
-import { v } from "convex/values";
-import { weatherAgent } from "../agents/weather";
 import { fashionAgent } from "../agents/fashion";
-import { getAuthUserId } from "../utils";
-import { authorizeThreadAccess } from "../threads";
+import { weatherAgent } from "../agents/weather";
 import { tracerProvider } from "../debugging/telemetry";
+import { authorizeThreadAccess } from "../threads";
+import { getAuthUserId } from "../utils";
 import { outfitSchema } from "./outfit";
+import { weatherQuestion } from "./prompts";
 
-/**
- * The weather question for a user-supplied location. The location is quoted
- * so the agent can see where it starts and ends, and the weather agent's
- * instructions say to treat it only as a place name, never as instructions.
- * The eval runner asks the same question, so evals test this exact prompt.
- */
-export function weatherQuestion(location: string): string {
-  return `What is the weather in "${location.replaceAll('"', "'")}"?`;
-}
+export { weatherQuestion };
 
 function telemetryFor(
   functionId: string,
@@ -114,12 +107,23 @@ export const getAdvice = action({
 export const workflow = new WorkflowManager(components.workflow);
 
 export const weatherAgentWorkflow = workflow.define({
-  args: { location: v.string(), threadId: v.string() },
-  handler: async (ctx, { location, threadId }): Promise<void> => {
-    const weatherQ = await saveMessage(ctx, components.agent, {
-      threadId,
-      prompt: weatherQuestion(location),
-    });
+  args: {
+    location: v.string(),
+    threadId: v.string(),
+    // Saved by `startWorkflow` so the question shows up right away. Workflows
+    // started before that change save it here instead.
+    promptMessageId: v.optional(v.string()),
+  },
+  handler: async (
+    ctx,
+    { location, threadId, promptMessageId },
+  ): Promise<void> => {
+    const weatherQ = promptMessageId
+      ? { messageId: promptMessageId }
+      : await saveMessage(ctx, components.agent, {
+          threadId,
+          prompt: weatherQuestion(location),
+        });
     const forecast = await ctx.runAction(
       internal.workflows.chaining.getForecast,
       { promptMessageId: weatherQ.messageId, threadId },
@@ -137,8 +141,6 @@ export const weatherAgentWorkflow = workflow.define({
         // runAfter: 2 * 1000, // To add artificial delay
       },
     );
-    console.log("Weather forecast:", forecast);
-    console.log("Fashion advice:", fashion.object);
   },
 });
 
@@ -155,10 +157,17 @@ export const startWorkflow = mutation({
       userId,
       title: `Weather in ${location}`,
     });
+    // Saving the question in this mutation (not the workflow) means it's in
+    // the thread as soon as the page has a threadId to subscribe to.
+    const { messageId: promptMessageId } = await saveMessage(
+      ctx,
+      components.agent,
+      { threadId, prompt: weatherQuestion(location) },
+    );
     const workflowId = await workflow.start(
       ctx,
       internal.workflows.chaining.weatherAgentWorkflow,
-      { location, threadId },
+      { location, threadId, promptMessageId },
     );
     // Lets the page show whether this thread's workflow is still running.
     await ctx.db.insert("threadWorkflows", { threadId, workflowId });

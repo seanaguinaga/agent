@@ -53,6 +53,23 @@ async function runEverything(t: T) {
   await t.finishAllScheduledFunctions(vi.runAllTimers);
 }
 
+test("the weather question is in the thread as soon as the workflow starts", async () => {
+  vi.useFakeTimers();
+  const t = initConvexTest();
+  const { threadId } = await t.mutation(api.workflows.chaining.startWorkflow, {
+    location: "Oslo",
+  });
+  // Before any workflow step runs, so the page has something to show.
+  const asked = await messages(t, threadId, "user");
+  expect(asked.map((m) => m.text)).toEqual(['What is the weather in "Oslo"?']);
+
+  // The workflow answers that question rather than saving a second copy.
+  await runEverything(t);
+  const after = await messages(t, threadId, "user");
+  expect(after.filter((m) => m.order === asked[0]!.order)).toHaveLength(1);
+  expect(await countReplies(t, threadId, asked[0]!.order)).toBeGreaterThan(0);
+});
+
 test("the page can tell a running workflow from a failed one, and retry it", async () => {
   vi.useFakeTimers();
   const t = initConvexTest();

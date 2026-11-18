@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { UIMessage } from "@convex-dev/agent/react";
 import { groupTurns, parseOutfit, replyView } from "./turns";
-import { WorkflowThread } from "./WeatherFashion";
+import { WeatherFashion, WorkflowThread } from "./WeatherFashion";
 
 const state = vi.hoisted(() => ({
   messages: [] as UIMessage[],
@@ -34,13 +34,18 @@ vi.mock("convex/react", async () => {
     useMutation: (ref: Parameters<typeof getFunctionName>[0]) => {
       const call = (args: unknown) => {
         state.calls.push([getFunctionName(ref), args]);
-        return Promise.resolve(null);
+        // Starting a workflow stays in flight, like a slow network.
+        return getFunctionName(ref) === "workflows/chaining:startWorkflow"
+          ? new Promise(() => {})
+          : Promise.resolve(null);
       };
       return Object.assign(call, { withOptimisticUpdate: () => call });
     },
   };
 });
-vi.mock("convex-helpers/react", () => ({ usePaginatedQuery: vi.fn() }));
+vi.mock("convex-helpers/react", () => ({
+  usePaginatedQuery: () => ({ results: [] }),
+}));
 beforeEach(() => {
   state.messages = [];
   state.workflow = { type: "completed" };
@@ -230,15 +235,10 @@ test("a follow-up waiting for a free slot says it's queued", () => {
   expect(screen.getByRole("status").textContent).toBe("Queued…");
 });
 
-test("between workflow steps the page says it's still working", () => {
+test("a finished answer between workflow steps shows no loader under it", () => {
+  // The next question brings its own dots; dots here would jump when it lands.
   state.workflow = { type: "inProgress" };
   state.messages = [...forecast];
-  render(<WorkflowThread threadId="t" />);
-  expect(screen.getByRole("status").textContent).toBe("Working…");
-
-  // Once the workflow is done, a finished answer is just an answer.
-  cleanup();
-  state.workflow = { type: "completed" };
   render(<WorkflowThread threadId="t" />);
   expect(screen.queryByRole("status")).toBeNull();
 });
@@ -278,4 +278,66 @@ test("reasoning from a thinking model is tucked behind a toggle", () => {
   render(<WorkflowThread threadId="t" />);
   expect(screen.getByText("Thinking")).toBeTruthy();
   expect(screen.getByText("Snow means boots.")).toBeTruthy();
+});
+
+test("the question shows the moment it's asked, with dots instead of a status word", () => {
+  render(<WeatherFashion />);
+  fireEvent.change(screen.getByLabelText("Location"), {
+    target: { value: "Bogotá" },
+  });
+  fireEvent.click(screen.getByText("Get outfit"));
+
+  // Still waiting on the server, and the question is already there.
+  expect(state.calls).toEqual([
+    ["workflows/chaining:startWorkflow", { location: "Bogotá" }],
+  ]);
+  expect(screen.getByText('What is the weather in "Bogotá"?')).toBeTruthy();
+  const status = screen.getByRole("status");
+  expect(status.textContent).toBe("Working…");
+  expect(status.querySelector(".sr-only")?.textContent).toBe("Working…");
+});
+
+test("the question's dots stay the only loader until the answer has text", () => {
+  state.workflow = { type: "inProgress" };
+  const question = msg({
+    role: "user",
+    order: 0,
+    text: "What is the weather in Bogotá?",
+  });
+
+  // No reply yet: plain dots under the question, no empty card.
+  state.messages = [question];
+  render(<WorkflowThread threadId="t" />);
+  expect(screen.getByRole("status").textContent).toBe("Working…");
+  expect(document.querySelector("article")).toBeNull();
+
+  // The reply has started but only a tool is running: still just the dots.
+  cleanup();
+  const reply = msg({
+    role: "assistant",
+    order: 0,
+    status: "streaming",
+    parts: [
+      {
+        type: "tool-getWeather",
+        toolCallId: "w",
+        state: "input-available",
+        input: {},
+      },
+    ],
+  });
+  state.messages = [question, reply];
+  render(<WorkflowThread threadId="t" />);
+  expect(screen.getByRole("status").textContent).toBe("Working…");
+  expect(document.querySelector("article")).toBeNull();
+
+  // Text arrives: the card replaces the dots.
+  cleanup();
+  state.messages = [
+    question,
+    { ...reply, text: "Sunny", parts: [{ type: "text", text: "Sunny" }] },
+  ];
+  render(<WorkflowThread threadId="t" />);
+  expect(screen.queryByRole("status")).toBeNull();
+  expect(screen.getByText("Sunny").closest("article")).toBeTruthy();
 });

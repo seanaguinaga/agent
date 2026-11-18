@@ -37,6 +37,13 @@ export function streamFromGenerate(
       finishReason: result.finishReason,
       usage: result.usage,
     });
-    return { stream: simulateReadableStream({ chunks }) };
+    // No delays, so it also works under fake timers.
+    return {
+      stream: simulateReadableStream({
+        chunks,
+        initialDelayInMs: null,
+        chunkDelayInMs: null,
+      }),
+    };
   };
 }

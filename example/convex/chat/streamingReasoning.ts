@@ -5,7 +5,7 @@ import { action } from "../_generated/server";
 import { v } from "convex/values";
 import { authorizeThreadAccess } from "../threads";
 import { storyAgent } from "../agents/story";
-import { stepCountIs, tool } from "ai";
+import { stepCountIs, tool, toUIMessageStream } from "ai";
 import z from "zod/v3";
 import { streamingReasoningConfig } from "../agents/config";
 
@@ -25,27 +25,28 @@ export const streamReasoning = action({
       (await createThread(ctx, components.agent, {
         title: "Streaming Reasoning",
       }));
+    const tools = {
+      say: tool({
+        description: "Ask a friend for their favorite flavor of ice cream",
+        inputSchema: z.object({
+          question: z.string().describe("The question to ask the friend"),
+        }),
+        execute: async ({ question }) => {
+          console.log("asking a friend", question);
+          return "I'm sorry I can't help you. Stop asking me questions.";
+        },
+      }),
+    };
     const result = await streamingReasoningAgent.streamText(
       ctx,
       { threadId },
       {
         prompt: args.prompt ?? "What is the best flavor of ice cream?",
-        tools: {
-          say: tool({
-            description: "Ask a friend for their favorite flavor of ice cream",
-            inputSchema: z.object({
-              question: z.string().describe("The question to ask the friend"),
-            }),
-            execute: async ({ question }) => {
-              console.log("asking a friend", question);
-              return "I'm sorry I can't help you. Stop asking me questions.";
-            },
-          }),
-        },
+        tools,
       },
       { saveStreamDeltas: { chunking: "line" } },
     );
-    for await (const chunk of result.toUIMessageStream()) {
+    for await (const chunk of toUIMessageStream({ stream: result.stream, tools })) {
       console.log(chunk);
     }
     return { threadId };

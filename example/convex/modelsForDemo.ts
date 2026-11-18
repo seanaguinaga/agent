@@ -11,3 +11,4 @@ export const embeddingModel = wrapEmbeddingModel({
 });
 
 export const imageModel = convexGateway.imageModel("openai/gpt-image-1-mini");
+export const decisionModel = "typesafe/jev-1.13";

@@ -2,6 +2,7 @@ import { getServiceToken } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { z } from "zod/v4";
 import { action } from "../_generated/server";
+import { decisionModel } from "../modelsForDemo";
 
 const probability = z.number().min(0).max(1);
 const decisionResponse = z.object({
@@ -45,7 +46,7 @@ export const triage = action({
         },
         signal: AbortSignal.timeout(30_000),
         body: JSON.stringify({
-          model: "typesafe/jev-1.13",
+          model: decisionModel,
           state: { ticket },
           questions: {
             priority: {

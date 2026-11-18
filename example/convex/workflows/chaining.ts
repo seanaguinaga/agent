@@ -13,6 +13,16 @@ import { authorizeThreadAccess } from "../threads";
 import { tracerProvider } from "../debugging/telemetry";
 import { outfitSchema } from "./outfit";
 
+/**
+ * The weather question for a user-supplied location. The location is quoted
+ * so the agent can see where it starts and ends, and the weather agent's
+ * instructions say to treat it only as a place name, never as instructions.
+ * The eval runner asks the same question, so evals test this exact prompt.
+ */
+export function weatherQuestion(location: string): string {
+  return `What is the weather in "${location.replaceAll('"', "'")}"?`;
+}
+
 function telemetryFor(
   functionId: string,
   threadId: string,
@@ -64,7 +74,7 @@ export const getAdvice = action({
         ctx,
         { threadId, userId },
         {
-          prompt: `What is the weather in ${location}?`,
+          prompt: weatherQuestion(location),
           telemetry: telemetryFor(
             "workflows/chaining/getAdvice/weather",
             threadId,
@@ -101,14 +111,14 @@ export const getAdvice = action({
  * fast-forwarding past steps it's already completed.
  */
 
-const workflow = new WorkflowManager(components.workflow);
+export const workflow = new WorkflowManager(components.workflow);
 
 export const weatherAgentWorkflow = workflow.define({
   args: { location: v.string(), threadId: v.string() },
   handler: async (ctx, { location, threadId }): Promise<void> => {
     const weatherQ = await saveMessage(ctx, components.agent, {
       threadId,
-      prompt: `What is the weather in ${location}?`,
+      prompt: weatherQuestion(location),
     });
     const forecast = await ctx.runAction(
       internal.workflows.chaining.getForecast,
@@ -150,6 +160,8 @@ export const startWorkflow = mutation({
       internal.workflows.chaining.weatherAgentWorkflow,
       { location, threadId },
     );
+    // Lets the page show whether this thread's workflow is still running.
+    await ctx.db.insert("threadWorkflows", { threadId, workflowId });
     return { threadId, workflowId };
   },
 });

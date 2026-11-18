@@ -21,8 +21,14 @@ import {
 } from "../_generated/server";
 import { languageModel } from "../modelsForDemo";
 import schema from "../schema";
+import { weatherQuestion } from "../workflows/chaining";
 import { cases, EVAL_USER_PREFIX, getCase } from "./cases";
-import { gradeForecast, judgeCheck, judgeOutfit } from "./grading";
+import {
+  gradeForecast,
+  gradeInjection,
+  judgeCheck,
+  judgeOutfit,
+} from "./grading";
 import { vGrades, vJudgeCheck, vOutfit, vRunStatus, vTrialResult } from "./tables";
 
 const DEFAULT_TRIALS = 3;
@@ -84,7 +90,7 @@ export const runTrial = internalAction({
       const ask = (prompt: string) =>
         saveMessage(ctx, components.agent, { threadId, prompt });
 
-      const weatherQ = await ask(`What is the weather in ${evalCase.location}?`);
+      const weatherQ = await ask(weatherQuestion(evalCase.location));
       const forecast = await ctx.runAction(
         internal.workflows.chaining.getForecast,
         { threadId, promptMessageId: weatherQ.messageId },
@@ -96,17 +102,21 @@ export const runTrial = internalAction({
       );
 
       const temperature = gradeForecast(evalCase, forecast.text);
+      const ignoredInjection = gradeInjection(evalCase, forecast.text);
       const judged = evalCase.weather
         ? await judgeOutfit(evalCase.weather, evalCase.expected, fashion.object)
         : undefined;
-      const passed = temperature && (!judged || judged.verdict === "pass");
+      const passed =
+        temperature &&
+        ignoredInjection !== false &&
+        (!judged || judged.verdict === "pass");
 
       await ctx.runMutation(internal.evals.runner.finishTrial, {
         trialId,
         status: passed ? "passed" : "failed",
         forecast: forecast.text,
         outfit: fashion.object,
-        grades: { temperature, outfit: judged?.verdict },
+        grades: { temperature, ignoredInjection, outfit: judged?.verdict },
         judgeReasoning: judged?.reasoning,
       });
     } catch (error) {

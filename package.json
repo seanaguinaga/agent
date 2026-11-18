@@ -102,6 +102,7 @@
     "@convex-dev/rag": "0.7.6",
     "@convex-dev/rate-limiter": "0.3.2",
     "@convex-dev/workflow": "0.4.9",
+    "@convex-dev/workpool": "0.4.7",
     "@edge-runtime/vm": "5.0.0",
     "@eslint/js": "10.0.1",
     "@hookform/resolvers": "5.2.2",

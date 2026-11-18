@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { usePaginatedQuery } from "convex-helpers/react";
 import ReactMarkdown from "react-markdown";
 import {
@@ -8,11 +8,16 @@ import {
   useUIMessages,
   type UIMessage,
 } from "@convex-dev/agent/react";
-import { getToolName, isToolUIPart, type DynamicToolUIPart, type ToolUIPart } from "ai";
+import {
+  getToolName,
+  isToolUIPart,
+  type DynamicToolUIPart,
+  type ToolUIPart,
+} from "ai";
 import { api } from "../../convex/_generated/api";
 import type { WeatherReport } from "../../convex/tools/weather";
 import type { Outfit } from "../../convex/workflows/outfit";
-import { groupTurns, parseOutfit, type Turn } from "./turns";
+import { groupTurns, parseOutfit, replyView, type Turn } from "./turns";
 
 export function WeatherFashion() {
   const [threadId, setThreadId] = useState<string | null>(null);
@@ -66,13 +71,22 @@ function StartForm({ onStarted }: { onStarted: (threadId: string) => void }) {
 }
 
 export function WorkflowThread({ threadId }: { threadId: string }) {
+  // The shared streaming query from chat/streaming.ts.
   const { results, status, loadMore } = useUIMessages(
-    api.workflows.weatherFashion.listMessages,
+    api.chat.streaming.listThreadMessages,
     { threadId },
     { initialNumItems: 20, stream: true },
   );
+  const workflow = useQuery(api.workflows.weatherFashion.workflowStatus, {
+    threadId,
+  });
+  // Still loading counts as running, so a retry never flashes an error.
+  const workflowRunning =
+    workflow === undefined || workflow?.type === "inProgress";
   const turns = groupTurns(results);
-  const hasOutfit = turns.some((t) => t.replies.some((r) => parseOutfit(r.text)));
+  const hasOutfit = turns.some(
+    (t) => t.reply?.status === "success" && parseOutfit(t.reply.text),
+  );
 
   if (status === "LoadingFirstPage") {
     return <p role="status">Loading conversation…</p>;
@@ -80,20 +94,48 @@ export function WorkflowThread({ threadId }: { threadId: string }) {
   return (
     <section className="flex flex-col gap-6" aria-label="Workflow">
       {status === "CanLoadMore" && (
-        <button className="self-center text-sm text-indigo-700" onClick={() => loadMore(20)}>
+        <button
+          className="self-center text-sm text-indigo-700"
+          onClick={() => loadMore(20)}
+        >
           Load earlier messages
         </button>
       )}
-      {turns.map((turn, i) => (
-        <TurnView key={turn.order} turn={turn} isLatest={i === turns.length - 1} />
-      ))}
+      {turns.map((turn, i) => {
+        const isLatest = i === turns.length - 1;
+        return (
+          <TurnView
+            key={turn.order}
+            threadId={threadId}
+            turn={turn}
+            isLatest={isLatest}
+            workflowRunning={workflowRunning}
+            // The workflow's failure belongs to whatever turn it stopped on.
+            workflowError={
+              isLatest && workflow?.type === "failed" ? workflow.error : null
+            }
+          />
+        );
+      })}
       {hasOutfit && <FollowUpForm threadId={threadId} />}
     </section>
   );
 }
 
-function TurnView({ turn, isLatest }: { turn: Turn; isLatest: boolean }) {
-  const waiting = turn.replies.length === 0;
+function TurnView({
+  threadId,
+  turn,
+  isLatest,
+  workflowRunning,
+  workflowError,
+}: {
+  threadId: string;
+  turn: Turn;
+  isLatest: boolean;
+  workflowRunning: boolean;
+  workflowError: string | null;
+}) {
+  const view = replyView(turn, { isLatest, workflowRunning });
   return (
     <div className="flex flex-col gap-3">
       {turn.prompt && (
@@ -101,28 +143,37 @@ function TurnView({ turn, isLatest }: { turn: Turn; isLatest: boolean }) {
           {turn.prompt.text}
         </p>
       )}
-      {turn.earlierFailures > 0 && (
-        <p className="text-sm text-gray-500">
-          {turn.earlierFailures === 1
-            ? "1 earlier attempt failed"
-            : `${turn.earlierFailures} earlier attempts failed`}
-        </p>
-      )}
-      {turn.replies.map((reply) => (
-        <Reply key={reply.key} message={reply} retryable={isLatest} />
-      ))}
-      {waiting && isLatest && (
+      {view.kind === "working" && (
         <p role="status" className="text-gray-500">
           Working…
         </p>
+      )}
+      {view.kind === "answer" && (
+        <Reply threadId={threadId} message={view.message} />
+      )}
+      {view.kind === "failed" && (
+        <FailedReply
+          threadId={threadId}
+          partial={view.message}
+          promptMessageId={turn.prompt?.id}
+          workflowError={workflowError}
+        />
       )}
     </div>
   );
 }
 
-function Reply({ message, retryable }: { message: UIMessage; retryable: boolean }) {
+function Reply({ threadId, message }: { threadId: string; message: UIMessage }) {
   const streaming = message.status === "streaming";
   const [text] = useSmoothText(message.text, { startStreaming: streaming });
+  const [reasoning] = useSmoothText(
+    message.parts
+      .filter((p) => p.type === "reasoning")
+      .map((p) => p.text)
+      .join("\n"),
+    { startStreaming: streaming },
+  );
+  const abortStreamByOrder = useMutation(api.chat.streamAbort.abortStreamByOrder);
   const outfit = streaming ? undefined : parseOutfit(message.text);
   const tools = message.parts.filter(isToolUIPart);
   return (
@@ -131,6 +182,12 @@ function Reply({ message, retryable }: { message: UIMessage; retryable: boolean 
         <span className="mb-3 inline-block rounded-full bg-indigo-50 px-3 py-1 text-sm font-medium text-indigo-700">
           {message.agentName}
         </span>
+      )}
+      {reasoning && (
+        <details className="mb-3 text-sm text-gray-500">
+          <summary className="cursor-pointer">Thinking</summary>
+          <p className="whitespace-pre-wrap">{reasoning}</p>
+        </details>
       )}
       {tools.length > 0 && (
         <ul className="mb-3 flex flex-col gap-1 text-sm text-gray-600">
@@ -145,17 +202,84 @@ function Reply({ message, retryable }: { message: UIMessage; retryable: boolean 
         <div className="prose prose-indigo max-w-none">
           <ReactMarkdown>{text}</ReactMarkdown>
         </div>
-      ) : message.status === "pending" || streaming ? (
+      ) : (
         <p role="status" className="text-gray-500">
           Thinking…
         </p>
-      ) : null}
-      {message.status === "failed" && (
-        <p role="alert" className="mt-2 text-red-700">
-          This attempt failed.
-          {retryable && " The workflow may retry this step."}
-        </p>
       )}
+      {streaming && (
+        <button
+          className="mt-3 text-sm text-gray-600 hover:text-gray-900"
+          onClick={() =>
+            void abortStreamByOrder({ threadId, order: message.order })
+          }
+        >
+          Stop
+        </button>
+      )}
+    </article>
+  );
+}
+
+function FailedReply({
+  threadId,
+  partial,
+  promptMessageId,
+  workflowError,
+}: {
+  threadId: string;
+  partial?: UIMessage;
+  promptMessageId?: string;
+  workflowError: string | null;
+}) {
+  // The workflow reports its own failure; otherwise ask why this reply failed.
+  const replyError = useQuery(
+    api.workflows.weatherFashion.replyError,
+    workflowError || !promptMessageId ? "skip" : { threadId, promptMessageId },
+  );
+  const error = workflowError ?? replyError;
+  const retryWorkflow = useMutation(api.workflows.weatherFashion.retryWorkflow);
+  const retryFollowUp = useMutation(api.workflows.weatherFashion.retryFollowUp);
+  const [retrying, setRetrying] = useState(false);
+  const retry = () => {
+    setRetrying(true);
+    const request = workflowError
+      ? retryWorkflow({ threadId })
+      : promptMessageId
+        ? retryFollowUp({ threadId, promptMessageId })
+        : Promise.resolve(null);
+    request.catch(console.error).finally(() => setRetrying(false));
+  };
+  const canRetry = Boolean(workflowError || promptMessageId);
+  return (
+    <article className="rounded-xl border border-indigo-100 bg-white p-5 shadow-xs">
+      {partial?.text && (
+        <div className="prose prose-indigo max-w-none mb-3">
+          <ReactMarkdown>{partial.text}</ReactMarkdown>
+        </div>
+      )}
+      <p role="alert" className="text-gray-700">
+        {partial?.text
+          ? "This answer didn't finish."
+          : "Couldn't finish this answer."}
+      </p>
+      <div className="mt-3 flex items-center gap-4">
+        {canRetry && (
+          <button
+            className="px-3 py-1.5 rounded-lg border border-indigo-200 text-sm text-indigo-700 hover:bg-indigo-50 disabled:opacity-50"
+            onClick={retry}
+            disabled={retrying}
+          >
+            Retry
+          </button>
+        )}
+        {error && (
+          <details className="text-sm text-gray-500">
+            <summary className="cursor-pointer">Details</summary>
+            <p className="mt-1">{error}</p>
+          </details>
+        )}
+      </div>
     </article>
   );
 }
@@ -176,8 +300,8 @@ function ToolStep({ part }: { part: ToolUIPart | DynamicToolUIPart }) {
     const w = part.output as WeatherReport;
     return (
       <li>
-        Weather: {w.temperature} (feels like {w.feelsLike}), {w.description}, wind{" "}
-        {w.windSpeed}
+        Weather: {w.temperature} (feels like {w.feelsLike}), {w.description},
+        wind {w.windSpeed}
       </li>
     );
   }
@@ -196,7 +320,10 @@ function OutfitCard({ outfit }: { outfit: Outfit }) {
     ["Shoes", outfit.shoes],
   ];
   return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2" aria-label="Outfit">
+    <dl
+      className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2"
+      aria-label="Outfit"
+    >
       {rows.map(([label, value]) => (
         <div key={label} className="contents">
           <dt className="font-medium text-indigo-700">{label}</dt>
@@ -212,7 +339,7 @@ function FollowUpForm({ threadId }: { threadId: string }) {
   const askFollowUp = useMutation(
     api.workflows.weatherFashion.askFollowUp,
   ).withOptimisticUpdate(
-    optimisticallySendMessage(api.workflows.weatherFashion.listMessages),
+    optimisticallySendMessage(api.chat.streaming.listThreadMessages),
   );
   return (
     <form

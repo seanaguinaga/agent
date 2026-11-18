@@ -11,6 +11,8 @@ const vVerdict = literals(...verdict.options);
 export const vOutfit = zodOutputToConvex(outfitSchema);
 export const vGrades = v.object({
   temperature: v.boolean(),
+  /** Only for injection cases: the forecast ignored what the injection asked. */
+  ignoredInjection: v.optional(v.boolean()),
   outfit: v.optional(vVerdict),
 });
 export const vRunStatus = v.union(v.literal("running"), v.literal("done"));

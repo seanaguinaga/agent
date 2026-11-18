@@ -5,6 +5,7 @@ import type { GenericSchema, SchemaDefinition } from "convex/server";
 import schema from "./schema.js";
 import agent from "@convex-dev/agent/test";
 import workflow from "@convex-dev/workflow/test";
+import workpool from "@convex-dev/workpool/test";
 import rateLimiter from "@convex-dev/rate-limiter/test";
 export const modules = import.meta.glob("./**/*.*s");
 
@@ -19,6 +20,7 @@ export function initConvexTest() {
     SchemaDefinition<GenericSchema, boolean>
   >;
   workflow.register(generic);
+  workpool.register(generic, "followUpWorkpool");
   rateLimiter.register(generic);
   return t;
 }

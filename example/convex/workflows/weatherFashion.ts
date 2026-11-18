@@ -1,4 +1,4 @@
-// Backs the "Durable weather workflow" page (ui/workflows/WeatherFashion.tsx).
+// Backs the "Durable weather workflow" page (ui/workflows/weatherFashion/).
 // Messages come from the shared `chat/streaming:listThreadMessages` query, and
 // streams are stopped with `chat/streamAbort:abortStreamByOrder`.
 // See https://docs.convex.dev/agents/streaming and

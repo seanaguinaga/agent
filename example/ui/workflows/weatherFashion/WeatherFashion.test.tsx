@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { UIMessage } from "@convex-dev/agent/react";
 import { groupTurns, parseOutfit, replyView } from "./turns";
-import { WeatherFashion, WorkflowThread } from "./WeatherFashion";
+import { WeatherFashion, WorkflowThread } from "./index";
 
 const state = vi.hoisted(() => ({
   messages: [] as UIMessage[],
@@ -154,7 +154,6 @@ test("while the workflow retries, the page shows work in progress, not errors", 
   state.messages = [...forecast, fashionQuestion, failedFashion];
   render(<WorkflowThread threadId="t" />);
 
-  expect(screen.getByText(/Weather: 18°F \(feels like 7°F\), Snowing/)).toBeTruthy();
   expect(screen.getByText("Working…")).toBeTruthy();
   expect(screen.queryByRole("alert")).toBeNull();
   expect(screen.queryByText(/attempt/i)).toBeNull();

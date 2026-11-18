@@ -1,5 +1,5 @@
 import type { UIMessage } from "@convex-dev/agent/react";
-import { outfitSchema, type Outfit } from "../../convex/workflows/outfit";
+import { outfitSchema, type Outfit } from "../../../convex/workflows/outfit";
 
 /** One question and its answer. */
 export type Turn = {
@@ -54,4 +54,9 @@ export function parseOutfit(text: string): Outfit | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Whether this turn ended with an outfit, which opens up follow-ups. */
+export function hasOutfit(turn: Turn): boolean {
+  return turn.reply?.status === "success" && !!parseOutfit(turn.reply.text);
 }

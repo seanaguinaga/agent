@@ -10,7 +10,7 @@ const FilesImages = lazy(() => import("./files/FilesImages"));
 const RagBasic = lazy(() => import("./rag/RagBasic"));
 const RateLimiting = lazy(() => import("./rate_limiting/RateLimiting"));
 const WeatherFashion = lazy(async () => ({
-  default: (await import("./workflows/WeatherFashion")).WeatherFashion,
+  default: (await import("./workflows/weatherFashion")).WeatherFashion,
 }));
 const StreamArray = lazy(() => import("./objects/StreamArray"));
 const GenerateObject = lazy(() => import("./objects/GenerateObject"));

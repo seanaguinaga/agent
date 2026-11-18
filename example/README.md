@@ -111,3 +111,33 @@ empty or oversized tickets, and does not retry requests or substitute mock
 decisions on gateway failure. The frontend keeps the ticket for manual retry.
 The endpoint is in alpha and its format may change. This demo only displays
 judgments; it does not route a ticket or execute the model's decision.
+
+## Human inbox
+
+The Human agents page (`/chat-human`) includes an inbox of unanswered `askHuman`
+tool calls across the demo user's conversations. Select a request to open its
+conversation and expand its reply form inside the inbox. **Send reply** saves
+the human answer and resumes the AI. The chat shows a compact **Waiting for
+support** card with **Cancel request**, followed by **Support replied** and the
+actual answer when support responds. Ordinary human-support messages do not
+resolve tool requests.
+
+The inbox derives its contents from saved tool calls and tool results, so
+existing requests appear without a migration or a second request table. Older
+conversations load automatically; an empty state appears only after scanning is complete. Each checked
+conversation scans its complete message history, including requests older than
+100 messages. This is appropriate for the demo; larger histories should use
+an indexed inbox to stay within Convex query read limits.
+
+**Cancel request** in the chat status card saves an explicit cancellation tool result,
+then resumes the AI once sibling requests are resolved. It supplies no human
+answer or approval and retains the conversation. **Delete conversation** in the
+inbox or selected conversation deletes the thread, messages, and streams using
+the Agent component's deletion API and clears the selected thread from the URL.
+
+Customer messages invoke the support agent by default. The agent uses the same
+human-inbox instructions before and after a handoff, and asks staff to clarify
+unclear replies. Other message examples remain available in the expandable
+section. Detailed staff questions and reply drafts stay in the inbox. The
+customer chat shows handoff status and support replies without tool IDs,
+provider metadata, or raw JSON. Use the Agent playground for developer inspection.

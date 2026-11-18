@@ -1,6 +1,17 @@
 import { useUIMessages } from "@convex-dev/agent/react";
+import {
+  getToolName,
+  isToolUIPart,
+  type ToolUIPart,
+  type DynamicToolUIPart,
+} from "ai";
+import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
-import { ExampleBoundary } from "../components/Example";
+import {
+  ExampleBoundary,
+  TaskError,
+  useExampleTask,
+} from "../components/Example";
 
 export default function Transcript({ threadId }: { threadId: string }) {
   return (
@@ -40,10 +51,22 @@ function Messages({ threadId }: { threadId: string }) {
           className={`rounded-lg p-4 ${message.role === "user" ? "bg-blue-50" : "bg-gray-50"}`}
         >
           <div className="mb-2 flex justify-between text-xs font-semibold uppercase tracking-wide text-gray-500">
-            <span>{message.role}</span>
-            <span>{message.status}</span>
+            <span>{message.role === "user" ? "You" : message.role}</span>
+            {message.status !== "success" && (
+              <span>
+                {message.status === "streaming"
+                  ? "Responding…"
+                  : message.status}
+              </span>
+            )}
           </div>
           {message.parts.map((part, index) => {
+            if (part.type === "step-start") return null;
+            if (isToolUIPart(part) && getToolName(part) === "askHuman") {
+              return (
+                <SupportRequest key={index} threadId={threadId} part={part} />
+              );
+            }
             if (part.type === "text")
               return (
                 <p className="whitespace-pre-wrap" key={index}>
@@ -99,5 +122,68 @@ function Messages({ threadId }: { threadId: string }) {
         <p role="status">Loading earlier messages…</p>
       )}
     </section>
+  );
+}
+
+function SupportRequest({
+  threadId,
+  part,
+}: {
+  threadId: string;
+  part: ToolUIPart | DynamicToolUIPart;
+}) {
+  const cancel = useMutation(api.chat.human.deleteRequest);
+  const task = useExampleTask();
+  if (part.state === "output-available")
+    return (
+      <div
+        className="my-3 space-y-1 rounded-lg bg-white p-4"
+        aria-label="Support request"
+      >
+        <p className="font-medium text-green-700">Support replied</p>
+        <p className="whitespace-pre-wrap">
+          {typeof part.output === "string"
+            ? part.output
+            : "A support reply was received."}
+        </p>
+      </div>
+    );
+  if (part.state === "output-error")
+    return (
+      <div
+        className="my-3 space-y-1 rounded-lg bg-white p-4"
+        aria-label="Support request"
+      >
+        <p className="font-medium text-gray-700">Support request closed</p>
+        <p className="text-sm text-gray-500">No support answer was supplied.</p>
+      </div>
+    );
+  if (part.state !== "input-available")
+    return (
+      <p role="status" className="my-3 text-sm text-gray-500">
+        Preparing your question for support…
+      </p>
+    );
+  return (
+    <div
+      className="my-3 space-y-3 rounded-lg bg-amber-50 p-4"
+      aria-label="Support request"
+    >
+      <p className="font-medium text-amber-800">Waiting for support</p>
+      <p className="text-sm text-gray-700">
+        Your question is in the support inbox. Their reply will appear here.
+      </p>
+      <button
+        type="button"
+        className="text-sm font-medium text-gray-600 underline underline-offset-2 disabled:opacity-50"
+        disabled={task.pending}
+        onClick={() =>
+          void task.run(() => cancel({ threadId, toolCallId: part.toolCallId }))
+        }
+      >
+        {task.pending ? "Cancelling…" : "Cancel request"}
+      </button>
+      <TaskError error={task.error} />
+    </div>
   );
 }

@@ -13,7 +13,7 @@ import { action } from "../_generated/server";
 import { agent } from "../agents/simple";
 import { authorizeThreadAccess } from "../threads";
 
-const tracerProvider = new BasicTracerProvider({
+export const tracerProvider = new BasicTracerProvider({
   resource: resourceFromAttributes({ "service.name": "convex-agent" }),
   spanProcessors: [
     new SimpleSpanProcessor(

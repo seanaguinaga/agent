@@ -1,14 +1,46 @@
 // See the docs at https://docs.convex.dev/agents/workflows
 import { WorkflowId, WorkflowManager } from "@convex-dev/workflow";
+import { OpenTelemetry } from "@ai-sdk/otel";
 import { createThread, saveMessage, stepCountIs } from "@convex-dev/agent";
+import { type TelemetryOptions } from "ai";
 import { components, internal } from "../_generated/api";
-import { action, mutation } from "../_generated/server";
+import { action, internalAction, mutation } from "../_generated/server";
 import { v } from "convex/values";
 import { z } from "zod/v3";
 import { weatherAgent } from "../agents/weather";
 import { fashionAgent } from "../agents/fashion";
 import { getAuthUserId } from "../utils";
 import { authorizeThreadAccess } from "../threads";
+import { tracerProvider } from "../debugging/telemetry";
+
+function telemetryFor(
+  functionId: string,
+  threadId: string,
+  promptMessageId?: string,
+): TelemetryOptions {
+  return {
+    functionId,
+    integrations: new OpenTelemetry({
+      tracer: tracerProvider.getTracer("gen_ai"),
+      agentSpanName: "functionId",
+      enrichSpan: () => ({
+        "convex.thread_id": threadId,
+        "convex.prompt_message_id": promptMessageId,
+      }),
+    }),
+    recordInputs: false,
+    recordOutputs: false,
+  };
+}
+
+async function flushTelemetry() {
+  try {
+    await tracerProvider.forceFlush();
+  } catch (error) {
+    // An exporter failure must not retry an already completed agent call.
+    console.error("Failed to flush chaining telemetry", error);
+  }
+}
 
 /**
  * OPTION 1: Chain agent calls in a single action.
@@ -25,20 +57,36 @@ export const getAdvice = action({
     await authorizeThreadAccess(ctx, threadId);
     const userId = await getAuthUserId(ctx);
 
-    // Note: the message is saved automatically, and clients will get the
-    // response via subscriptions automatically.
-    await weatherAgent.generateText(
-      ctx,
-      { threadId, userId },
-      { prompt: `What is the weather in ${location}?` },
-    );
+    try {
+      // Note: the message is saved automatically, and clients will get the
+      // response via subscriptions automatically.
+      await weatherAgent.generateText(
+        ctx,
+        { threadId, userId },
+        {
+          prompt: `What is the weather in ${location}?`,
+          telemetry: telemetryFor(
+            "workflows/chaining/getAdvice/weather",
+            threadId,
+          ),
+        },
+      );
 
-    // This includes previous message history from the thread automatically.
-    await fashionAgent.generateText(
-      ctx,
-      { threadId, userId },
-      { prompt: `What should I wear based on the weather?` },
-    );
+      // This includes previous message history from the thread automatically.
+      await fashionAgent.generateText(
+        ctx,
+        { threadId, userId },
+        {
+          prompt: `What should I wear based on the weather?`,
+          telemetry: telemetryFor(
+            "workflows/chaining/getAdvice/fashion",
+            threadId,
+          ),
+        },
+      );
+    } finally {
+      await flushTelemetry();
+    }
   },
 });
 
@@ -107,20 +155,71 @@ export const startWorkflow = mutation({
 });
 
 /**
- * Expose the agents as actions
- *
- * Note: you could alternatively create your own actions that call the agent
- * internally.
- * This is a convenient shorthand.
+ * Each durable step runs separately, so flush inside its action even on failure.
+ * Retries produce separate traces correlated by threadId and promptMessageId.
  */
-export const getForecast = weatherAgent.asTextAction({
-  stopWhen: stepCountIs(3),
+export const getForecast = internalAction({
+  args: { threadId: v.string(), promptMessageId: v.string() },
+  handler: async (ctx, { threadId, promptMessageId }) => {
+    try {
+      const result = await weatherAgent.generateText(
+        ctx,
+        { threadId },
+        {
+          promptMessageId,
+          stopWhen: stepCountIs(3),
+          telemetry: telemetryFor(
+            "workflows/chaining/getForecast",
+            threadId,
+            promptMessageId,
+          ),
+        },
+      );
+      return {
+        text: result.text,
+        promptMessageId: result.promptMessageId,
+        order: result.order,
+        finishReason: result.finishReason,
+        warnings: result.warnings,
+        savedMessageIds: result.savedMessages?.map((m) => m._id) ?? [],
+      };
+    } finally {
+      await flushTelemetry();
+    }
+  },
 });
-export const getFashionAdvice = fashionAgent.asObjectAction({
-  schema: z.object({
-    hat: z.string(),
-    tops: z.string(),
-    bottoms: z.string(),
-    shoes: z.string(),
-  }),
+export const getFashionAdvice = internalAction({
+  args: { threadId: v.string(), promptMessageId: v.string() },
+  handler: async (ctx, { threadId, promptMessageId }) => {
+    try {
+      const result = await fashionAgent.generateObject(
+        ctx,
+        { threadId },
+        {
+          promptMessageId,
+          schema: z.object({
+            hat: z.string(),
+            tops: z.string(),
+            bottoms: z.string(),
+            shoes: z.string(),
+          }),
+          telemetry: telemetryFor(
+            "workflows/chaining/getFashionAdvice",
+            threadId,
+            promptMessageId,
+          ),
+        },
+      );
+      return {
+        object: result.object,
+        promptMessageId: result.promptMessageId,
+        order: result.order,
+        finishReason: result.finishReason,
+        warnings: result.warnings,
+        savedMessageIds: result.savedMessages?.map((m) => m._id) ?? [],
+      };
+    } finally {
+      await flushTelemetry();
+    }
+  },
 });

@@ -12,7 +12,8 @@ folders by category.
 
 The main difference from your app will be:
 
-- What models you use (currently uses `modelsForDemo.ts`)
+- Model choices in `convex/modelsForDemo.ts` and Agent settings in
+  `convex/agents/config.ts`, including the streaming reasoning model.
 - Usage handling - currently configures agents to use `usageHandler.ts`
 - How you handle auth - currently has an example `authorizeThreadAccess`
   function.
@@ -25,6 +26,11 @@ cd agent
 npm run setup
 npm run dev
 ```
+
+The examples use Convex AI Gateway for text, reasoning, embeddings, images, and
+decisions. Link a local backend to a project on a paid Convex team with
+`npx convex login --link-deployments`, then restart `npx convex dev`. Convex
+authenticates model requests with deployment-scoped tokens.
 
 ## assistant-ui chat
 
@@ -42,12 +48,8 @@ backend as the Tool Approval example (`convex/chat/approval.ts`).
 - `ui/chat/assistant-ui/Thread.tsx` composes the UI from assistant-ui
   primitives.
 
-Without a provider key, the examples use the Convex AI Gateway with the model
-configured in `convex/modelsForDemo.ts`. Link a local backend to a project on a
-paid Convex team with `npx convex login --link-deployments`, then restart
-`npx convex dev`. Gateway failures are reported as errors; the examples never
-silently substitute mock responses. The approval tools simulate deletion and
-transfers; they do not delete real files or move money.
+Gateway failures surface as errors. The approval tools simulate deletion and
+transfers.
 
 ## Example screens
 
@@ -85,10 +87,8 @@ they are not exposed as arbitrary browser commands. File cleanup and invoicing
 remain internal. The app retains the repository's shared `test user` demo
 identity, so this is a development example rather than a production auth system.
 
-Provider requirements appear on the relevant screens. Reasoning uses Groq;
-image generation and RAG embeddings require OpenAI configuration. The prompt-RAG
-screen shows setup instructions until embeddings are available. Debug logs stay
-in the backend terminal; OpenTelemetry spans go to the configured collector.
+Debug logs stay in the backend terminal. OpenTelemetry spans go to the
+configured collector.
 
 ## Jev decision model
 
@@ -105,9 +105,8 @@ deployment linked to its project are required. Each evaluation is a paid model
 request. The UI shows provider-reported usage and cost when available; omitted
 values remain unknown. Results are not stored in a thread or the usage tables.
 
-The example calls the HTTP API directly because the installed gateway provider
-version has no `evaluationModel` method. It validates the response, rejects
-empty or oversized tickets, and does not retry requests or substitute mock
+This example demonstrates the Gateway's Decisions HTTP API. It validates the
+response, rejects empty or oversized tickets, and does not retry requests or substitute mock
 decisions on gateway failure. The frontend keeps the ticket for manual retry.
 The endpoint is in alpha and its format may change. This demo only displays
 judgments; it does not route a ticket or execute the model's decision.

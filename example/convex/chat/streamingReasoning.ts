@@ -6,18 +6,14 @@ import { v } from "convex/values";
 import { authorizeThreadAccess } from "../threads";
 import { storyAgent } from "../agents/story";
 import { stepCountIs, tool } from "ai";
-import { groq } from "@ai-sdk/groq";
 import z from "zod/v3";
-import { defaultConfig } from "../agents/config";
-
-const reasoningModel = groq("qwen/qwen3-32b");
+import { streamingReasoningConfig } from "../agents/config";
 
 const streamingReasoningAgent = new Agent(components.agent, {
   name: "Streaming Reasoning Agent",
   instructions: "Think about the question and answer it.",
-  ...defaultConfig,
+  ...streamingReasoningConfig,
   stopWhen: stepCountIs(3),
-  languageModel: reasoningModel,
 });
 
 export const streamReasoning = action({
@@ -34,14 +30,6 @@ export const streamReasoning = action({
       { threadId },
       {
         prompt: args.prompt ?? "What is the best flavor of ice cream?",
-        providerOptions: {
-          groq: {
-            reasoningEffort: "default",
-            reasoningFormat: "parsed",
-            // parallelToolCalls: true, // Enable parallel function calling (default: true)
-            // user: 'user-123', // Unique identifier for end-user (optional)
-          },
-        },
         tools: {
           say: tool({
             description: "Ask a friend for their favorite flavor of ice cream",

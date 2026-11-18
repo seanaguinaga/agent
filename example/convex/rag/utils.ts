@@ -12,12 +12,6 @@ import { internalMutation, query } from "../_generated/server";
 import { getAuthUserId } from "../utils";
 import { rag } from "./ragAsPrompt";
 import { components } from "../_generated/api";
-import { embeddingModel } from "../modelsForDemo";
-
-export const isConfigured = query({
-  args: {},
-  handler: async () => Boolean(embeddingModel),
-});
 
 /**
  * Lists messages for a thread including the context used to generate them,

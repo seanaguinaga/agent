@@ -125,7 +125,7 @@ export const examples = [
         kind="action"
         send={api.chat.streamingReasoning.streamReasoning}
         title="Streaming reasoning"
-        description="Requires GROQ_API_KEY for the example's reasoning model. Expand reasoning and tool parts in the live conversation."
+        description="Expand reasoning and tool parts as they stream through Convex AI Gateway."
         initialPrompt="What is the best flavor of ice cream? Ask a friend for their opinion."
       />
     ),
@@ -214,7 +214,7 @@ export const examples = [
         kind="action"
         send={api.tools.chat.sendMessage}
         title="Message search & title tools"
-        description="Ask the agent to rename this thread or recall an earlier message. Tool calls require a real model; vector search also requires OPENAI_API_KEY for embeddings."
+        description="Ask the agent to rename this thread or recall an earlier message using vector search."
         initialPrompt="Rename this thread to Garden plans. Remember that my favorite flower is lavender."
       />
     ),
@@ -288,7 +288,7 @@ export const examples = [
         kind="action"
         send={api.rag.ragAsTools.sendMessage}
         title="RAG as tools"
-        description="Ask the agent to remember information and retrieve it later. Uses the user's own namespace, separate from global prompt-RAG documents. Requires a tool-capable model and OPENAI_API_KEY for embeddings."
+        description="Ask the agent to remember information and retrieve it later from your own namespace."
         initialPrompt="Remember this: my favorite hiking trail is the Dipsea Trail. Store it so you can find it later."
       />
     ),

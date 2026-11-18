@@ -87,7 +87,7 @@ export function GenerateImage() {
   return (
     <ExamplePage
       title="Image generation"
-      description="Generate an image and save it as an assistant attachment. Uses the existing OpenAI image example and requires OPENAI_API_KEY on the backend. Each run makes a paid provider request."
+      description="Generate an image through Convex AI Gateway and save it as an assistant attachment. Each run makes a paid model request."
     >
       <form
         className="demo-panel"

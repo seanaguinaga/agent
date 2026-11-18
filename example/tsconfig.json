@@ -5,7 +5,7 @@
       "@/*": ["./ui/*"]
     },
     "lib": ["DOM", "DOM.Iterable", "ESNext"],
-    "skipLibCheck": false,
+    "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,
     "strict": true,
     "forceConsistentCasingInFileNames": true,

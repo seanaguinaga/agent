@@ -34,7 +34,7 @@ export const triage = action({
       throw new ConvexError("Enter a ticket between 1 and 8,000 characters.");
     }
     const token = await getServiceToken("ai-gateway");
-    // Use the HTTP API: the installed 0.1 provider has no evaluationModel API.
+    // Demonstrate the Gateway's Decisions HTTP API.
     const response = await fetch(
       "https://ai-gateway.convex.dev/alpha/decisions",
       {

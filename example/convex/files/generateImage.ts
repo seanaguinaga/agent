@@ -3,15 +3,14 @@ import { createThread, saveMessage } from "@convex-dev/agent";
 import { components, internal } from "../_generated/api";
 import { action, internalAction } from "../_generated/server";
 import { v } from "convex/values";
-import OpenAI from "openai";
+import { generateImage } from "ai";
+import { imageModel } from "../modelsForDemo";
 import { getAuthUserId } from "../utils";
 
 export const generate = action({
   args: { prompt: v.string() },
   handler: async (ctx, { prompt }): Promise<{ threadId: string }> => {
     if (!prompt.trim()) throw new Error("Enter an image description");
-    if (!process.env.OPENAI_API_KEY)
-      throw new Error("Image generation requires OPENAI_API_KEY");
     const { threadId } = await ctx.runAction(
       internal.files.generateImage.replyWithImage,
       { prompt },
@@ -42,33 +41,9 @@ export const replyWithImage = internalAction({
     await saveMessage(ctx, components.agent, { threadId, prompt });
 
     // Generate the image
-    const provider = "openai";
-    const model = "dall-e-2";
-    const imgResponse = await new OpenAI().images.generate({
-      model,
-      prompt,
-      size: "256x256",
-      response_format: "url",
-    });
-    const url = imgResponse.data?.[0].url;
-    if (!url) {
-      throw new Error(
-        "No image URL found. Response: " + JSON.stringify(imgResponse),
-      );
-    }
-    console.debug("short-lived url:", url);
-    const image = await fetch(url);
-    if (!image.ok) {
-      throw new Error("Failed to fetch image. " + JSON.stringify(image));
-    }
-    const mediaType = image.headers.get("content-type")!;
-    if (!mediaType) {
-      throw new Error(
-        "No MIME type found. Response: " + JSON.stringify(image.headers),
-      );
-    }
+    const { image } = await generateImage({ model: imageModel, prompt });
 
-    // // Save the image in an assistant message
+    // Save the image in an assistant message
     const { message } = await saveMessage(ctx, components.agent, {
       threadId,
       message: {
@@ -78,15 +53,14 @@ export const replyWithImage = internalAction({
             type: "file",
             // NOTE: passing in the bytes directly!
             // It will be saved automatically in file storage.
-            data: await image.arrayBuffer(),
-            mediaType,
+            data: image.uint8Array,
+            mediaType: image.mediaType,
           },
         ],
       },
       metadata: {
-        text: imgResponse.data?.[0].revised_prompt || undefined,
-        model,
-        provider,
+        model: imageModel.modelId,
+        provider: imageModel.provider,
       },
     });
     return { threadId, assistantMessage: message };

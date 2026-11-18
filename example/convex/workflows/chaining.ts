@@ -154,6 +154,14 @@ export const startWorkflow = mutation({
   },
 });
 
+/** The structured outfit returned by `getFashionAdvice`. */
+export const outfitSchema = z.object({
+  hat: z.string(),
+  tops: z.string(),
+  bottoms: z.string(),
+  shoes: z.string(),
+});
+
 /**
  * Each durable step runs separately, so flush inside its action even on failure.
  * Retries produce separate traces correlated by threadId and promptMessageId.
@@ -197,12 +205,7 @@ export const getFashionAdvice = internalAction({
         { threadId },
         {
           promptMessageId,
-          schema: z.object({
-            hat: z.string(),
-            tops: z.string(),
-            bottoms: z.string(),
-            shoes: z.string(),
-          }),
+          schema: outfitSchema,
           telemetry: telemetryFor(
             "workflows/chaining/getFashionAdvice",
             threadId,

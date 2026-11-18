@@ -13,7 +13,7 @@ import {
   query,
 } from "../_generated/server";
 import { v } from "convex/values";
-import { components } from "../_generated/api";
+import { components, internal } from "../_generated/api";
 import { paginationOptsValidator } from "convex/server";
 import { authorizeThreadAccess } from "../threads";
 import { z } from "zod/v3";
@@ -83,6 +83,7 @@ export const askHuman = tool({
 export const ask = action({
   args: { question: v.string(), threadId: v.string() },
   handler: async (ctx, { question, threadId }) => {
+    await authorizeThreadAccess(ctx, threadId);
     const result = await agent.generateText(
       ctx,
       { threadId },
@@ -168,6 +169,7 @@ export const getMessages = query({
     streamArgs: vStreamArgs,
   },
   handler: async (ctx, args) => {
+    await authorizeThreadAccess(ctx, args.threadId);
     const messages = await listUIMessages(ctx, components.agent, {
       threadId: args.threadId,
       paginationOpts: args.paginationOpts,
@@ -179,3 +181,89 @@ export const getMessages = query({
     return { ...messages, streams };
   },
 });
+
+export const reply = mutation({
+  args: { threadId: v.string(), agentName: v.string(), message: v.string() },
+  handler: async (ctx, args): Promise<string> => {
+    await authorizeThreadAccess(ctx, args.threadId);
+    if (!args.message.trim() || !args.agentName.trim())
+      throw new Error("Name and message are required");
+    return ctx.runMutation(internal.chat.human.sendMessageFromHumanAgent, args);
+  },
+});
+
+export const respondToTool = mutation({
+  args: {
+    threadId: v.string(),
+    humanName: v.string(),
+    response: v.string(),
+    toolCallId: v.string(),
+  },
+  handler: async (ctx, { threadId, humanName, response, toolCallId }) => {
+    await authorizeThreadAccess(ctx, threadId);
+    if (!humanName.trim() || !response.trim())
+      throw new Error("Name and response are required");
+    const { page } = await agent.listMessages(ctx, {
+      threadId,
+      paginationOpts: { cursor: null, numItems: 100 },
+    });
+    // shortcut: inspect the latest 100 messages, paginate if demos need longer handoffs.
+    const requested = page.find(
+      ({ message }) =>
+        message?.role === "assistant" &&
+        Array.isArray(message.content) &&
+        message.content.some(
+          (part) =>
+            part.type === "tool-call" &&
+            part.toolName === "askHuman" &&
+            part.toolCallId === toolCallId,
+        ),
+    );
+    const answered = page.some(
+      ({ message }) =>
+        message?.role === "tool" &&
+        message.content.some(
+          (part) =>
+            part.type === "tool-result" && part.toolCallId === toolCallId,
+        ),
+    );
+    if (!requested || answered)
+      throw new Error("This human request is missing or already answered");
+    const { messageId } = await agent.saveMessage(ctx, {
+      threadId,
+      message: {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId,
+            toolName: "askHuman",
+            output: { type: "text", value: response },
+          },
+        ],
+      },
+      metadata: {
+        provider: "human",
+        providerMetadata: { human: { name: humanName } },
+      },
+    });
+    const answeredCalls = new Set([toolCallId]);
+    for (const { message } of page) {
+      if (message?.role !== "tool") continue;
+      for (const part of message.content) {
+        if (part.type === "tool-result") answeredCalls.add(part.toolCallId);
+      }
+    }
+    const stepCalls = Array.isArray(requested.message?.content)
+      ? requested.message.content.filter((part) => part.type === "tool-call")
+      : [];
+    if (stepCalls.every((part) => answeredCalls.has(part.toolCallId)))
+      await ctx.scheduler.runAfter(
+        0,
+        internal.chat.human.continueAfterHumanResponse,
+        { threadId, promptMessageId: messageId },
+      );
+  },
+});
+
+export const continueAfterHumanResponse = agent.asTextAction({});

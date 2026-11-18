@@ -6,8 +6,8 @@ import {
   type UIMessage,
 } from "@convex-dev/agent/react";
 import { useEffect, useRef, useState } from "react";
-import { cn } from "@/lib/utils";
-import { useDemoThread } from "@/hooks/use-demo-thread";
+import { cn } from "../lib/utils";
+import { useDemoThread } from "../hooks/use-demo-thread";
 import type { ToolUIPart } from "ai";
 
 export default function ChatApproval() {
@@ -50,7 +50,6 @@ function Chat({ threadId, reset }: { threadId: string; reset: () => void }) {
     optimisticallySendMessage(api.chat.approval.listThreadMessages),
   );
 
-  const submitApproval = useMutation(api.chat.approval.submitApproval);
   const hasPendingApprovals = messages.some((m) =>
     m.parts.some(
       (p) =>
@@ -62,6 +61,7 @@ function Chat({ threadId, reset }: { threadId: string; reset: () => void }) {
   const [prompt, setPrompt] = useState(
     "Delete the file important.txt and transfer $500 to account savings-123",
   );
+  const [sendError, setSendError] = useState<string>();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -70,7 +70,12 @@ function Chat({ threadId, reset }: { threadId: string; reset: () => void }) {
 
   function onSendClicked() {
     if (prompt.trim() === "") return;
-    void sendMessage({ threadId, prompt }).catch(() => setPrompt(prompt));
+    setSendError(undefined);
+    void sendMessage({ threadId, prompt }).catch((error: unknown) => {
+      console.error(error);
+      setPrompt(prompt);
+      setSendError("Could not send the message. Please try again.");
+    });
     setPrompt("");
   }
 
@@ -83,12 +88,7 @@ function Chat({ threadId, reset }: { threadId: string; reset: () => void }) {
               <button onClick={() => loadMore(4)}>Load more</button>
             )}
             {messages.map((m) => (
-              <Message
-                key={m.key}
-                message={m}
-                threadId={threadId}
-                onApproval={submitApproval}
-              />
+              <Message key={m.key} message={m} threadId={threadId} />
             ))}
             <div ref={messagesEndRef} />
           </div>
@@ -101,6 +101,11 @@ function Chat({ threadId, reset }: { threadId: string; reset: () => void }) {
       </div>
 
       <div className="border-t bg-white p-6">
+        {sendError && (
+          <p role="alert" className="mb-3 text-red-700">
+            {sendError}
+          </p>
+        )}
         <form
           className="flex gap-2 items-center max-w-2xl mx-auto"
           onSubmit={(e) => {
@@ -150,16 +155,9 @@ function Chat({ threadId, reset }: { threadId: string; reset: () => void }) {
 function Message({
   message,
   threadId,
-  onApproval,
 }: {
   message: UIMessage;
   threadId: string;
-  onApproval: (args: {
-    threadId: string;
-    approvalId: string;
-    approved: boolean;
-    reason?: string;
-  }) => Promise<unknown>;
 }) {
   const isUser = message.role === "user";
 
@@ -185,13 +183,19 @@ function Message({
             key={tool.toolCallId}
             tool={tool}
             threadId={threadId}
-            onApproval={onApproval}
           />
         ))}
         {message.text && (
           <div className="whitespace-pre-wrap">{message.text}</div>
         )}
-        {!message.text && toolParts.length === 0 && "..."}
+        {message.status === "failed" ? (
+          <p role="alert" className="text-red-800">
+            Generation failed. Check the Convex gateway configuration and
+            backend logs, then retry your message.
+          </p>
+        ) : (
+          !message.text && toolParts.length === 0 && "..."
+        )}
       </div>
     </div>
   );
@@ -200,22 +204,37 @@ function Message({
 function ToolCallDisplay({
   tool,
   threadId,
-  onApproval,
 }: {
   tool: ToolUIPart;
   threadId: string;
-  onApproval: (args: {
-    threadId: string;
-    approvalId: string;
-    approved: boolean;
-    reason?: string;
-  }) => Promise<unknown>;
 }) {
+  const submitApproval = useMutation(api.chat.approval.submitApproval);
   const [denialReason, setDenialReason] = useState("");
   const [showReasonInput, setShowReasonInput] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
   const toolName = tool.type.replace("tool-", "");
   const approvalId = getToolApprovalId(tool);
   const approvalReason = getToolApprovalReason(tool);
+
+  async function decide(approved: boolean) {
+    if (!approvalId || pending) return;
+    setPending(true);
+    setError(undefined);
+    try {
+      await submitApproval({
+        threadId,
+        approvalId,
+        approved,
+        reason: approved ? undefined : denialReason || undefined,
+      });
+    } catch (error) {
+      console.error(error);
+      setError("Could not save your decision. Please try again.");
+    } finally {
+      setPending(false);
+    }
+  }
 
   return (
     <div className="mb-2 p-2 rounded-sm bg-white/50 border border-gray-300 text-sm">
@@ -239,19 +258,14 @@ function ToolCallDisplay({
               />
               <button
                 className="px-3 py-1 rounded-sm bg-red-500 text-white text-sm hover:bg-red-600"
-                onClick={() => {
-                  void onApproval({
-                    threadId,
-                    approvalId,
-                    approved: false,
-                    reason: denialReason || undefined,
-                  });
-                }}
+                disabled={pending}
+                onClick={() => void decide(false)}
               >
                 Deny
               </button>
               <button
                 className="text-xs text-gray-500 hover:underline"
+                disabled={pending}
                 onClick={() => setShowReasonInput(false)}
               >
                 Cancel
@@ -261,18 +275,14 @@ function ToolCallDisplay({
             <div className="flex gap-2">
               <button
                 className="px-3 py-1 rounded-sm bg-green-600 text-white text-sm hover:bg-green-700"
-                onClick={() => {
-                  void onApproval({
-                    threadId,
-                    approvalId,
-                    approved: true,
-                  });
-                }}
+                disabled={pending}
+                onClick={() => void decide(true)}
               >
                 Approve
               </button>
               <button
                 className="px-3 py-1 rounded-sm bg-red-500 text-white text-sm hover:bg-red-600"
+                disabled={pending}
                 onClick={() => setShowReasonInput(true)}
               >
                 Deny
@@ -283,7 +293,7 @@ function ToolCallDisplay({
       )}
 
       {tool.state === "approval-responded" && (
-        <div className="text-green-700 text-xs">Approved - executing...</div>
+        <div className="text-xs">Decision saved — awaiting result…</div>
       )}
 
       {tool.state === "output-denied" && (
@@ -308,6 +318,11 @@ function ToolCallDisplay({
       {(tool.state === "input-available" ||
         tool.state === "input-streaming") && (
         <div className="text-gray-500 text-xs">Processing...</div>
+      )}
+      {error && (
+        <p role="alert" className="mt-2 text-red-700">
+          {error}
+        </p>
       )}
     </div>
   );

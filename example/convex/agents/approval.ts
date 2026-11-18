@@ -54,5 +54,4 @@ export const approvalAgent = new Agent(components.agent, {
   },
   stopWhen: stepCountIs(5),
   ...defaultConfig,
-  callSettings: { temperature: 0 },
 });

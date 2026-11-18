@@ -21,16 +21,19 @@ const streamingReasoningAgent = new Agent(components.agent, {
 });
 
 export const streamReasoning = action({
-  args: {},
-  handler: async (ctx, _args) => {
-    const threadId = await createThread(ctx, components.agent, {
-      title: "Streaming Reasoning",
-    });
+  args: { threadId: v.optional(v.string()), prompt: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    if (args.threadId) await authorizeThreadAccess(ctx, args.threadId);
+    const threadId =
+      args.threadId ??
+      (await createThread(ctx, components.agent, {
+        title: "Streaming Reasoning",
+      }));
     const result = await streamingReasoningAgent.streamText(
       ctx,
       { threadId },
       {
-        prompt: "What is the best flavor of ice cream?",
+        prompt: args.prompt ?? "What is the best flavor of ice cream?",
         providerOptions: {
           groq: {
             reasoningEffort: "default",
@@ -57,6 +60,7 @@ export const streamReasoning = action({
     for await (const chunk of result.toUIMessageStream()) {
       console.log(chunk);
     }
+    return { threadId };
   },
 });
 

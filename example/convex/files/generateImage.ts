@@ -1,10 +1,24 @@
 // See the docs at https://docs.convex.dev/agents/files
 import { createThread, saveMessage } from "@convex-dev/agent";
-import { components } from "../_generated/api";
-import { internalAction } from "../_generated/server";
+import { components, internal } from "../_generated/api";
+import { action, internalAction } from "../_generated/server";
 import { v } from "convex/values";
 import OpenAI from "openai";
 import { getAuthUserId } from "../utils";
+
+export const generate = action({
+  args: { prompt: v.string() },
+  handler: async (ctx, { prompt }): Promise<{ threadId: string }> => {
+    if (!prompt.trim()) throw new Error("Enter an image description");
+    if (!process.env.OPENAI_API_KEY)
+      throw new Error("Image generation requires OPENAI_API_KEY");
+    const { threadId } = await ctx.runAction(
+      internal.files.generateImage.replyWithImage,
+      { prompt },
+    );
+    return { threadId };
+  },
+});
 
 /**
  * Generating images

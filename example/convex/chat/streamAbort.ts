@@ -35,11 +35,14 @@ export const abortStreamByOrder = mutation({
 
 // Test it out by streaming a message and then aborting it
 export const streamThenAbortAsync = action({
-  args: {},
-  handler: async (ctx) => {
-    const threadId = await createThread(ctx, components.agent, {
-      title: "Thread with aborted message",
-    });
+  args: { threadId: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    if (args.threadId) await authorizeThreadAccess(ctx, args.threadId);
+    const threadId =
+      args.threadId ??
+      (await createThread(ctx, components.agent, {
+        title: "Thread with aborted message",
+      }));
     const result = await agent.streamText(
       ctx,
       { threadId },
@@ -68,6 +71,7 @@ export const streamThenAbortAsync = action({
     } catch (error) {
       console.warn("Catching what should be an AbortError", error);
     }
+    return { threadId };
   },
 });
 
@@ -78,6 +82,7 @@ export const streamThenAbortAsync = action({
 export const list = query({
   args: { threadId: v.string() },
   handler: async (ctx, { threadId }) => {
+    await authorizeThreadAccess(ctx, threadId);
     return listStreams(ctx, components.agent, { threadId });
   },
 });
@@ -104,11 +109,14 @@ export const abortStreamByStreamId = internalMutation({
  */
 
 export const streamThenUseAbortSignal = action({
-  args: {},
-  handler: async (ctx) => {
-    const threadId = await createThread(ctx, components.agent, {
-      title: "Thread using abortSignal",
-    });
+  args: { threadId: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    if (args.threadId) await authorizeThreadAccess(ctx, args.threadId);
+    const threadId =
+      args.threadId ??
+      (await createThread(ctx, components.agent, {
+        title: "Thread using abortSignal",
+      }));
     const abortController = new AbortController();
     const result = await agent.streamText(
       ctx,
@@ -131,5 +139,6 @@ export const streamThenUseAbortSignal = action({
       console.warn("Catching what should be an AbortError", error);
     }
     await result.consumeStream();
+    return { threadId };
   },
 });

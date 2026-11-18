@@ -8,6 +8,7 @@ import { z } from "zod/v3";
 import { weatherAgent } from "../agents/weather";
 import { fashionAgent } from "../agents/fashion";
 import { getAuthUserId } from "../utils";
+import { authorizeThreadAccess } from "../threads";
 
 /**
  * OPTION 1: Chain agent calls in a single action.
@@ -21,6 +22,7 @@ import { getAuthUserId } from "../utils";
 export const getAdvice = action({
   args: { location: v.string(), threadId: v.string() },
   handler: async (ctx, { location, threadId }) => {
+    await authorizeThreadAccess(ctx, threadId);
     const userId = await getAuthUserId(ctx);
 
     // Note: the message is saved automatically, and clients will get the

@@ -8,6 +8,8 @@ import { action } from "../_generated/server";
 import { agent } from "../agents/simple";
 import { getAuthUserId } from "../utils";
 import { embeddingModel } from "../modelsForDemo";
+import { authorizeThreadAccess } from "../threads";
+import { stepCountIs } from "ai";
 
 const rag = new RAG(components.rag, {
   textEmbeddingModel: embeddingModel,
@@ -17,12 +19,18 @@ const rag = new RAG(components.rag, {
 export const sendMessage = action({
   args: { threadId: v.string(), prompt: v.string() },
   handler: async (ctx, { threadId, prompt }) => {
+    await authorizeThreadAccess(ctx, threadId);
     const userId = await getAuthUserId(ctx);
-    const { promptMessageId } = await agent.generateText(
+    const { messageId: promptMessageId } = await agent.saveMessage(ctx, {
+      threadId,
+      prompt,
+    });
+    await agent.generateText(
       ctx,
-      { threadId },
+      { threadId, userId },
       {
-        prompt,
+        promptMessageId,
+        stopWhen: stepCountIs(5),
         tools: {
           addContext: createTool({
             description: "Store information to search later via RAG",

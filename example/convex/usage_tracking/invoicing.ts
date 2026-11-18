@@ -101,6 +101,11 @@ const PRICING: Record<
   >
 > = {
   "openai.chat": {
+    "gpt-6-luna": {
+      inputPrice: 0.1,
+      cachedInputPrice: 0.01,
+      outputPrice: 0.5,
+    },
     "gpt-4o-mini": {
       inputPrice: 0.3,
       cachedInputPrice: 0.15,

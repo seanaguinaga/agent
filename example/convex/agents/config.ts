@@ -7,8 +7,10 @@ export const defaultConfig = {
   languageModel,
   rawRequestResponseHandler,
   usageHandler,
-  callSettings: {
-    temperature: 1.0,
+  // GPT-6 Chat Completions requires no reasoning when calling tools.
+  providerOptions: {
+    openai: { reasoningEffort: "none" },
+    convexGateway: { reasoningEffort: "none" },
   },
   // If you want to use vector search, you need to set this.
   embeddingModel,

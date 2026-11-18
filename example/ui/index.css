@@ -76,3 +76,18 @@ body {
 .link-text {
   @apply text-blue-500 hover:underline cursor-pointer font-medium;
 }
+
+@layer components {
+  .demo-panel {
+    @apply space-y-4 rounded-xl border bg-white p-5;
+  }
+  .demo-label {
+    @apply block text-sm font-medium text-gray-700;
+  }
+  .demo-button {
+    @apply rounded-lg bg-blue-600 px-4 py-2 font-medium text-white hover:bg-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .demo-secondary {
+    @apply rounded-lg border bg-white px-4 py-2 text-sm font-medium hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+}

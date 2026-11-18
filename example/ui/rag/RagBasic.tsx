@@ -1,4 +1,9 @@
-import { useAction, useMutation, usePaginatedQuery } from "convex/react";
+import {
+  useAction,
+  useMutation,
+  usePaginatedQuery,
+  useQuery,
+} from "convex/react";
 import {
   optimisticallySendMessage,
   SmoothText,
@@ -8,6 +13,7 @@ import { api } from "../../convex/_generated/api";
 import { useCallback, useEffect, useState } from "react";
 import { EntryId } from "@convex-dev/rag";
 import { toast } from "@/hooks/use-toast";
+import { ExamplePage } from "../components/Example";
 
 function RagBasicUI() {
   const [selectedEntry, setSelectedEntry] = useState<EntryId | null>(null);
@@ -409,4 +415,31 @@ function RagBasicUI() {
   );
 }
 
-export default RagBasicUI;
+export default function RagBasic() {
+  const configured = useQuery(api.rag.utils.isConfigured, {});
+  if (configured === undefined)
+    return (
+      <p role="status" className="p-8">
+        Checking embeddings configuration…
+      </p>
+    );
+  if (!configured)
+    return (
+      <ExamplePage
+        title="RAG in the prompt"
+        description="Index documents and inspect the context used to answer questions."
+      >
+        <div className="demo-panel">
+          <h2 className="font-semibold">Configure embeddings to begin</h2>
+          <p>
+            This example requires the OpenAI embedding model. Set OPENAI_API_KEY
+            on your local Convex deployment, then return here. When multiple
+            provider keys are set, the current model configuration selects
+            Anthropic first, so embeddings may also need to be configured in
+            convex/modelsForDemo.ts.
+          </p>
+        </div>
+      </ExamplePage>
+    );
+  return <RagBasicUI />;
+}

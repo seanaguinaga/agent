@@ -23,7 +23,7 @@ export function WeatherFashion() {
   const [followUpContent, setFollowUpContent] = useState("");
   // const token = useAuthToken();
   const [{ text, loading }, submitFollowUp] = useStreamingText(
-    import.meta.env.VITE_CONVEX_URL.replace(".cloud", ".site") + "/streamText",
+    import.meta.env.VITE_CONVEX_SITE_URL + "/streamText",
     threadId,
   );
   const handleSubmit = (e: React.FormEvent) => {

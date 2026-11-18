@@ -27,7 +27,7 @@ export const streamOneShot = action({
   args: { prompt: v.string(), threadId: v.string() },
   handler: async (ctx, { prompt, threadId }) => {
     await authorizeThreadAccess(ctx, threadId);
-    await storyAgent.streamText(
+    const result = await storyAgent.streamText(
       ctx,
       { threadId },
       { prompt },
@@ -35,6 +35,7 @@ export const streamOneShot = action({
     );
     // We don't need to return anything, as the response is saved as deltas
     // in the database and clients are subscribed to the stream.
+    await result.consumeStream();
   },
 });
 

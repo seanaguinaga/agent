@@ -22,6 +22,7 @@ export type CaseView = Infer<typeof vCaseDoc> & {
   deadline: { label: string; date: string } | null;
   suggestions: Record<string, string>;
   profileInputs: Record<string, string>;
+  fileUrls: Record<string, string>;
 };
 type Pack = NonNullable<ReturnType<typeof definitionOf>>;
 
@@ -116,7 +117,8 @@ export function pilot(
         return { event: { type: "answers.set", key, value } };
       }
       const file = pack.documents?.find(
-        (document) => document.required && !c.documents[document.key],
+        ({ key, required }) =>
+          required && !c.files.some((attached) => attached.key === key),
       );
       return file ? { upload: file.key } : "wait";
     }

@@ -22,6 +22,43 @@ export const vFilledDocument = v.object({
 });
 
 /**
+ * What reading a file found, by `status`. `reading` until the model has
+ * looked. `read` holds what the file is and the facts it states, and the
+ * answers it gives to the pack's questions, for the person to accept.
+ * `unread` says why not: a kind of file we don't read, or a failed attempt.
+ */
+export const vFileRead = v.union(
+  v.object({ status: v.literal("reading") }),
+  v.object({
+    status: v.literal("read"),
+    summary: v.string(),
+    answers: v.optional(v.record(v.string(), v.string())),
+  }),
+  v.object({ status: v.literal("unread"), reason: v.string() }),
+);
+
+/** A file the person attached to the case. */
+export const vCaseFile = v.object({
+  storageId: v.id("_storage"),
+  /**
+   * The pack's document this is, e.g. the denial letter. Without one it's
+   * something else the person added. Several files can share a key: a
+   * letter photographed page by page.
+   */
+  key: v.optional(v.string()),
+  name: v.string(),
+  mediaType: v.string(),
+  size: v.number(),
+  /**
+   * Added once the case was done: the receipt, or what the authority sent
+   * back. Not part of what was approved or shared.
+   */
+  followUp: v.optional(v.literal(true)),
+  read: vFileRead,
+});
+export type CaseFile = Infer<typeof vCaseFile>;
+
+/**
  * The `intake.version` a selection was made for. A selection for an earlier
  * goal counts as none. A rejected one for the current goal sends the case
  * back to intake for a new goal.
@@ -193,8 +230,8 @@ export const caseFields = {
       answers: v.optional(v.record(v.string(), v.string())),
     }),
   ),
-  /** The files the person attached, by document key. */
-  documents: v.record(v.string(), v.id("_storage")),
+  /** The files the person attached, in the order they came. */
+  files: v.array(vCaseFile),
   /**
    * The filled-in document, and the fingerprint of the answers and files it
    * used. `letter` is set when the pack writes one.
@@ -331,6 +368,8 @@ export const vHistoryKind = v.union(
   v.literal("pack.proposed"),
   v.literal("pack.clarification"),
   v.literal("answers.suggested"),
+  v.literal("file.attached"),
+  v.literal("file.removed"),
   v.literal("document.filled"),
   v.literal("referral.shared"),
   v.literal("referral.accepted"),
@@ -355,12 +394,24 @@ export const vCaseEvent = v.union(
   }),
   // With the answers: take every suggested answer that's still unanswered.
   v.object({ type: v.literal("answers.accept") }),
-  // With the answers: attach a file the pack asks for.
+  // Until the document is approved: attach an uploaded file. With a `key`
+  // it's one the pack asks for; without, anything else that helps. Once the
+  // case is done, it adds what came afterwards (a follow-up, with no key).
   v.object({
     type: v.literal("document.attach"),
-    key: v.string(),
     storageId: v.id("_storage"),
+    key: v.optional(v.string()),
+    /** The file's name, as the person knows it. */
+    name: v.optional(v.string()),
   }),
+  // Says which of the pack's documents an attached file is, or none.
+  v.object({
+    type: v.literal("document.label"),
+    storageId: v.id("_storage"),
+    key: v.optional(v.string()),
+  }),
+  // Takes an attached file off the case.
+  v.object({ type: v.literal("document.remove"), storageId: v.id("_storage") }),
   // In review.
   v.object({ type: v.literal("review.approve") }),
   // When a referral is offered: share the case with a lawyer, or don't.

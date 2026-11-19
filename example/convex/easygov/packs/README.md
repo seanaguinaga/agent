@@ -83,8 +83,9 @@ checklist.
 
 ## What a pack can ask for
 
-- **`documents`**: files to attach, each `required` or not. A case waits for the
-  required ones along with the answers.
+- **`documents`**: files to attach, each `required` or not. A case waits for at
+  least one file for each required one, along with the answers. The person can
+  attach other evidence too, which no pack needs to list.
 - **`deadline`**: `{ label, fromInput, days }`. The date is `days` after the
   date answered for `fromInput`, which must then be a date (YYYY-MM-DD).
 - **`output.letter`**: text with `{{inputKey}}` placeholders, filled in from the

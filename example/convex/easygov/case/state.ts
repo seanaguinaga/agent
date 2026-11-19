@@ -7,6 +7,7 @@ import {
   chosen,
   definitionOf,
   WAITS,
+  type CaseFile,
   type Phase,
   type WaitingFor,
 } from "./schema";
@@ -75,8 +76,12 @@ export function readingConversation(c: Case): boolean {
  * and only where the person hasn't answered yet.
  */
 export function suggestions(c: Case): Record<string, string> {
-  // What the person said just now outranks what the profile remembers.
+  // What the person said just now outranks what the profile remembers, and
+  // what their own paperwork states outranks both.
   const found = { ...c.offers, ...currentSuggested(c)?.answers };
+  for (const { read } of caseFiles(c)) {
+    if (read.status === "read") Object.assign(found, read.answers);
+  }
   return Object.fromEntries(
     missing(c)
       .filter((key) => found[key])
@@ -89,16 +94,25 @@ export function missing(c: Case): string[] {
   return missingInputs(requiredInputs(c) ?? [], c.answers, c.fromProfile);
 }
 
+/**
+ * The files that are part of what the person approves and shares: all but
+ * the follow-ups, which arrive once the case is done.
+ */
+export function caseFiles(c: Pick<Case, "files">): CaseFile[] {
+  return c.files.filter((file) => !file.followUp);
+}
+
 /** The keys of the required files the person hasn't attached yet. */
 export function missingDocuments(c: Case): string[] {
+  const attached = new Set(caseFiles(c).map((file) => file.key));
   return (pinnedPack(c)?.documents ?? [])
-    .filter(({ key, required }) => required && !c.documents[key])
+    .filter(({ key, required }) => required && !attached.has(key))
     .map(({ key }) => key);
 }
 
 /** The answers and files as they stand: what a document is built from. */
 export function fingerprintOf(c: Case): string {
-  return fingerprint(c.answers, c.documents);
+  return fingerprint(c.answers, caseFiles(c));
 }
 
 /** The date to act by, once the answer it's counted from is in. */

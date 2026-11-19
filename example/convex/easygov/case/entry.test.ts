@@ -186,7 +186,7 @@ describe("the referral", () => {
         source: "wages",
         goal: wageClaim.title,
         answers: wages,
-        documents: shared.documents,
+        files: [{ key: "payStub", storageId: shared.files[0].storageId }],
         deadline: "2029-09-29",
         fingerprint: shared.approval!.fingerprint,
       },

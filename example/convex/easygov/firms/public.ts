@@ -26,9 +26,11 @@ const vPreview = v.object({
   /** The process the person completed; none for a request for advice. */
   process: v.optional(v.string()),
   deadline: v.optional(v.string()),
-  /** Which questions were answered and which files attached, by key. */
+  /** Which questions were answered and which asked-for files attached, by key. */
   answered: v.array(v.string()),
   attached: v.array(v.string()),
+  /** How many files there are in all, with any other evidence. */
+  files: v.number(),
   priceCents: v.number(),
 });
 
@@ -102,7 +104,10 @@ export const previews = query({
         process: pack?.title,
         deadline: referral.deadline,
         answered: Object.keys(referral.answers).sort(),
-        attached: Object.keys(referral.documents).sort(),
+        attached: [
+          ...new Set(referral.files.flatMap(({ key }) => (key ? [key] : []))),
+        ].sort(),
+        files: referral.files.length,
         priceCents: referral.priceCents,
       });
     }
@@ -210,8 +215,17 @@ export const packet = query({
     jurisdiction: v.optional(v.string()),
     deadline: v.optional(v.string()),
     answers: v.record(v.string(), v.string()),
-    /** A link to each attached file, by document key. */
-    documents: v.record(v.string(), v.string()),
+    /** Each attached file, with a link to it and what reading it found. */
+    files: v.array(
+      v.object({
+        key: v.optional(v.string()),
+        name: v.string(),
+        mediaType: v.string(),
+        size: v.number(),
+        summary: v.optional(v.string()),
+        url: v.string(),
+      }),
+    ),
   }),
   handler: async (ctx, { firmId, referralId }) => {
     await authorizeFirm(ctx, firmId);
@@ -222,10 +236,10 @@ export const packet = query({
     const pack = referral.packId
       ? await ctx.db.get("processPacks", referral.packId)
       : null;
-    const documents: Record<string, string> = {};
-    for (const [key, storageId] of Object.entries(referral.documents)) {
+    const files = [];
+    for (const { storageId, ...file } of referral.files) {
       const url = await ctx.storage.getUrl(storageId);
-      if (url) documents[key] = url;
+      if (url) files.push({ ...file, url });
     }
     const { kind, userId, goal, jurisdiction, deadline, answers } = referral;
     return {
@@ -236,7 +250,7 @@ export const packet = query({
       jurisdiction,
       deadline,
       answers,
-      documents,
+      files,
     };
   },
 });

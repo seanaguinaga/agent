@@ -22,6 +22,7 @@ import {
 import { currentFacts, scheduleSync, syncCase } from "../profile/data";
 import { FACT_KEYS, factOf } from "../profile/vocabulary";
 import { EVENTS } from "./events";
+import { attachFollowUp, remove } from "./files";
 import { vCaseEvent, vPhase, vWaitingFor, type CaseEvent } from "./schema";
 import {
   currentSelection,
@@ -65,7 +66,7 @@ export const startCase = mutation({
       status: "active",
       seq: 0,
       answers: {},
-      documents: {},
+      files: [],
       // Choosing the page is choosing the pack: it starts out confirmed.
       ...(pack && {
         intake: { goal: pack.title, version: 1 },
@@ -119,10 +120,18 @@ export const getCase = query({
      * answer such an input, save the fact (`profile/public:save`).
      */
     profileInputs: v.record(v.string(), v.string()),
+    /** A link to each attached file, by its storage id. */
+    fileUrls: v.record(v.string(), v.string()),
   }),
   handler: async (ctx, { caseId, guestKey }) => {
     const found = await authorizeCase(ctx, caseId, guestKey);
+    const fileUrls: Record<string, string> = {};
+    for (const { storageId } of found.files) {
+      const url = await ctx.storage.getUrl(storageId);
+      if (url) fileUrls[storageId] = url;
+    }
     return {
+      fileUrls,
       ...found,
       phase: phase(found),
       waitingFor: waitingFor(found),
@@ -197,15 +206,16 @@ export const withdrawReferral = mutation({
 });
 
 /**
- * Where to upload a file for the case. Post the file to the URL, then send
- * `document.attach` with the storage id it returns.
+ * Where to upload a file for the case. Post the file to the URL, with its
+ * media type as the `Content-Type`, then send `document.attach` with the
+ * storage id it returns. A done case takes files too: what came afterwards.
  */
 export const uploadUrl = mutation({
   args: { caseId: v.id("cases"), guestKey: v.optional(v.string()) },
   returns: v.string(),
   handler: async (ctx, { caseId, guestKey }) => {
     const found = await authorizeCase(ctx, caseId, guestKey);
-    if (found.status !== "active") {
+    if (found.status !== "active" && found.status !== "done") {
       throw new ConvexError(`The case is ${found.status}.`);
     }
     return await ctx.storage.generateUploadUrl();
@@ -262,6 +272,8 @@ export const sendMessage = mutation({
 const DATA_ENTRY = new Set<CaseEvent["type"]>([
   "answers.set",
   "document.attach",
+  "document.label",
+  "document.remove",
 ]);
 
 /**
@@ -286,6 +298,25 @@ export const send = mutation({
       throw new ConvexError("The case has changed. Reload and try again.");
     }
     if (found.status !== "active") {
+      // A finished case still takes what comes afterwards: the receipt, and
+      // whatever the authority sends back.
+      if (found.status === "done" && event.type === "document.attach") {
+        if (event.key !== undefined) {
+          throw new ConvexError("The case is done: attach it without a key.");
+        }
+        await writeCase(ctx, caseId, await attachFollowUp(ctx, found, event));
+        return null;
+      }
+      if (found.status === "done" && event.type === "document.remove") {
+        const { storageId } = event;
+        const followUp = { followUp: true };
+        await writeCase(
+          ctx,
+          caseId,
+          await remove(ctx, found, storageId, followUp),
+        );
+        return null;
+      }
       throw new ConvexError(`The case is ${found.status}.`);
     }
     switch (event.type) {

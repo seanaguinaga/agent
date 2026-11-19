@@ -10,14 +10,16 @@ export type Answers = Record<string, string>;
  */
 export function fingerprint(
   answers: Answers,
-  documents: Record<string, string> = {},
+  files: { storageId: string; key?: string }[] = [],
 ): string {
-  const sorted = (record: Record<string, string>) =>
-    Object.entries(record).sort(([a], [b]) => (a < b ? -1 : 1));
-  const files = sorted(documents);
-  return sha256Hex(
-    JSON.stringify(files.length ? [sorted(answers), files] : sorted(answers)),
+  const sorted = (pairs: [string, string][]) =>
+    pairs.sort(([a], [b]) => (a < b ? -1 : 1));
+  const given = sorted(Object.entries(answers));
+  // A file is its contents and what it was attached as.
+  const attached = sorted(
+    files.map(({ storageId, key }) => [storageId, key ?? ""]),
   );
+  return sha256Hex(JSON.stringify(attached.length ? [given, attached] : given));
 }
 
 /**

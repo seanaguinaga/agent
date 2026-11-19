@@ -53,7 +53,8 @@ function Desk({ firmId }: { firmId: Id<"firms"> }) {
           </p>
           <p className="text-gray-600">
             Answered: {preview.answered.join(", ") || "nothing"} · Files:{" "}
-            {preview.attached.join(", ") || "none"}
+            {preview.files}
+            {preview.attached.length > 0 && ` (${preview.attached.join(", ")})`}
             {preview.deadline && ` · Act by ${preview.deadline}`}
           </p>
           <div className="flex gap-2">

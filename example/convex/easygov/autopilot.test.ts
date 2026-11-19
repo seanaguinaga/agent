@@ -32,7 +32,7 @@ function view(fields: Partial<CaseView>): CaseView {
     seq: 1,
     userId: "test user",
     answers: {},
-    documents: {},
+    files: [],
     waitingFor: null,
     deadline: null,
     suggestions: {},

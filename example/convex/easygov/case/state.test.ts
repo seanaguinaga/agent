@@ -14,7 +14,7 @@ const base = {
   status: "active",
   seq: 0,
   answers: {},
-  documents: {},
+  files: [],
 } satisfies Case;
 
 /** A pack asking for `a` and `b`, as a selection holds it. */
@@ -104,9 +104,25 @@ describe("waitingFor", () => {
       },
     });
     expect(waitingFor(needsFile)).toBe("answers");
-    const documents = { notice: "file" as Id<"_storage"> };
+    const file = {
+      storageId: "file" as Id<"_storage">,
+      name: "notice.pdf",
+      mediaType: "application/pdf",
+      size: 1,
+      read: { status: "reading" as const },
+    };
+    // Other evidence isn't the notice, and neither is a follow-up.
+    expect(waitingFor({ ...needsFile, files: [file] })).toBe("answers");
+    expect(
+      waitingFor({
+        ...needsFile,
+        files: [{ ...file, key: "notice", followUp: true as const }],
+      }),
+    ).toBe("answers");
     // All in, document not built yet: the workflow is busy.
-    expect(waitingFor({ ...needsFile, documents })).toBeNull();
+    expect(
+      waitingFor({ ...needsFile, files: [{ ...file, key: "notice" }] }),
+    ).toBeNull();
   });
 
   test("consent, while a referral is offered", () => {

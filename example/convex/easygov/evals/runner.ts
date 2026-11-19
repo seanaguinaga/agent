@@ -500,6 +500,7 @@ export const stepCase = internalAction({
           : {
               type: "document.attach",
               key: next.upload,
+              name: `${next.upload}.txt`,
               storageId: await ctx.storage.store(
                 new Blob([`Test file for ${next.upload}`], {
                   type: "text/plain",

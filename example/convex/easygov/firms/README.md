@@ -18,14 +18,16 @@ reads it.
 1. **Shared.** `referral.share` (in `case/events.ts`) saves the referral as
    `open`, with where it applies and a fixed price.
 2. **Previewed.** `previews` shows a firm the open referrals it covers: the
-   kind, the place, the process, the deadline, which questions were answered and
-   which files attached. Nothing the person wrote is in a preview.
+   kind, the place, the process, the deadline, which questions were answered,
+   which asked-for files were attached and how many files there are in all.
+   Nothing the person wrote is in a preview.
 3. **Accepted.** `accept` gives the referral to the first firm that takes it and
    records what the firm owes in `referralCharges`. `decline` hides it from that
    firm only, and only while it's `open`. A firm that declined can still accept:
    that undoes its decline.
-4. **Read.** `packet` returns the goal, answers and file links to the firm that
-   accepted, and to no one else.
+4. **Read.** `packet` returns the goal, the answers, and every file the person
+   attached before approving (a link, its name, and what reading it found) to
+   the firm that accepted, and to no one else.
 
 The person can take an `open` referral back with `case/public:withdrawReferral`:
 the referral and the case's own `referral.status` both become `withdrawn`. Once

@@ -83,6 +83,7 @@ describe("previews", () => {
         deadline: "2029-09-29",
         answered: ["amountOwed", "employer", "fullName", "lastWorkDate"],
         attached: ["payStub"],
+        files: 1,
         priceCents: 5000,
       },
     ]);
@@ -153,7 +154,7 @@ describe("accepting", () => {
       goal: wageClaim.title,
       deadline: "2029-09-29",
       answers: wages,
-      documents: { payStub: expect.any(String) },
+      files: [{ key: "payStub", name: "payStub", url: expect.any(String) }],
     });
     expect(await t.query(firms.accepted, { firmId: first })).toMatchObject([
       { id: referralId, priceCents: 12000 },
@@ -298,7 +299,13 @@ describe("the person", () => {
       coverage: [{ kind: "advice", jurisdiction: "us/ca" }],
     });
     expect(await previews(t, firmId)).toMatchObject([
-      { kind: "advice", jurisdiction: "us/ca", answered: [], attached: [] },
+      {
+        kind: "advice",
+        jurisdiction: "us/ca",
+        answered: [],
+        attached: [],
+        files: 0,
+      },
     ]);
     // The goal is the person's own words: it isn't in the preview.
     expect(JSON.stringify(await previews(t, firmId))).not.toContain("sue");

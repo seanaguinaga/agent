@@ -27,6 +27,7 @@ A case can also **start on a pack**, from a landing page: `startCase` with a
 | `case/data.ts`     | The queries and mutations the workflow calls, and its `onComplete`     |
 | `case/state.ts`    | Pure: what the case's fields mean, including `phase` and `waitingFor`  |
 | `case/events.ts`   | What a person can send, when it's taken, and what it writes            |
+| `case/files.ts`    | Attached files: adding, removing, and reading each with a model        |
 | `case/public.ts`   | What a client calls: `startCase`, `getCase`, `sendMessage`, `send`     |
 | `packs/public.ts`  | What a landing page reads: the shared packs, one page each             |
 | `case/agents.ts`   | The intake and selection agents                                        |
@@ -165,3 +166,30 @@ A shared pack is a page people can land on: a form, a letter, a complaint.
    `artifact.letter` once the document is built, if the pack writes one.
 
 The `wageClaim` definition in `packs/packs.testkit.ts` uses all of it.
+
+## Files
+
+A person attaches files in three situations. All use the same two calls:
+`uploadUrl`, then `document.attach` with the storage id the upload returns. The
+file goes from the browser straight to storage, so its size isn't bound by a
+function's arguments, and `uploadUrl` checks who's asking.
+
+- **To start the case.** While the case waits for a goal, attach the letter or
+  notice with no `key`. A model reads it, what it states goes into the
+  conversation as the person's message, and intake answers that: the case can
+  start from the letter alone. Its facts are later offered as answers.
+- **To support it.** Until the document is approved, attach a file the pack asks
+  for (with its `key`) or anything else (without). Several files can share a
+  key, such as a letter photographed page by page. `document.label` says which
+  of the pack's documents an attached file is, and `document.remove` takes one
+  off. Like an answer, a file changed in review rebuilds the document.
+- **After filing.** A `done` case still takes `document.attach`, with no key:
+  the receipt, or what the authority sent back. These are follow-ups. They
+  aren't part of what was approved, and aren't shared with a lawyer.
+
+Each PDF, image or text file is read once (`case/files.ts`). `read.summary` says
+what the file is and the facts it states, and `read.answers` holds the pack's
+questions it plainly answers. Those show up in `suggestions` for the person to
+accept; nothing a file says is filled in for them. Other kinds of file, and ones
+over 10 MB, are kept but not read. A case holds up to 30 files of up to 20 MB
+each. `getCase` returns a link to each in `fileUrls`.

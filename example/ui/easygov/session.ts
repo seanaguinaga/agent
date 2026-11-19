@@ -66,8 +66,11 @@ export function useCaseSession(
           text,
           messageKey: crypto.randomUUID(),
         }),
-      /** Uploads the file, then attaches it to the case as `key`. */
-      upload: async (key: string, file: Blob, expectedSeq: number) => {
+      /**
+       * Uploads the file straight to storage, then attaches it to the case:
+       * as the pack's document `key`, or without one as other evidence.
+       */
+      upload: async (file: Blob, expectedSeq: number, key?: string) => {
         const response = await fetch(
           await uploadUrl({ caseId: id, guestKey }),
           {
@@ -82,7 +85,11 @@ export function useCaseSession(
         const { storageId } = (await response.json()) as {
           storageId: Id<"_storage">;
         };
-        await send({ type: "document.attach", key, storageId }, expectedSeq);
+        const name = file instanceof File ? file.name : undefined;
+        await send(
+          { type: "document.attach", storageId, key, name },
+          expectedSeq,
+        );
       },
     };
   }, [caseId, guestKey, c, sendEvent, sendMessage, uploadUrl]);
@@ -135,11 +142,11 @@ export function useAutopilot(session: CaseSession) {
       "event" in next
         ? session.send(next.event, c.seq)
         : session.upload(
-            next.upload,
             new File([`Test file for ${next.upload}`], `${next.upload}.txt`, {
               type: "text/plain",
             }),
             c.seq,
+            next.upload,
           );
     void step
       .catch((error) => {

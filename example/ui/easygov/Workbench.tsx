@@ -4,6 +4,7 @@ import { useMutation, useQuery } from "convex/react";
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../../convex/_generated/api";
+import type { Id } from "../../convex/_generated/dataModel";
 import Transcript from "../chat/Transcript";
 import { Result } from "../components/Example";
 import type { CaseEvent, CaseView } from "../../convex/easygov/autopilot";
@@ -160,6 +161,12 @@ function Goal({ session }: { session: CaseSession }) {
           Submit goal
         </button>
       </form>
+      <AttachFiles
+        session={session}
+        id="file-start"
+        label="Or start from the letter or notice you received (a model reads it, and intake answers)"
+      />
+      <FileList session={session} files={c.files} />
       <Refusal error={act.error} />
     </div>
   );
@@ -389,7 +396,7 @@ function Answers({ session }: { session: CaseSession }) {
       {Object.keys(c.suggestions).length > 0 && (
         <div className="space-y-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm">
           <p className="font-medium">
-            From what you said, your profile, or last time:
+            From what you said, your files, your profile, or last time:
           </p>
           <ul className="list-disc pl-5">
             {Object.entries(c.suggestions).map(([key, value]) => (
@@ -461,26 +468,170 @@ function Answers({ session }: { session: CaseSession }) {
       )}
       {pack.documents?.map((document) => (
         <div key={document.key} className="space-y-1">
-          <label className="demo-label" htmlFor={`file-${document.key}`}>
-            {document.label} <code>({document.key})</code>
-            {document.required ? "" : " — optional"}
-            {c.documents[document.key] && " ✓ attached"}
-          </label>
-          <input
+          <AttachFiles
+            session={session}
             id={`file-${document.key}`}
-            type="file"
-            disabled={act.pending}
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) {
-                void act.run(() => session.upload(document.key, file, c.seq));
-              }
-            }}
+            fileKey={document.key}
+            label={
+              <>
+                {document.label} <code>({document.key})</code>
+                {document.required ? "" : " — optional"}
+              </>
+            }
+          />
+          <FileList
+            session={session}
+            files={c.files.filter((file) => file.key === document.key)}
           />
         </div>
       ))}
+      <AttachFiles
+        session={session}
+        id="file-evidence"
+        label="Anything else that supports it: letters, records, photos"
+      />
+      <FileList
+        session={session}
+        files={c.files.filter((file) => !file.key && !file.followUp)}
+      />
       <Refusal error={act.error} />
     </div>
+  );
+}
+
+/**
+ * Uploads the chosen files, one after another, and attaches each: as the
+ * pack's document `fileKey`, or without one as other evidence.
+ */
+function AttachFiles({
+  session,
+  id,
+  label,
+  fileKey,
+}: {
+  session: CaseSession;
+  id: string;
+  label: ReactNode;
+  fileKey?: string;
+}) {
+  const c = session.c!;
+  const act = useAct();
+  return (
+    <div className="space-y-1">
+      <label className="demo-label" htmlFor={id}>
+        {label}
+      </label>
+      <input
+        id={id}
+        type="file"
+        multiple
+        disabled={act.pending}
+        onChange={(event) => {
+          const input = event.currentTarget;
+          const files = [...(input.files ?? [])];
+          void act
+            .run(async () => {
+              for (const file of files) {
+                await session.upload(file, c.seq, fileKey);
+              }
+            })
+            .then(() => {
+              input.value = "";
+            });
+        }}
+      />
+      <Refusal error={act.error} />
+    </div>
+  );
+}
+
+/** Attached files: a link to each, what reading it found, and what it is. */
+function FileList({
+  session,
+  files,
+}: {
+  session: CaseSession;
+  files: CaseView["files"];
+}) {
+  const c = session.c!;
+  const act = useAct();
+  const asked = definitionOf(c.processPack)?.documents ?? [];
+  // A case's own files until it's approved; a follow-up once it's done.
+  const open = c.status === "done" || c.approval === undefined;
+  if (!files.length) return null;
+  return (
+    <ul className="space-y-2 text-sm">
+      {files.map((file) => (
+        <li key={file.storageId} className="space-y-1 rounded-lg border p-2">
+          <p className="flex flex-wrap items-center gap-2">
+            <a
+              className="link-text"
+              href={c.fileUrls[file.storageId]}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {file.name}
+            </a>
+            <span className="text-gray-500">
+              {file.mediaType} · {Math.ceil(file.size / 1024)} KB
+            </span>
+            {file.read.status === "reading" && (
+              <Chip tone="blue">reading…</Chip>
+            )}
+            {open && (
+              <button
+                className="ml-auto text-red-700 underline"
+                disabled={act.pending}
+                onClick={() =>
+                  void act.run(() =>
+                    session.send(
+                      { type: "document.remove", storageId: file.storageId },
+                      c.seq,
+                    ),
+                  )
+                }
+              >
+                Remove
+              </button>
+            )}
+          </p>
+          {file.read.status === "read" && (
+            <p className="text-gray-600">{file.read.summary}</p>
+          )}
+          {file.read.status === "unread" && (
+            <p className="text-gray-500">{file.read.reason}</p>
+          )}
+          {open && !file.followUp && asked.length > 0 && (
+            <select
+              className="input-field"
+              aria-label={`What ${file.name} is`}
+              value={file.key ?? ""}
+              disabled={act.pending}
+              onChange={(event) =>
+                void act.run(() =>
+                  session.send(
+                    {
+                      type: "document.label",
+                      storageId: file.storageId,
+                      key: event.target.value || undefined,
+                    },
+                    c.seq,
+                  ),
+                )
+              }
+            >
+              <option value="">Other evidence</option>
+              {asked.map(({ key, label }) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          )}
+        </li>
+      ))}
+      <Refusal error={act.error} />
+    </ul>
   );
 }
 
@@ -678,6 +829,19 @@ function Ended({ session }: { session: CaseSession }) {
           Take the referral back
         </button>
       )}
+      {c.status === "done" && (
+        <>
+          <AttachFiles
+            session={session}
+            id="file-follow-up"
+            label="What came afterwards: the receipt, or what the authority sent back"
+          />
+          <FileList
+            session={session}
+            files={c.files.filter((file) => file.followUp)}
+          />
+        </>
+      )}
       {withdrawn !== undefined && (
         <p className="text-sm" role="status">
           {withdrawn
@@ -786,6 +950,8 @@ const TEMPLATES: CaseEvent[] = [
   { type: "processPack.reject" },
   { type: "answers.set", key: "fullName", value: "Ada Lovelace" },
   { type: "answers.accept" },
+  { type: "document.label", storageId: "<storage id>" as Id<"_storage"> },
+  { type: "document.remove", storageId: "<storage id>" as Id<"_storage"> },
   { type: "review.approve" },
   { type: "referral.share" },
   { type: "referral.decline" },

@@ -30,6 +30,7 @@ import type * as easygov_case_agents from "../easygov/case/agents.js";
 import type * as easygov_case_answers from "../easygov/case/answers.js";
 import type * as easygov_case_data from "../easygov/case/data.js";
 import type * as easygov_case_events from "../easygov/case/events.js";
+import type * as easygov_case_files from "../easygov/case/files.js";
 import type * as easygov_case_public from "../easygov/case/public.js";
 import type * as easygov_case_state from "../easygov/case/state.js";
 import type * as easygov_case_workflow from "../easygov/case/workflow.js";
@@ -123,6 +124,7 @@ declare const fullApi: ApiFromModules<{
   "easygov/case/answers": typeof easygov_case_answers;
   "easygov/case/data": typeof easygov_case_data;
   "easygov/case/events": typeof easygov_case_events;
+  "easygov/case/files": typeof easygov_case_files;
   "easygov/case/public": typeof easygov_case_public;
   "easygov/case/state": typeof easygov_case_state;
   "easygov/case/workflow": typeof easygov_case_workflow;

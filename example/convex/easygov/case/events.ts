@@ -9,6 +9,7 @@ import { currentFacts, keepAnswer } from "../profile/data";
 import { factOf, READINGS, type FactKey } from "../profile/vocabulary";
 import { answerProblem, today } from "./answers";
 import { draftDefinition, logCaseEvent } from "./data";
+import { attach, label, remove } from "./files";
 import {
   definitionOf,
   draftOf,
@@ -18,6 +19,7 @@ import {
 } from "./schema";
 import {
   answerKind,
+  caseFiles,
   currentChoice,
   deadlineOf,
   fingerprintOf,
@@ -128,18 +130,21 @@ export const EVENTS: {
       };
     },
   },
-  // In review too, like an answer.
+  // From the first message until the document is approved: the letter can
+  // start the case. In review a new file sends the case back around, like
+  // an answer.
   "document.attach": {
+    during: ["goal", "pack", "answers", "approval"],
+    handle: (ctx, c, event) => attach(ctx, c, event),
+  },
+  "document.label": {
     during: ["answers", "approval"],
-    handle: async (ctx, c, { key, storageId }) => {
-      if (!pinnedPack(c)?.documents?.some((document) => document.key === key)) {
-        throw new ConvexError(`"${key}" isn't one of this case's documents.`);
-      }
-      if (!(await ctx.db.system.get("_storage", storageId))) {
-        throw new ConvexError("Upload the file first.");
-      }
-      return { documents: { ...c.documents, [key]: storageId } };
-    },
+    handle: (_ctx, c, { storageId, key }) => label(c, storageId, key),
+  },
+  "document.remove": {
+    during: ["goal", "pack", "answers", "approval"],
+    handle: (ctx, c, { storageId }) =>
+      remove(ctx, c, storageId, { followUp: false }),
   },
   // Approving also settles whether a referral is offered: the pack's check
   // is read once, today, so the offer doesn't come and go with the date.
@@ -192,7 +197,10 @@ async function share(ctx: MutationCtx, c: Case): Promise<Partial<Case>> {
     goal: c.intake!.goal,
     packId: pinned?.id,
     answers: c.answers,
-    documents: c.documents,
+    files: caseFiles(c).map(({ read, ...file }) => ({
+      ...file,
+      ...(read.status === "read" && { summary: read.summary }),
+    })),
     deadline: deadlineOf(c)?.date,
     fingerprint: fingerprintOf(c),
   });

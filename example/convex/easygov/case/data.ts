@@ -21,6 +21,7 @@ import {
   definitionOf,
   draftOf,
   vFilledDocument,
+  type CaseFile,
   type HistoryKind,
 } from "./schema";
 import { intakeAgent, proposalFields, selectionAgent } from "./agents";
@@ -29,6 +30,7 @@ import { rememberedElsewhere } from "../profile/data";
 import { isReading, READINGS } from "../profile/vocabulary";
 import { answerKind, readingConversation } from "./state";
 import {
+  caseFiles,
   currentChoice,
   currentSelection,
   fingerprintOf,
@@ -339,19 +341,7 @@ export const prefillInput = internalQuery({
   handler: async (ctx, { caseId }) => {
     const found = await ctx.db.get("cases", caseId);
     if (!found?.intake) throw new Error("The case has no goal");
-    const pack = pinnedPack(found);
-    const asked = new Map(
-      (pack?.inputQuestions ?? []).map(({ key, question }) => [key, question]),
-    );
-    const questions = (pack?.inputs ?? [])
-      .filter((key) => found.answers[key] === undefined)
-      .map((key) => ({
-        key,
-        // A profile reading is asked for by what it is.
-        question:
-          asked.get(key) ?? (isReading(key) ? READINGS[key].label : key),
-        kind: answerKind(found, key),
-      }));
+    const questions = openQuestions(found);
     const { page } = await listMessages(ctx, components.agent, {
       threadId: found.threadId,
       paginationOpts: { cursor: null, numItems: 50 },
@@ -362,6 +352,12 @@ export const prefillInput = internalQuery({
       .map((message) => message.text!);
     // The goal is the person's too: a proposal only follows a stated one.
     said.push(found.intake.goal);
+    // So is their paperwork: what each attached file states.
+    for (const file of caseFiles(found)) {
+      const line = attachedLine(file);
+      // One attached during intake is already in the conversation.
+      if (line && !said.includes(line)) said.push(line);
+    }
     // So is what they answered on earlier forms: a similar question here
     // may already be answered. Offered back, never filled in.
     for (const { question, answer } of await rememberedElsewhere(ctx, found)) {
@@ -377,6 +373,29 @@ export const prefillInput = internalQuery({
     };
   },
 });
+
+/** The confirmed pack's questions the case has no answer to yet. */
+export function openQuestions(c: Case) {
+  const pack = pinnedPack(c);
+  const asked = new Map(
+    (pack?.inputQuestions ?? []).map(({ key, question }) => [key, question]),
+  );
+  return (pack?.inputs ?? [])
+    .filter((key) => c.answers[key] === undefined)
+    .map((key) => ({
+      key,
+      // A profile reading is asked for by what it is.
+      question: asked.get(key) ?? (isReading(key) ? READINGS[key].label : key),
+      kind: answerKind(c, key),
+    }));
+}
+
+/** What a read file states, as a line of what the person has said. */
+export function attachedLine(file: CaseFile): string | undefined {
+  return file.read.status === "read"
+    ? `I attached "${file.name}". It says: ${file.read.summary}`
+    : undefined;
+}
 
 /** True while the conversation is still to be read for answers. */
 export const needsPrefill = internalQuery({

@@ -42,7 +42,7 @@ describe("agreeing on what to do", () => {
     expect(found).toMatchObject({
       intake: { goal: "Tell the IRS my new address" },
       waitingFor: "pack",
-      processPack: { status: "proposed" },
+      selection: { status: "proposed" },
     });
     expect(await texts(t, caseId)).toEqual([
       ["user", "Hi, I need help with the IRS"],
@@ -75,12 +75,12 @@ describe("agreeing on what to do", () => {
     let found = await send(t, caseId, { type: "processPack.reject" });
     expect(found).toMatchObject({
       waitingFor: "goal",
-      processPack: { status: "rejected", reason: "person" },
+      selection: { status: "rejected", reason: "person" },
     });
     found = await send(t, caseId, { type: "intake.submit", goal: "I moved" });
     expect(found).toMatchObject({
       waitingFor: "pack",
-      processPack: { status: "proposed" },
+      selection: { status: "proposed" },
     });
   });
 
@@ -148,7 +148,7 @@ describe("agreeing on what to do", () => {
     expect(found).toMatchObject({
       status: "active",
       waitingFor: "goal",
-      processPack: { status: "rejected" },
+      selection: { status: "rejected" },
     });
     expect((await texts(t, caseId)).at(-1)).toEqual([
       "assistant",
@@ -175,7 +175,7 @@ describe("agreeing on what to do", () => {
       type: "intake.submit",
       goal: "Should I sue my former employer?",
     });
-    expect(found.processPack).toMatchObject({
+    expect(found.selection).toMatchObject({
       status: "proposed",
       kind: "referral",
     });
@@ -308,10 +308,10 @@ describe("failures", () => {
     await answer(t, caseId, { fullName: address.fullName });
 
     // Break the case under the waiting workflow, so its next look fails.
-    const saved = (await read(t, caseId)).processPack!;
+    const saved = (await read(t, caseId)).selection!;
     await t.run(async (ctx) => {
       await ctx.db.patch("cases", caseId, {
-        processPack: { ...saved, goalVersion: 99 },
+        selection: { ...saved, goalVersion: 99 },
       });
       await nudgeCase(ctx, (await ctx.db.get("cases", caseId))!);
     });
@@ -320,7 +320,7 @@ describe("failures", () => {
 
     // Repair it and retry: the workflow replays from the top, finds the goal
     // and the confirmed pack in place, and waits for the rest of the answers.
-    await t.run((ctx) => ctx.db.patch("cases", caseId, { processPack: saved }));
+    await t.run((ctx) => ctx.db.patch("cases", caseId, { selection: saved }));
     let found = await send(t, caseId, { type: "step.retry" });
     expect(found).toMatchObject({
       waitingFor: "answers",

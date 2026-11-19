@@ -130,7 +130,7 @@ test("a real draft is saved as a case, and joins the draft slice", async () => {
   await t.run(async (ctx) => {
     await ctx.db.patch("cases", caseId, {
       intake: { goal: "Contest my ticket", version: 1 },
-      processPack: {
+      selection: {
         status: "proposed",
         kind: "draft",
         goalVersion: 1,

@@ -1,7 +1,7 @@
 // The profile's store, and how it meets a case.
 //
 // A case's `answers` are always what its document is built from. The ones
-// read from the profile are listed in `fromProfile`: they follow the profile
+// read from the profile are listed in `following`: they follow the profile
 // until the person approves, and an answer the person gives on the case
 // itself stops following. After approval nothing here touches the case, so
 // it keeps what it was built from.
@@ -140,28 +140,28 @@ export async function syncCase(
   const { facts, at } = await currentFacts(ctx, c.userId);
   const now = Date.now();
   const answers = { ...c.answers };
-  const following = new Set(c.fromProfile ?? []);
-  const offers: Record<string, string> = {};
+  const follows = new Set(c.following ?? []);
+  const profileOffers: Record<string, string> = {};
   const read = (key: string): string | undefined =>
     isReading(key) ? READINGS[key].read(facts) : undefined;
 
   for (const key of pack.inputs) {
     if (isReading(key)) {
       // An answer given on the case itself is the case's own.
-      if (answers[key] !== undefined && !following.has(key)) continue;
+      if (answers[key] !== undefined && !follows.has(key)) continue;
       const value = read(key);
       if (value === undefined) {
-        if (following.delete(key)) delete answers[key];
+        if (follows.delete(key)) delete answers[key];
         continue;
       }
       const fact = READINGS[key].fact;
       // An old address is offered back, not filled in: "still right?".
-      if (!following.has(key) && isStale(fact, at[fact] ?? now, now)) {
-        offers[key] = value;
+      if (!follows.has(key) && isStale(fact, at[fact] ?? now, now)) {
+        profileOffers[key] = value;
         continue;
       }
       answers[key] = value;
-      following.add(key);
+      follows.add(key);
       continue;
     }
     if (answers[key] !== undefined) continue;
@@ -178,21 +178,21 @@ export async function syncCase(
           .first()
       : null;
     const offered = (link?.reads && read(link.reads)) || remembered?.value;
-    if (offered) offers[key] = offered;
+    if (offered) profileOffers[key] = offered;
   }
 
-  const fromProfile = [...following].sort();
+  const following = [...follows].sort();
   if (
-    JSON.stringify([answers, fromProfile, offers]) ===
+    JSON.stringify([answers, following, profileOffers]) ===
     JSON.stringify([
       c.answers,
-      [...(c.fromProfile ?? [])].sort(),
-      c.offers ?? {},
+      [...(c.following ?? [])].sort(),
+      c.profileOffers ?? {},
     ])
   ) {
     return;
   }
-  await writeCase(ctx, caseId, { answers, fromProfile, offers });
+  await writeCase(ctx, caseId, { answers, following, profileOffers });
   await nudgeIfMoved(ctx, c);
 }
 

@@ -61,7 +61,7 @@ describe("starting on a pack", () => {
       source: "wage-claim-ca",
       waitingFor: "answers",
       intake: { goal: wageClaim.title },
-      processPack: { status: "confirmed" },
+      selection: { status: "confirmed" },
     });
     expect((await read(t, caseId)).run?.state).toBe("running");
   });
@@ -78,7 +78,7 @@ describe("starting on a pack", () => {
     const caseId = await t.mutation(api.easygov.case.public.startCase, {
       packId: first,
     });
-    expect(definitionOf((await read(t, caseId)).processPack)?.id).toBe(second);
+    expect(definitionOf((await read(t, caseId)).selection)?.id).toBe(second);
 
     const mine = await savePack(
       t,

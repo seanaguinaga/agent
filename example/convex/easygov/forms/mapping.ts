@@ -18,7 +18,7 @@ export function mappingInputs(mapping: Mapping): string[] {
 }
 
 /** The options ticked in a "check all that apply" answer. */
-export const chosen = (answer: string | undefined) =>
+export const ticked = (answer: string | undefined) =>
   (answer ?? "")
     .split(",")
     .map((part) => part.trim())
@@ -49,7 +49,7 @@ export function resolveMapping(
       if (constant !== undefined) values[target] = true;
       else if (!input) continue;
       else if (includes !== undefined) {
-        values[target] = chosen(answers[input]).includes(includes);
+        values[target] = ticked(answers[input]).includes(includes);
       } else if (equals !== undefined) {
         values[target] = answers[input] === equals;
       }
@@ -114,7 +114,7 @@ export function mappingQuestions(
 
 /**
  * Checks an answer against a question's choices, and tidies it: for "check
- * all that apply", the chosen values in the choices' order. Says what's
+ * all that apply", the ticked values in the choices' order. Says what's
  * wrong in words for the person.
  */
 export function checkChoice(
@@ -126,7 +126,7 @@ export function checkChoice(
   const allowed = choices.map((choice) => choice.value);
   const problem = `Choose ${multiple ? "any of" : "one of"}: ${allowed.join(", ")}.`;
   if (!multiple) return allowed.includes(value) ? { value } : { problem };
-  const picked = chosen(value);
+  const picked = ticked(value);
   if (picked.some((part) => !allowed.includes(part))) return { problem };
   return {
     value: allowed.filter((option) => picked.includes(option)).join(","),

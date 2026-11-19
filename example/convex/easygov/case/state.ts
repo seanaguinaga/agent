@@ -16,10 +16,10 @@ export type Case = Doc<"cases">;
 
 /** The goal, unless the selection made for it was rejected. */
 export function standingGoal(c: Case): string | undefined {
-  const { intake, processPack } = c;
+  const { intake, selection } = c;
   const rejected =
-    processPack?.status === "rejected" &&
-    processPack.goalVersion === intake?.version;
+    selection?.status === "rejected" &&
+    selection.goalVersion === intake?.version;
   return rejected ? undefined : intake?.goal;
 }
 
@@ -33,7 +33,7 @@ export function newGoal(c: Case, goal: string): Case["intake"] {
 
 /** The selection made for the current goal. One for an earlier goal is none. */
 export function currentSelection(c: Case) {
-  const selection = c.processPack;
+  const selection = c.selection;
   return selection?.goalVersion === c.intake?.version ? selection : undefined;
 }
 
@@ -59,16 +59,14 @@ export function pinnedPack(c: Case) {
 }
 
 /** What was read from the conversation for the current goal, if started. */
-function currentSuggested(c: Case) {
-  return c.suggested?.goalVersion === c.intake?.version
-    ? c.suggested
-    : undefined;
+function currentPrefill(c: Case) {
+  return c.prefill?.goalVersion === c.intake?.version ? c.prefill : undefined;
 }
 
 /** True while the conversation is being read for answers. */
 export function readingConversation(c: Case): boolean {
-  const suggested = currentSuggested(c);
-  return !!suggested && suggested.answers === undefined;
+  const prefill = currentPrefill(c);
+  return !!prefill && prefill.answers === undefined;
 }
 
 /**
@@ -78,7 +76,7 @@ export function readingConversation(c: Case): boolean {
 export function suggestions(c: Case): Record<string, string> {
   // What the person said just now outranks what the profile remembers, and
   // what their own paperwork states outranks both.
-  const found = { ...c.offers, ...currentSuggested(c)?.answers };
+  const found = { ...c.profileOffers, ...currentPrefill(c)?.answers };
   for (const { read } of caseFiles(c)) {
     if (read.status === "read") Object.assign(found, read.answers);
   }
@@ -91,7 +89,7 @@ export function suggestions(c: Case): Record<string, string> {
 
 /** The confirmed pack's inputs the case has no answer for yet. */
 export function missing(c: Case): string[] {
-  return missingInputs(requiredInputs(c) ?? [], c.answers, c.fromProfile);
+  return missingInputs(requiredInputs(c) ?? [], c.answers, c.following);
 }
 
 /**

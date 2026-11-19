@@ -191,7 +191,7 @@ export const caseFields = {
   /**
    * What the person wants done, in one sentence. `version` goes up each time
    * a goal is set, even to the same words, so a selection made for an earlier
-   * goal (see `processPack.goalVersion`) is out of date on its own.
+   * goal (see `selection.goalVersion`) is out of date on its own.
    */
   intake: v.optional(v.object({ goal: v.string(), version: v.number() })),
 
@@ -199,7 +199,7 @@ export const caseFields = {
    * What was chosen for a goal, by `status` and `kind`. A rejection holds
    * only the goal it was for and who turned it down.
    */
-  processPack: v.optional(vSelection),
+  selection: v.optional(vSelection),
 
   /** The person's answers, by input key. */
   answers: v.record(v.string(), v.string()),
@@ -207,13 +207,13 @@ export const caseFields = {
    * The answers that were read from the person's profile and still follow
    * it. An answer given on the case itself isn't listed, and stays as given.
    */
-  fromProfile: v.optional(v.array(v.string())),
+  following: v.optional(v.array(v.string())),
   /**
    * Answers offered from the profile for the person to accept, by input key:
    * a fact old enough to check ("still at this address?"), or what they
    * answered the last time this pack asked.
    */
-  offers: v.optional(v.record(v.string(), v.string())),
+  profileOffers: v.optional(v.record(v.string(), v.string())),
   /**
    * Answers found in what the person already said, for them to confirm.
    * They aren't answers until the person accepts them. `goalVersion` is the
@@ -224,7 +224,7 @@ export const caseFields = {
    * Set when a proposal is confirmed. A case started on a landing page has
    * said nothing, so it has none.
    */
-  suggested: v.optional(
+  prefill: v.optional(
     v.object({
       goalVersion: v.number(),
       answers: v.optional(v.record(v.string(), v.string())),

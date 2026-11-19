@@ -34,7 +34,7 @@ function confirmed(extra: Partial<Case> = {}): Case {
   return {
     ...base,
     intake: { goal: "Do it", version: 1 },
-    processPack: {
+    selection: {
       status: "confirmed",
       kind: "pack",
       goalVersion: 1,
@@ -48,20 +48,20 @@ describe("waitingFor", () => {
   test("a goal, until one stands", () => {
     expect(waitingFor(base)).toBe("goal");
     const rejected = confirmed({
-      processPack: { status: "rejected", goalVersion: 1, reason: "person" },
+      selection: { status: "rejected", goalVersion: 1, reason: "person" },
     });
     expect(waitingFor(rejected)).toBe("goal");
   });
 
   test("the pack, while one is proposed for the current goal", () => {
     const proposed = confirmed({
-      processPack: { ...pack, status: "proposed" },
+      selection: { ...pack, status: "proposed" },
     });
     expect(waitingFor(proposed)).toBe("pack");
     // Made for an earlier goal: nothing to decide yet; a proposal is coming.
     const stale = confirmed({
       intake: { goal: "Something else", version: 2 },
-      processPack: { ...pack, status: "proposed" },
+      selection: { ...pack, status: "proposed" },
     });
     expect(waitingFor(stale)).toBeNull();
   });
@@ -89,7 +89,7 @@ describe("waitingFor", () => {
     const answers = { a: "1", b: "2" };
     const needsFile = confirmed({
       answers,
-      processPack: {
+      selection: {
         status: "confirmed",
         kind: "pack",
         goalVersion: 1,
@@ -128,7 +128,7 @@ describe("waitingFor", () => {
   test("consent, while a referral is offered", () => {
     const offered = { kind: "advice", status: "offered" } as const;
     const advice = confirmed({
-      processPack: { status: "confirmed", kind: "referral", goalVersion: 1 },
+      selection: { status: "confirmed", kind: "referral", goalVersion: 1 },
     });
     expect(waitingFor({ ...advice, referral: offered })).toBe("consent");
     expect(
@@ -161,9 +161,9 @@ describe("phase", () => {
   const each: [(typeof PHASES)[number], Case][] = [
     ["intake", base],
     ["proposing", { ...base, intake: { goal: "Do it", version: 1 } }],
-    ["pack", confirmed({ processPack: { ...pack, status: "proposed" } })],
-    ["reading", confirmed({ suggested: { goalVersion: 1 } })],
-    ["answers", confirmed({ suggested: { goalVersion: 1, answers: {} } })],
+    ["pack", confirmed({ selection: { ...pack, status: "proposed" } })],
+    ["reading", confirmed({ prefill: { goalVersion: 1 } })],
+    ["answers", confirmed({ prefill: { goalVersion: 1, answers: {} } })],
     ["filling", confirmed({ answers })],
     ["approval", confirmed({ answers, artifact })],
     ["consent", confirmed({ answers, artifact, approval, referral: offered })],
@@ -187,7 +187,7 @@ describe("phase", () => {
 
   test("goes back: a rejected pack to intake, a changed answer to filling", () => {
     const rejected = confirmed({
-      processPack: { status: "rejected", goalVersion: 1, reason: "person" },
+      selection: { status: "rejected", goalVersion: 1, reason: "person" },
     });
     expect(phase(rejected)).toBe("intake");
     const edited = confirmed({ answers: { ...answers, b: "3" }, artifact });

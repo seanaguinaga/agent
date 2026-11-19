@@ -281,7 +281,7 @@ describe("saving packs", () => {
     const pinned = await send(t, caseId, { type: "review.approve" });
     expect(pinned).toMatchObject({
       status: "done",
-      processPack: { definition: { id: v1.id, inputs: ["expirationDate"] } },
+      selection: { definition: { id: v1.id, inputs: ["expirationDate"] } },
     });
   });
 
@@ -313,7 +313,7 @@ describe("selecting a pack for a case", () => {
       type: "intake.submit",
       goal: "Extend my California driving permit.",
     });
-    expect(proposed.processPack).toMatchObject({
+    expect(proposed.selection).toMatchObject({
       status: "proposed",
       definition: { id: saved.id },
     });
@@ -321,7 +321,7 @@ describe("selecting a pack for a case", () => {
     await answer(t, caseId, { expirationDate: "2027-01-09" });
     expect(await send(t, caseId, { type: "review.approve" })).toMatchObject({
       status: "done",
-      processPack: { status: "confirmed", definition: { id: saved.id } },
+      selection: { status: "confirmed", definition: { id: saved.id } },
     });
   });
 
@@ -342,7 +342,7 @@ describe("selecting a pack for a case", () => {
     const proposed = await chat(t, caseId, goal);
     // Only the question the letter reads is asked.
     const asked = [recipe.inputQuestions[0]];
-    expect(proposed.processPack).toMatchObject({
+    expect(proposed.selection).toMatchObject({
       status: "proposed",
       draft: {
         title: recipe.title,
@@ -365,13 +365,13 @@ describe("selecting a pack for a case", () => {
     const confirmed = await send(t, caseId, { type: "processPack.confirm" });
     expect(confirmed).toMatchObject({
       waitingFor: "answers",
-      processPack: {
+      selection: {
         status: "confirmed",
         definition: { inputs: ["noticeDate"], inputQuestions: asked },
         draft: { title: recipe.title },
       },
     });
-    expect(definitionOf(confirmed.processPack)?.id).toBeUndefined();
+    expect(definitionOf(confirmed.selection)?.id).toBeUndefined();
     const review = await answer(t, caseId, { noticeDate: "2026-11-01" });
     expect(review.artifact?.letter).toBe(
       "I received a notice dated 2026-11-01.",
@@ -390,8 +390,8 @@ describe("selecting a pack for a case", () => {
     await t.finishAllScheduledFunctions(vi.runAllTimers);
     model.replies.push(...drafting);
     const next = await send(t, nextId, { type: "intake.submit", goal });
-    expect(definitionOf(next.processPack)).toBeUndefined();
-    expect(draftOf(next.processPack)?.title).toBe(recipe.title);
+    expect(definitionOf(next.selection)).toBeUndefined();
+    expect(draftOf(next.selection)?.title).toBe(recipe.title);
   });
 
   test("a draft with no letter asks nothing: the checklist goes straight to review", async () => {
@@ -406,12 +406,12 @@ describe("selecting a pack for a case", () => {
       type: "intake.submit",
       goal: "Garnishment notice",
     });
-    expect(draftOf(proposed.processPack)).toMatchObject({
+    expect(draftOf(proposed.selection)).toMatchObject({
       inputs: [],
       inputQuestions: [],
     });
     // No pages found: the checklist carries no sources.
-    expect(draftOf(proposed.processPack)?.output?.sources).toBeUndefined();
+    expect(draftOf(proposed.selection)?.output?.sources).toBeUndefined();
     const review = await send(t, caseId, { type: "processPack.confirm" });
     expect(review.waitingFor).toBe("approval");
     expect(JSON.parse(review.artifact?.summary ?? "{}")).toMatchObject({
@@ -446,7 +446,7 @@ describe("selecting a pack for a case", () => {
       goal: "Renew my California license",
     });
     // The situation question is an input because tailoring reads it.
-    expect(proposed.processPack).toMatchObject({
+    expect(proposed.selection).toMatchObject({
       draft: { inputs: ["method"], output: { tailorBy: ["method"] } },
     });
     // After confirming: nothing found in the conversation, then (once
@@ -510,12 +510,12 @@ describe("selecting a pack for a case", () => {
       type: "intake.submit",
       goal: "Understand a California wage-withholding notice for a credit-card judgment.",
     });
-    expect(found.processPack).toMatchObject({
+    expect(found.selection).toMatchObject({
       status: "proposed",
       definition: { id: saved.id },
     });
-    expect(found.processPack?.status).toBe("proposed");
-    expect(chosen(found.processPack)?.kind).toBe("pack");
+    expect(found.selection?.status).toBe("proposed");
+    expect(chosen(found.selection)?.kind).toBe("pack");
   });
 
   test("a request without a usable jurisdiction asks where", async () => {
@@ -528,7 +528,7 @@ describe("selecting a pack for a case", () => {
     expect(found).toMatchObject({
       waitingFor: "goal",
       // The agent asked where: the person didn't turn anything down.
-      processPack: { status: "rejected", reason: "clarification" },
+      selection: { status: "rejected", reason: "clarification" },
     });
   });
 });

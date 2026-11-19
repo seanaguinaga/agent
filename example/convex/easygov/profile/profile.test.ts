@@ -54,7 +54,7 @@ describe("a profile filled in before the form is known", () => {
     expect(await read(t, caseId)).toMatchObject({
       waitingFor: "answers",
       answers: { fullName: "Ada Lovelace" },
-      fromProfile: ["fullName"],
+      following: ["fullName"],
       profileInputs: { fullName: "name" },
       // "Your old address" starts as today's home address, for a yes.
       suggestions: { oldAddress: "1 Old Road, Oakland, CA 94612" },
@@ -119,7 +119,7 @@ describe("a case and the profile", () => {
     });
     expect(found).toMatchObject({
       answers: { fullName: "A. Lovelace" },
-      fromProfile: [],
+      following: [],
     });
     await save(t, {
       key: "name",
@@ -142,7 +142,7 @@ describe("what a person answers on a form", () => {
       value: "Ada Lovelace",
     });
     // Two words: no doubt which is the given name. The case now follows it.
-    expect(answered.fromProfile).toEqual(["fullName"]);
+    expect(answered.following).toEqual(["fullName"]);
     const next = await startOn(t, packs.ssaAppeal);
     expect((await read(t, next)).answers).toEqual({ fullName: "Ada Lovelace" });
   });
@@ -207,7 +207,7 @@ test("an old address is offered back, not filled in; a yes confirms it", async (
   const accepted = await send(t, caseId, { type: "answers.accept" });
   expect(accepted).toMatchObject({
     answers: { homeCity: "Oakland" },
-    fromProfile: ["fullName", "homeCity"],
+    following: ["fullName", "homeCity"],
   });
   expect(
     (await t.query(profile.get, {})).facts.find((f) => f.key === "homeAddress"),

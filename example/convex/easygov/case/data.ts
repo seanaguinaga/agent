@@ -281,7 +281,7 @@ export const recordProposal = internalMutation({
     // A question for the person sends the case back to intake, like a
     // rejection: the goal as it stands can't be matched.
     await writeCase(ctx, caseId, {
-      processPack:
+      selection:
         needsClarification || !choice
           ? { status: "rejected", goalVersion, reason: "clarification" }
           : { status: "proposed", goalVersion, ...choice },
@@ -429,7 +429,7 @@ export const recordPrefill = internalMutation({
     ) {
       return null;
     }
-    await writeCase(ctx, caseId, { suggested: { goalVersion, answers } });
+    await writeCase(ctx, caseId, { prefill: { goalVersion, answers } });
     const keys = Object.keys(answers);
     if (keys.length) {
       await logCaseEvent(ctx, caseId, "answers.suggested", keys.join(", "));
@@ -449,7 +449,7 @@ export const answersComplete = internalQuery({
     const inputs = found && requiredInputs(found);
     if (!found || !inputs) throw new Error("The case has no confirmed pack");
     const missing =
-      missingInputs(inputs, found.answers, found.fromProfile).length +
+      missingInputs(inputs, found.answers, found.following).length +
       missingDocuments(found).length;
     return missing === 0 ? true : null;
   },

@@ -102,7 +102,7 @@ export function pilot(
     case "pack":
       return { event: { type: "processPack.confirm" } };
     case "answers": {
-      const pack = definitionOf(c.processPack);
+      const pack = definitionOf(c.selection);
       if (!pack) return "stop";
       // What the case offers back, a person would just accept. Not where
       // this run is steering the answer: last time's amount would undo it.

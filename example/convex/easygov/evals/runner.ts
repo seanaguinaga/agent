@@ -468,7 +468,7 @@ export const stepCase = internalAction({
         return await finish({
           checks: { outcome: got === expect, noFailure: !failed },
           detail: `${got}, expected ${expect}`,
-          output: { processPack: c.processPack, run: c.run },
+          output: { selection: c.selection, run: c.run },
         });
       }
       const { pilot: options, expect } = find(cases.pipeline, caseId);
@@ -852,7 +852,7 @@ export const saveDraftCase = mutation({
   returns: v.id("easygovEvalCases"),
   handler: async (ctx, { caseId, name }) => {
     const found = await ctx.db.get("cases", caseId);
-    const selection = chosen(found?.processPack);
+    const selection = chosen(found?.selection);
     if (!found || selection?.kind !== "draft") {
       throw new ConvexError("That case has no draft.");
     }

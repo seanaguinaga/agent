@@ -410,7 +410,7 @@ export type Outcome = "pack" | "draft" | "referral" | "clarification" | "none";
 
 /** What stage 1 came to for a goal. */
 export function outcomeOf(c: CaseView): Outcome {
-  const selection = c.processPack;
+  const selection = c.selection;
   if (!selection || selection.goalVersion !== c.intake?.version) return "none";
   // A proposal the person turned down came to nothing.
   if (selection.status === "rejected") {

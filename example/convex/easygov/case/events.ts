@@ -62,7 +62,7 @@ export const EVENTS: {
   "processPack.reject": {
     during: ["pack"],
     handle: (_ctx, c) => ({
-      processPack: {
+      selection: {
         status: "rejected",
         goalVersion: c.intake!.version,
         reason: "person",
@@ -87,10 +87,10 @@ export const EVENTS: {
       // their next form, unless they say it's only for this one.
       const followsProfile =
         !caseOnly && (await keepAnswer(ctx, c, key, value));
-      const following = (c.fromProfile ?? []).filter((other) => other !== key);
+      const following = (c.following ?? []).filter((other) => other !== key);
       return {
         answers: { ...c.answers, [key]: value },
-        fromProfile: followsProfile ? [...following, key] : following,
+        following: followsProfile ? [...following, key] : following,
       };
     },
   },
@@ -103,7 +103,7 @@ export const EVENTS: {
       if (!Object.keys(offered).length) {
         throw new ConvexError("There's nothing suggested to accept.");
       }
-      const following = new Set(c.fromProfile ?? []);
+      const following = new Set(c.following ?? []);
       const { facts } = await currentFacts(ctx, c.userId);
       const confirmed = new Set<FactKey>();
       for (const [key, value] of Object.entries(offered)) {
@@ -126,7 +126,7 @@ export const EVENTS: {
       }
       return {
         answers: { ...c.answers, ...offered },
-        fromProfile: [...following].sort(),
+        following: [...following].sort(),
       };
     },
   },
@@ -215,25 +215,25 @@ async function share(ctx: MutationCtx, c: Case): Promise<Partial<Case>> {
  * they saw.
  */
 function confirm(c: Case): Partial<Case> {
-  const selection = currentChoice(c)!;
-  const { goalVersion } = selection;
-  const processPack: Selection =
-    selection.kind === "draft"
+  const proposed = currentChoice(c)!;
+  const { goalVersion } = proposed;
+  const selection: Selection =
+    proposed.kind === "draft"
       ? {
-          ...selection,
+          ...proposed,
           status: "confirmed",
-          definition: draftDefinition(selection.draft),
+          definition: draftDefinition(proposed.draft),
         }
-      : { ...selection, status: "confirmed" };
-  const referral = selection.kind === "referral";
+      : { ...proposed, status: "confirmed" };
+  const referral = proposed.kind === "referral";
   return {
-    processPack,
+    selection,
     // Intake is over: a message it never answered isn't pending any more.
     // It's still in the conversation, which is read for answers next.
     pendingMessageId: undefined,
     // A proposal follows a stated goal, so there's a conversation to read
     // for answers before asking for them.
-    suggested: definitionOf(processPack)?.inputs.length
+    prefill: definitionOf(selection)?.inputs.length
       ? { goalVersion }
       : undefined,
     // Legal advice has no pack: the referral is all there is to agree to.

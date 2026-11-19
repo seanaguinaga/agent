@@ -39,8 +39,8 @@ them. `profile/public:askAhead` says what's worth asking now:
 
 ## How it meets a case
 
-A case's `answers` are always what its document is built from. `fromProfile`
-lists the ones read from the profile.
+A case's `answers` are always what its document is built from. `following` lists
+the ones read from the profile.
 
 - **Until approval, the case follows the profile.** Saving a fact re-reads it
   into the person's open cases (`syncCase` in `data.ts`).

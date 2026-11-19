@@ -25,7 +25,7 @@ describe("IRS 8822", () => {
     found = await send(t, caseId, { type: "processPack.confirm" });
     expect(found).toMatchObject({
       waitingFor: "answers",
-      processPack: { status: "confirmed" },
+      selection: { status: "confirmed" },
     });
 
     found = await answer(t, caseId, address);

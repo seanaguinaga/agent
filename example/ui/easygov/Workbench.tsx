@@ -204,7 +204,7 @@ function Sources({ urls }: { urls?: string[] }) {
 
 function Proposal({ session }: { session: CaseSession }) {
   const c = session.c!;
-  const selection = chosen(c.processPack)!;
+  const selection = chosen(c.selection)!;
   const draft = draftOf(selection);
   const saveCase = useMutation(api.easygov.evals.runner.saveDraftCase);
   const [saved, setSaved] = useState(false);
@@ -299,7 +299,7 @@ function AnswerRow({
   const suggested = c.suggestions[name];
   const [value, setValue] = useState(saved || suggested || "");
   const act = useAct();
-  const asked = definitionOf(c.processPack)?.inputQuestions?.find(
+  const asked = definitionOf(c.selection)?.inputQuestions?.find(
     (q) => q.key === name,
   );
   if (asked?.choices) {
@@ -386,7 +386,7 @@ function AnswerRow({
 
 function Answers({ session }: { session: CaseSession }) {
   const c = session.c!;
-  const pack = definitionOf(c.processPack)!;
+  const pack = definitionOf(c.selection)!;
   const questions =
     pack.inputQuestions ?? pack.inputs.map((key) => ({ key, question: key }));
   const act = useAct();
@@ -555,7 +555,7 @@ function FileList({
 }) {
   const c = session.c!;
   const act = useAct();
-  const asked = definitionOf(c.processPack)?.documents ?? [];
+  const asked = definitionOf(c.selection)?.documents ?? [];
   // A case's own files until it's approved; a follow-up once it's done.
   const open = c.status === "done" || c.approval === undefined;
   if (!files.length) return null;
@@ -911,7 +911,7 @@ function Now({
       return (
         <>
           <Review session={session} />
-          {(definitionOf(c.processPack)?.inputs.length ?? 0) > 0 && (
+          {(definitionOf(c.selection)?.inputs.length ?? 0) > 0 && (
             <details className="demo-panel">
               <summary className="cursor-pointer font-medium">
                 Change an answer (sends the case back around)

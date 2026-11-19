@@ -280,7 +280,7 @@ test("a group of boxes is asked as one question, and typing isn't refused for a 
   });
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   const started = await read(t, caseId);
-  expect(started.processPack).toMatchObject({
+  expect(started.selection).toMatchObject({
     definition: {
       inputQuestions: [
         {

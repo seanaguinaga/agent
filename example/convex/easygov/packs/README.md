@@ -65,11 +65,11 @@ found: a checklist, and a letter if the process calls for one. The pages it read
 are kept in `output.sources`. If the search fails, the checklist only says what
 to verify, and has no sources. A draft is one model's unreviewed guess, so it is
 **never saved as a pack**. It runs on the case that asked for it and stays there
-(`processPack.draft`), where it also records what people asked for that no pack
+(`selection.draft`), where it also records what people asked for that no pack
 covers. A person turns a good one into a shared pack with `save`.
 
-1. After intake, read `getCase.processPack.draft` to review the checklist and
-   the questions.
+1. After intake, read `getCase.selection.draft` to review the checklist and the
+   questions.
 2. Send `{ "type": "processPack.confirm" }` with the case's current
    `expectedSeq`, which makes sure you confirm the proposal you read. The case
    pins the draft's inputs; there is no pack id.

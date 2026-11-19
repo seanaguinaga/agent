@@ -20,8 +20,8 @@ type Stage = {
 };
 
 const confirmed = (c: CaseView) =>
-  c.processPack?.status === "confirmed" &&
-  c.processPack.goalVersion === c.intake?.version;
+  c.selection?.status === "confirmed" &&
+  c.selection.goalVersion === c.intake?.version;
 
 const AGREE: Stage = {
   entered: () => true,

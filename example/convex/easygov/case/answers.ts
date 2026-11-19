@@ -20,8 +20,21 @@ export function fingerprint(
   );
 }
 
-export function missingInputs(required: string[], answers: Answers): string[] {
-  return required.filter((key) => !answers[key]);
+/**
+ * The inputs still unanswered. An empty answer is unanswered, unless it was
+ * read from the profile (`following`): there, "" says the person has none,
+ * such as a middle name.
+ */
+export function missingInputs(
+  required: string[],
+  answers: Answers,
+  following: string[] = [],
+): string[] {
+  return required.filter(
+    (key) =>
+      answers[key] === undefined ||
+      (answers[key] === "" && !following.includes(key)),
+  );
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;

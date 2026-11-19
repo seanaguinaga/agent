@@ -19,6 +19,11 @@ export const irs8822: PackDefinition = {
   authority: "Internal Revenue Service",
   forms: ["IRS-8822"],
   inputs: ["fullName", "oldAddress", "newAddress"],
+  // The old address starts as today's home address; the new one becomes it.
+  profile: [
+    { input: "oldAddress", reads: "homeAddressLine" },
+    { input: "newAddress", updates: "homeAddress" },
+  ],
   delivery: "mail",
 };
 

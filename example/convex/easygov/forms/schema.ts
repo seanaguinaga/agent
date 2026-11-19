@@ -1,0 +1,115 @@
+// Official forms, and each edition of them we have fetched.
+import { defineTable } from "convex/server";
+import { v, type Infer } from "convex/values";
+
+/** A place on the form a value can go. See `pdf.ts`. */
+export const vTarget = v.object({
+  id: v.string(),
+  page: v.number(),
+  x: v.number(),
+  y: v.number(),
+  w: v.number(),
+  h: v.number(),
+  kind: v.union(v.literal("text"), v.literal("check")),
+  source: v.union(v.literal("field"), v.literal("region")),
+  field: v.optional(v.string()),
+  /**
+   * For a box the PDF itself groups with others under one field: the value
+   * that turns this one on. Only one box of such a group can be ticked.
+   */
+  option: v.optional(v.string()),
+  label: v.string(),
+  maxLength: v.optional(v.number()),
+});
+
+/** Why a place is left for the person, and what to tell them. */
+export const vLeft = v.object({
+  /**
+   * "signature": theirs to sign and date. "confidential": a value we don't
+   * hold and won't ask for here, such as a Social Security number.
+   */
+  why: v.union(v.literal("signature"), v.literal("confidential")),
+  note: v.string(),
+});
+
+/**
+ * What goes in one target. Exactly one of:
+ * - `input`: an answer, by input key. A profile reading (`fullName`) is read
+ *   from the profile; any other key is a question for the case, asked in
+ *   the words of `question`.
+ *   A tick box also says when it's ticked: `equals` when the answer is this
+ *   option (pick one, or a lone yes/no), `includes` when this option is
+ *   among the answers (check all that apply). Boxes that share an input are
+ *   one question, and each box's option is one of its choices.
+ * - `constant`: the same on every copy, e.g. the box for the kind of return.
+ * - `leave`: left for the person to complete, and why.
+ * A target with no entry is left blank and not mentioned.
+ */
+export const vMappingEntry = v.object({
+  target: v.string(),
+  input: v.optional(v.string()),
+  question: v.optional(v.string()),
+  equals: v.optional(v.string()),
+  includes: v.optional(v.string()),
+  constant: v.optional(v.string()),
+  leave: v.optional(vLeft),
+});
+export const vMapping = v.array(vMappingEntry);
+export type Mapping = Infer<typeof vMapping>;
+
+export default {
+  /** A form we know where to get: a small registry, added to by hand. */
+  forms: defineTable({
+    /** As people write it: "IRS-8822". */
+    code: v.string(),
+    title: v.string(),
+    jurisdiction: v.string(),
+    /** Where the authority publishes it. Fetched from here and nowhere else. */
+    sourceUrl: v.string(),
+  }).index("by_code", ["code"]),
+
+  /**
+   * The bytes of a form as fetched, known by their hash. A form that changes
+   * upstream is a new edition; the old one stays for the cases built on it.
+   */
+  formEditions: defineTable({
+    formId: v.id("forms"),
+    sha256: v.string(),
+    storageId: v.id("_storage"),
+    /** When the source last served these same bytes. */
+    checkedAt: v.number(),
+    /** The revision printed on it, e.g. "Rev. February 2021". */
+    edition: v.optional(v.string()),
+    pages: v.number(),
+    /** False for a flat PDF, whose targets were found on the page. */
+    fillable: v.boolean(),
+    targets: v.array(vTarget),
+    mapping: vMapping,
+    /**
+     * A mapping is drafted by a model and used only once a person has
+     * reviewed it. It's frozen with these bytes: a new edition starts again.
+     */
+    mappingStatus: v.union(
+      v.literal("none"),
+      v.literal("drafted"),
+      v.literal("reviewed"),
+    ),
+    /**
+     * That the source served these bytes says they're published, not that
+     * the authority still accepts them. "confirmed" needs a page that says
+     * so, kept as evidence; until then a filled copy is a draft.
+     */
+    currency: v.union(
+      v.object({ status: v.literal("unconfirmed") }),
+      v.object({
+        status: v.literal("confirmed"),
+        evidenceUrl: v.string(),
+        excerpt: v.string(),
+      }),
+    ),
+  })
+    // Kept beside the index below for its order: newest edition first.
+    // eslint-disable-next-line @convex-dev/no-duplicate-indexes
+    .index("by_formId", ["formId"])
+    .index("by_formId_and_sha256", ["formId", "sha256"]),
+};

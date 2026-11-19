@@ -11,6 +11,7 @@ import {
   type QueryCtx,
 } from "../../_generated/server";
 import { placeholders } from "../case/answers";
+import { isFactKey, isReading } from "../profile/vocabulary";
 import {
   jurisdictionChain,
   normalizeFormId,
@@ -162,9 +163,18 @@ function checkDefinition(raw: Definition): Definition {
     );
   }
   // A question exists because something reads its answer: the letter, the
-  // deadline, the referral check, or the form the pack fills in.
+  // deadline, the referral check, the checklist's tailoring, or the form the
+  // pack fills in.
+  const tailorBy = output?.tailorBy ?? [];
+  const stray = tailorBy.find((key) => !inputs.includes(key));
+  if (stray) {
+    throw new ConvexError(
+      `The checklist is tailored by "${stray}", which isn't an input.`,
+    );
+  }
   const read = new Set([
     ...placeholders(output?.letter ?? ""),
+    ...tailorBy,
     deadline?.fromInput,
     referral?.when?.input,
   ]);
@@ -173,8 +183,21 @@ function checkDefinition(raw: Definition): Definition {
     : inputs.find((key) => !read.has(key));
   if (unread) {
     throw new ConvexError(
-      `Nothing reads "${unread}". Use it in the letter, the deadline or the referral check, or name the form it fills in.`,
+      `Nothing reads "${unread}". Use it in the letter, the deadline, the referral check or the checklist's tailoring, or name the form it fills in.`,
     );
+  }
+  for (const { input, reads, updates } of raw.profile ?? []) {
+    if (!inputs.includes(input) || isReading(input)) {
+      throw new ConvexError(
+        `The profile link for "${input}" needs an input that isn't itself a profile reading.`,
+      );
+    }
+    if (reads !== undefined && !isReading(reads)) {
+      throw new ConvexError(`"${reads}" isn't a profile reading.`);
+    }
+    if (updates !== undefined && !isFactKey(updates)) {
+      throw new ConvexError(`"${updates}" isn't a profile fact.`);
+    }
   }
   const authority = raw.authority?.trim() || undefined;
   return { ...raw, jurisdiction, authority, forms };

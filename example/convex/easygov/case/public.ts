@@ -19,9 +19,17 @@ import {
   processPackDefinition,
   writeCase,
 } from "./data";
+import { currentFacts, syncCase, syncUserCases } from "../profile/data";
+import { FACT_KEYS, factOf } from "../profile/vocabulary";
 import { EVENTS } from "./events";
 import { vCaseEvent, vWaitingFor, type CaseEvent } from "./schema";
-import { deadlineOf, suggestions, waitingFor, type Case } from "./state";
+import {
+  deadlineOf,
+  pinnedPack,
+  suggestions,
+  waitingFor,
+  type Case,
+} from "./state";
 import { nudgeCase, workflow } from "./workflow";
 
 /**
@@ -79,6 +87,8 @@ export const startCase = mutation({
       },
     );
     await writeCase(ctx, caseId, { workflowId });
+    // Started on a pack: what the profile already knows is filled in.
+    await syncCase(ctx, caseId);
     await logCaseEvent(ctx, caseId, "case.started");
     return caseId;
   },
@@ -94,8 +104,16 @@ export const getCase = query({
       v.object({ label: v.string(), date: v.string() }),
       v.null(),
     ),
-    /** Answers found in what the person said, still waiting to be accepted. */
+    /**
+     * Answers on offer, still waiting to be accepted: found in what the
+     * person said, or remembered from their profile.
+     */
     suggestions: v.record(v.string(), v.string()),
+    /**
+     * The profile fact behind each input that reads one, by input key. To
+     * answer such an input, save the fact (`profile/public:save`).
+     */
+    profileInputs: v.record(v.string(), v.string()),
   }),
   handler: async (ctx, { caseId, guestKey }) => {
     const found = await authorizeCase(ctx, caseId, guestKey);
@@ -104,6 +122,12 @@ export const getCase = query({
       waitingFor: waitingFor(found),
       deadline: deadlineOf(found) ?? null,
       suggestions: suggestions(found),
+      profileInputs: Object.fromEntries(
+        (pinnedPack(found)?.inputs ?? []).flatMap((key) => {
+          const fact = factOf(key);
+          return fact ? [[key, fact]] : [];
+        }),
+      ),
     };
   },
 });
@@ -118,7 +142,17 @@ export const claimCase = mutation({
   handler: async (ctx, { caseId, guestKey }) => {
     const userId = await requireUser(ctx);
     await authorizeCase(ctx, caseId, guestKey);
+    // What the guest told us comes along, where the account has nothing.
+    const guest = await currentFacts(ctx, await caller(ctx, guestKey));
+    const own = await currentFacts(ctx, userId);
+    for (const key of FACT_KEYS) {
+      const value = guest.facts[key];
+      if (value !== undefined && own.facts[key] === undefined) {
+        await ctx.db.insert("profileFacts", { userId, key, value });
+      }
+    }
     await writeCase(ctx, caseId, { userId });
+    await syncCase(ctx, caseId);
     await logCaseEvent(ctx, caseId, "case.claimed");
     return null;
   },
@@ -209,9 +243,16 @@ export const sendMessage = mutation({
   },
 });
 
+/** Events that only add what the person gave: taken on a stale view. */
+const DATA_ENTRY = new Set<CaseEvent["type"]>([
+  "answers.set",
+  "document.attach",
+]);
+
 /**
  * Sends an event to a case. `expectedSeq` is the `seq` the sender last saw,
- * so an event based on a stale view of the case is refused.
+ * so a decision based on a stale view of the case is refused. An answer or
+ * a file is taken either way.
  */
 export const send = mutation({
   args: {
@@ -223,7 +264,10 @@ export const send = mutation({
   returns: v.null(),
   handler: async (ctx, { caseId, event, expectedSeq, guestKey }) => {
     const found = await authorizeCase(ctx, caseId, guestKey);
-    if (found.seq !== expectedSeq) {
+    // The guard is for decisions: nobody should approve or confirm what
+    // changed while they weren't looking. Typing an answer or attaching a
+    // file isn't one: it writes its own key, whatever else moved.
+    if (found.seq !== expectedSeq && !DATA_ENTRY.has(event.type)) {
       throw new ConvexError("The case has changed. Reload and try again.");
     }
     if (found.status !== "active") {
@@ -265,6 +309,13 @@ async function personEvent(
     throw new ConvexError(`"${event.type}" isn't expected right now.`);
   }
   await writeCase(ctx, c._id, await handle(ctx, c, event));
+  // An answer may have gone to the profile, which the person's other open
+  // cases read too. Any other event may have changed what this one reads.
+  if (event.type === "answers.set" || event.type === "answers.accept") {
+    await syncUserCases(ctx, c.userId);
+  } else {
+    await syncCase(ctx, c._id);
+  }
   await nudgeCase(ctx, c);
   return null;
 }
@@ -292,7 +343,7 @@ async function cancel(ctx: MutationCtx, c: Case): Promise<null> {
 
 // --- Who may touch a case ---------------------------------------------------
 
-async function requireUser(ctx: QueryCtx): Promise<string> {
+export async function requireUser(ctx: QueryCtx): Promise<string> {
   const userId = await getAuthUserId(ctx);
   if (!userId) throw new ConvexError("Sign in first.");
   return userId;
@@ -302,7 +353,10 @@ async function requireUser(ctx: QueryCtx): Promise<string> {
 const MIN_GUEST_KEY = 32;
 
 /** Who is calling: the guest with this key, or the signed-in user. */
-async function caller(ctx: QueryCtx, guestKey?: string): Promise<string> {
+export async function caller(
+  ctx: QueryCtx,
+  guestKey?: string,
+): Promise<string> {
   if (guestKey === undefined) return await requireUser(ctx);
   if (guestKey.length < MIN_GUEST_KEY) {
     throw new ConvexError("The guest key is too short.");

@@ -424,6 +424,73 @@ describe("selecting a pack for a case", () => {
     });
   });
 
+  test("a draft asks about the person's situation, and their checklist is cut to it", async () => {
+    const { t, caseId } = await start();
+    const steps = [
+      "Check your renewal notice.",
+      "To renew online, sign in and pay.",
+      "To renew by mail, follow the notice.",
+    ];
+    model.replies.push(
+      request({ jurisdiction: "us/ca", searchTerms: "license renewal" }),
+      notes,
+      JSON.stringify({
+        ...recipe,
+        inputQuestions: [],
+        situationQuestions: [
+          { key: "method", question: "How do you want to renew?" },
+        ],
+        output: { title: "Renewal", checklist: steps },
+      }),
+    );
+    const proposed = await send(t, caseId, {
+      type: "intake.submit",
+      goal: "Renew my California license",
+    });
+    // The situation question is an input because tailoring reads it.
+    expect(proposed.processPack).toMatchObject({
+      draft: { inputs: ["method"], output: { tailorBy: ["method"] } },
+    });
+    // After confirming: nothing found in the conversation, then (once
+    // answered) the model keeps steps 1 and 2, and a step that isn't there.
+    model.replies.push(
+      JSON.stringify({ answers: [] }),
+      JSON.stringify({ keep: [2, 1, 9] }),
+    );
+    await send(t, caseId, { type: "processPack.confirm" });
+    const review = await answer(t, caseId, { method: "online" });
+    expect(review).toMatchObject({
+      waitingFor: "approval",
+      artifact: { checklist: [steps[0], steps[1]] },
+    });
+    // Changing the answer cuts it again; a model that fails keeps every step.
+    model.failing = true;
+    const again = await answer(t, caseId, { method: "by mail" });
+    expect(again.artifact?.checklist).toEqual(steps);
+    model.failing = false;
+    expect(await send(t, caseId, { type: "review.approve" })).toMatchObject({
+      status: "done",
+    });
+  });
+
+  test("a pack can't be tailored by something it doesn't ask", async () => {
+    const { t } = await start();
+    await expect(
+      t.mutation(processPacks.save, {
+        ...renewal,
+        output: { ...renewal.output, tailorBy: ["method"] },
+      }),
+    ).rejects.toThrow(/tailored by "method"/);
+    // Tailoring is a reader: an input it uses needs no letter or form.
+    expect(
+      await t.mutation(processPacks.save, {
+        ...renewal,
+        inputs: ["expirationDate", "method"],
+        output: { ...renewal.output, tailorBy: ["method"] },
+      }),
+    ).toMatchObject({ kind: "created" });
+  });
+
   test("a borderline referral still reuses a saved pack for the same task (live replay)", async () => {
     const { t, caseId } = await start();
     const ownerId = await owner(t, caseId);

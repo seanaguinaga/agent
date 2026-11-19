@@ -18,6 +18,9 @@ const ABOUT: Record<Slice, string> = {
   draft: "Frozen notes in; a checklist and letter out. Model + judge.",
   prefill:
     "What a person said and a form's questions; only stated answers. Model.",
+  tailor: "A checklist and a situation; only the steps that apply. Model.",
+  address: "An address as one line; its parts, with nothing made up. Model.",
+  mapping: "A form's places and their printed words; what goes in each. Model.",
   search: "The pack library's search. No model, one trial.",
   outcome: "Stage 1 on a real case: pack, draft, referral or question.",
   pipeline: "A whole case, played by the autopilot to the end.",

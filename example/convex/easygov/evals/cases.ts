@@ -2,14 +2,18 @@
 // reviewed like any other change; results live in the tables.
 //
 // A slice is one model call run on its own with fixed inputs ("intake",
-// "request", "choose", "research", "draft", "prefill"), the pack search with no model
+// "request", "choose", "research", "draft", "prefill", "tailor", "address"), the pack search with no model
 // ("search"), stage 1 end to end ("outcome"), or a whole case ("pipeline").
 import type { PilotOptions } from "../autopilot";
 import type { Candidate, Question, Subject } from "../case/agents";
+import type { TargetBrief } from "../forms/agents";
 import type {
+  AddressExpectation,
   Outcome,
   PipelineExpectation,
   PrefillExpectation,
+  TargetExpectation,
+  TailorExpectation,
   RequestExpectation,
 } from "./grading";
 
@@ -254,9 +258,13 @@ export const draft: {
   maxQuestions?: number;
   /** Patterns a question must match: what the letter can't do without. */
   asks?: string[];
+  /** Whether it should ask about the person's situation, to cut steps by. */
+  tailors?: boolean;
+  /** Who the person is and how to reach them come from the profile's keys. */
+  usesProfile?: boolean;
 }[] = [
   {
-    // Nothing to send: a checklist, and nothing to ask.
+    // Nothing to send. Three routes, so it asks which is the person's.
     id: "dmv renewal: checklist only",
     subject: {
       process: "driver's license renewal",
@@ -266,7 +274,8 @@ export const draft: {
     },
     notes: DMV_NOTES,
     letter: false,
-    maxQuestions: 0,
+    maxQuestions: 3,
+    tailors: true,
   },
   {
     // The person writes to the city: a letter, and only what it needs.
@@ -279,12 +288,15 @@ export const draft: {
     },
     notes: OAKLAND_NOTES,
     letter: true,
-    // Name, address, phone, citation number, its date, and the reason.
-    maxQuestions: 6,
+    // Name, address, phone, citation number, its date and the reason, plus
+    // up to three about where they are in the process.
+    maxQuestions: 9,
     asks: ["citation", "reason|why|explain"],
+    usesProfile: true,
   },
   {
     // The search failed: it may say what to verify, and state no facts.
+    // With no knowing what the authority wants, no letter and no questions.
     id: "no research: invents nothing",
     subject: {
       process: "contest a parking citation",
@@ -293,6 +305,9 @@ export const draft: {
       forms: [],
     },
     notes: "",
+    letter: false,
+    tailors: false,
+    maxQuestions: 0,
   },
 ];
 
@@ -402,6 +417,261 @@ export const prefill: ({
     ],
     has: {},
     absent: ["fullName", "oldAddress", "newAddress"],
+  },
+];
+
+// --- Tailor: a checklist and a situation in; the steps that apply out -------
+
+const DMV_STEPS = [
+  "Check your renewal notice to see which ways of renewing are open to you.",
+  "To renew online, sign in to your MyDMV account, complete the renewal and pay the $46 fee.",
+  "To renew by mail, follow the instructions on your renewal notice and allow about 4 weeks.",
+  "To renew in person, bring your renewal notice to a DMV office, give a thumbprint, pass a vision exam and have your photo taken.",
+  "If you are 70 or older, you must renew in person.",
+  "Wait for the new card to arrive by mail.",
+];
+const OAKLAND_STEPS = [
+  "Challenge the ticket within 21 days of its issue date.",
+  "Send the Contest Form or a letter with the original ticket to the Parking and Mobility Assistance Center.",
+  "Wait for the city's decision letter.",
+  "If the ticket was upheld, request an Administrative Hearing within 21 days of the decision letter.",
+  "Before the hearing, pay the fine as a deposit, which is refunded if you win.",
+];
+
+export const tailor: ({
+  id: string;
+  checklist: string[];
+  situation: { question: string; answer: string }[];
+} & TailorExpectation)[] = [
+  {
+    id: "one route of three",
+    checklist: DMV_STEPS,
+    situation: [
+      { question: "How do you want to renew?", answer: "online" },
+      { question: "Are you 70 or older?", answer: "no" },
+    ],
+    keep: [1, 2, 6],
+    drop: [3, 4, 5],
+  },
+  {
+    id: "an answer that forces a route",
+    checklist: DMV_STEPS,
+    situation: [{ question: "Are you 70 or older?", answer: "yes" }],
+    keep: [4, 5, 6],
+    drop: [2, 3],
+  },
+  {
+    id: "a later stage not reached yet",
+    checklist: OAKLAND_STEPS,
+    situation: [
+      { question: "Has the city already upheld your ticket?", answer: "no" },
+    ],
+    // The hearing may still come: its steps aren't ruled out, only later.
+    keep: [1, 2, 3],
+    drop: [],
+  },
+  {
+    id: "already at the later stage",
+    checklist: OAKLAND_STEPS,
+    situation: [
+      { question: "Has the city already upheld your ticket?", answer: "yes" },
+    ],
+    keep: [4, 5],
+    drop: [1, 2],
+  },
+  {
+    id: "an answer that says nothing",
+    checklist: DMV_STEPS,
+    situation: [{ question: "How do you want to renew?", answer: "not sure" }],
+    keep: [1, 2, 3, 4, 6],
+    drop: [],
+  },
+];
+
+// --- Address: one line of text in; its parts out ----------------------------
+//
+// Only what's written. A ZIP it wasn't given must stay empty: a made-up one
+// would go on an envelope.
+
+export const address: ({ id: string; text: string } & AddressExpectation)[] = [
+  {
+    id: "the usual shape",
+    text: "2 New Street, Berkeley, CA 94704",
+    parts: {
+      street: "2 New Street",
+      city: "Berkeley",
+      state: "CA",
+      postalCode: "94704",
+      country: "US",
+    },
+    blank: ["unitNumber", "careOf"],
+  },
+  {
+    id: "a unit, and the state spelled out",
+    text: "1600 Shattuck Avenue Apt 4B Berkeley California 94709-1234",
+    parts: {
+      street: "1600 Shattuck Avenue",
+      unitNumber: "4B",
+      city: "Berkeley",
+      state: "CA",
+      postalCode: "94709-1234",
+    },
+  },
+  {
+    id: "no ZIP given",
+    text: "270 Frank H. Ogawa Plaza, Oakland, CA",
+    parts: { street: "270 Frank H. Ogawa Plaza", city: "Oakland", state: "CA" },
+    blank: ["postalCode"],
+  },
+  {
+    id: "care of someone",
+    text: "c/o Grace Hopper, 9 Elm St, Arlington, VA 22201",
+    parts: {
+      careOf: "Grace Hopper",
+      street: "9 Elm St",
+      city: "Arlington",
+      state: "VA",
+      postalCode: "22201",
+    },
+  },
+  {
+    id: "not an address",
+    text: "I moved last month and need to tell the IRS.",
+    parts: null,
+  },
+];
+
+// --- Mapping: a form's places in; what goes in each out ---------------------
+//
+// The labels are the words printed on the real forms. A mapping is reviewed
+// by a person before it fills anything; this measures how good the draft is.
+
+export const mapping: {
+  id: string;
+  title: string;
+  targets: TargetBrief[];
+  expect: Record<string, TargetExpectation>;
+}[] = [
+  {
+    id: "irs 8822: whole lines, and other people's boxes",
+    title: "IRS-8822 Change of Address",
+    targets: [
+      {
+        id: "t1",
+        kind: "text",
+        label: "3a Your name (first name, initial, and last name)",
+      },
+      { id: "t2", kind: "text", label: "3b Your social security number" },
+      {
+        id: "t3",
+        kind: "text",
+        label: "4a Spouse’s name (first name, initial, and last name)",
+      },
+      { id: "t4", kind: "text", label: "4b Spouse’s social security number" },
+      {
+        id: "t5",
+        kind: "text",
+        label:
+          "6a Your old address (no., street, apt. no., city or town, state, and ZIP code). If a P.O. box, see instructions.",
+      },
+      {
+        id: "t6",
+        kind: "text",
+        label:
+          "6b Spouse’s old address, if different from line 6a (no., street, apt. no., city or town, state, and ZIP code).",
+      },
+      {
+        id: "t7",
+        kind: "text",
+        label:
+          "7 New address (no., street, apt. no., city or town, state, and ZIP code). If a P.O. box, see instructions.",
+      },
+      {
+        id: "t8",
+        kind: "text",
+        label: "Daytime telephone number of person to contact (optional)",
+      },
+      { id: "t9", kind: "text", label: "Your signature" },
+      {
+        id: "t11",
+        kind: "check",
+        label:
+          "Check all boxes this change affects: 1 Individual income tax returns (Forms 1040, 1040-SR, 1040-NR, etc.)",
+      },
+      {
+        id: "t12",
+        kind: "check",
+        label:
+          "2 Gift, estate, or generation-skipping transfer tax returns (Forms 706, 709, etc.)",
+      },
+      {
+        id: "t10",
+        kind: "text",
+        label:
+          "Signature of representative, executor, administrator/if applicable Date",
+      },
+    ],
+    expect: {
+      t1: { readings: ["fullName"] },
+      t2: { left: true },
+      t3: { notProfile: true },
+      t4: { left: true },
+      t5: { readings: ["homeAddressLine", "mailingAddressLine"] },
+      t6: { notProfile: true },
+      t7: { caseInput: true },
+      // t8, "person to contact", may or may not be the filer: a reviewer's
+      // call, so the draft isn't graded on it.
+      t9: { left: true },
+      t10: { left: true },
+      // "Check all boxes": one question, two choices, several may apply.
+      t11: { group: "returns", many: true },
+      t12: { group: "returns", many: true },
+    },
+  },
+  {
+    id: "a form cut into boxes",
+    title: "Request for a certified copy",
+    targets: [
+      { id: "t1", kind: "text", label: "Applicant's first name" },
+      { id: "t2", kind: "text", label: "M.I." },
+      { id: "t3", kind: "text", label: "Last name" },
+      { id: "t4", kind: "text", label: "Mailing address: number and street" },
+      { id: "t5", kind: "text", label: "Apt. or unit no." },
+      { id: "t6", kind: "text", label: "City" },
+      { id: "t7", kind: "text", label: "State" },
+      { id: "t8", kind: "text", label: "ZIP code" },
+      { id: "t9", kind: "text", label: "Email address" },
+      { id: "t10", kind: "text", label: "Date of birth" },
+      { id: "t11", kind: "text", label: "Number of copies requested" },
+      { id: "t12", kind: "text", label: "For office use only: receipt no." },
+      { id: "t13", kind: "check", label: "Type of copy: Certified" },
+      { id: "t14", kind: "check", label: "Informational" },
+      {
+        id: "t15",
+        kind: "check",
+        label: "I am the person named on the record",
+      },
+    ],
+    expect: {
+      t1: { readings: ["givenName"] },
+      // An initial, never a whole middle name.
+      t2: { readings: ["middleInitial"] },
+      t3: { readings: ["familyName"] },
+      t4: { readings: ["mailingStreetOnly", "mailingStreet"] },
+      t5: { readings: ["mailingUnit"] },
+      t6: { readings: ["mailingCity"] },
+      t7: { readings: ["mailingState"] },
+      t8: { readings: ["mailingZip"] },
+      t9: { readings: ["email"] },
+      t10: { readings: ["birthDate"] },
+      t11: { caseInput: true },
+      t12: { notProfile: true },
+      // Alternatives: one question, pick one.
+      t13: { group: "copyType", many: false },
+      t14: { group: "copyType", many: false },
+      // A box on its own: a yes or no.
+      t15: { caseInput: true },
+    },
   },
 ];
 

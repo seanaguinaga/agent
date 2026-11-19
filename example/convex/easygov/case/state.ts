@@ -67,13 +67,18 @@ export function readingConversation(c: Case): boolean {
  * and only where the person hasn't answered yet.
  */
 export function suggestions(c: Case): Record<string, string> {
-  const found = currentSuggested(c)?.answers;
-  if (!found) return {};
+  // What the person said just now outranks what the profile remembers.
+  const found = { ...c.offers, ...currentSuggested(c)?.answers };
   return Object.fromEntries(
-    (requiredInputs(c) ?? [])
-      .filter((key) => !c.answers[key] && found[key])
+    missing(c)
+      .filter((key) => found[key])
       .map((key) => [key, found[key]]),
   );
+}
+
+/** The confirmed pack's inputs the case has no answer for yet. */
+export function missing(c: Case): string[] {
+  return missingInputs(requiredInputs(c) ?? [], c.answers, c.fromProfile);
 }
 
 /** The keys of the required files the person hasn't attached yet. */
@@ -146,8 +151,7 @@ export function waitingFor(c: Case): WaitingFor {
   if (!selection.referral) {
     // Not yet: what the person said may already answer some of it.
     if (readingConversation(c)) return null;
-    const inputs = requiredInputs(c) ?? [];
-    if (missingInputs(inputs, c.answers).length) return "answers";
+    if (missing(c).length) return "answers";
     if (missingDocuments(c).length) return "answers";
     // All in: in review once the artifact matches them, until approved.
     const review = reviewOutcome(c);

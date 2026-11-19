@@ -35,6 +35,8 @@ const FileMaintenance = lazy(async () => ({
 }));
 
 const EasygovPacks = lazy(() => import("./easygov/Packs"));
+const EasygovForms = lazy(() => import("./easygov/Forms"));
+const EasygovProfile = lazy(() => import("./easygov/Profile"));
 const EasygovEvals = lazy(() => import("./easygov/Evals"));
 const easygovPage = (name: keyof typeof import("./easygov/pages")) =>
   lazy(async () => ({ default: (await import("./easygov/pages"))[name] }));
@@ -55,6 +57,23 @@ export const examples = [
       "Pass rates per slice, stage and pipeline, over several trials.",
     source: "easygov/evals/",
     element: <EasygovEvals />,
+  },
+  {
+    path: "/easygov-profile",
+    group: "easygov test pages",
+    title: "Slice: profile",
+    description: "The person's facts, their readings, and what cases suggest.",
+    source: "easygov/profile/",
+    element: <EasygovProfile />,
+  },
+  {
+    path: "/easygov-forms",
+    group: "easygov test pages",
+    title: "Slice: forms",
+    description:
+      "Fetch an official form, map its places, fill it and read it back.",
+    source: "easygov/forms/",
+    element: <EasygovForms />,
   },
   {
     path: "/easygov-packs",

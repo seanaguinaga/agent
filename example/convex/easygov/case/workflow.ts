@@ -113,7 +113,31 @@ async function reviewUntilApproved(
   const data = internal.easygov.case.data;
   for (let reviews = 0; reviews < MAX_REVIEWS; reviews++) {
     await waitFor(step, () => step.runQuery(data.answersComplete, { caseId }));
-    await step.runMutation(data.fill, { caseId });
+    // A checklist that covers every route is cut to the person's own.
+    const tailored = (await step.runQuery(data.needsTailoring, { caseId }))
+      ? await step.runAction(
+          internal.easygov.case.agents.tailor,
+          { caseId },
+          { retry: true },
+        )
+      : undefined;
+    // A pack for an official form gets that form, filled in and checked.
+    const form = await step.runQuery(
+      internal.easygov.forms.data.editionOfCase,
+      { caseId },
+    );
+    const document = form
+      ? await step.runAction(
+          internal.easygov.forms.actions.fillForCase,
+          { caseId },
+          { retry: true },
+        )
+      : null;
+    await step.runMutation(data.fill, {
+      caseId,
+      ...(tailored && { tailored }),
+      ...(document && { document }),
+    });
     const outcome = await waitFor(step, () =>
       step.runQuery(data.reviewResult, { caseId }),
     );

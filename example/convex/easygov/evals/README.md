@@ -7,23 +7,26 @@ case at 2/3 is a problem one run would have hidden.
 
 ## The slices
 
-| Slice      | What goes in                               | What's graded                                                                                         |
-| ---------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| `intake`   | One message                                | A goal for a clear request; otherwise exactly one question                                            |
-| `request`  | A goal                                     | Kind (process, referral, unclear) and jurisdiction; the form number, advisory                         |
-| `choose`   | A goal and candidate packs                 | The right pack's number, or 0 for none                                                                |
-| `research` | A process and place                        | Sources on the authority's own domain; the facts the case names                                       |
-| `draft`    | A process and **frozen** notes             | Finished sentences, no talk of "the notes", every number from the notes, the letter and its questions |
-| `prefill`  | What a person said, and a form's questions | Every stated answer is found; nothing unstated is guessed                                             |
-| `search`   | A place and search terms                   | The expected pack is found, or nothing is. No model, so one trial                                     |
-| `outcome`  | A goal, on a real case                     | Stage 1 comes to a saved pack, a draft, a referral or a question                                      |
-| `pipeline` | A fixture pack or a goal                   | The autopilot plays the person to the end: done, delivery, referral, letter                           |
+| Slice      | What goes in                               | What's graded                                                                                                                               |
+| ---------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `intake`   | One message                                | A goal for a clear request; otherwise exactly one question                                                                                  |
+| `request`  | A goal                                     | Kind (process, referral, unclear) and jurisdiction; the form number, advisory                                                               |
+| `choose`   | A goal and candidate packs                 | The right pack's number, or 0 for none                                                                                                      |
+| `research` | A process and place                        | Sources on the authority's own domain; the facts the case names                                                                             |
+| `draft`    | A process and **frozen** notes             | Finished sentences, no talk of "the notes", every number from the notes, the letter and its questions                                       |
+| `prefill`  | What a person said, and a form's questions | Every stated answer is found; nothing unstated is guessed                                                                                   |
+| `tailor`   | A checklist and the person's situation     | Steps that apply are kept; steps their answers rule out are dropped                                                                         |
+| `address`  | An address as one line of text             | Each part read exactly; a ZIP the text didn't give stays empty                                                                              |
+| `mapping`  | The words beside each place on a form      | The filer's facts use the right profile key; signatures and ID numbers are never inputs; other people's boxes never get the filer's details |
+| `search`   | A place and search terms                   | The expected pack is found, or nothing is. No model, so one trial                                                                           |
+| `outcome`  | A goal, on a real case                     | Stage 1 comes to a saved pack, a draft, a referral or a question                                                                            |
+| `pipeline` | A fixture pack or a goal                   | The autopilot plays the person to the end: done, delivery, referral, letter                                                                 |
 
-The first five and `prefill` are one model call each, run alone with fixed
-inputs. That's why `case/agents.ts` keeps each call in its own function
+The first five, `prefill` and `tailor` are one model call each, run alone with
+fixed inputs. That's why `case/agents.ts` keeps each call in its own function
 (`readRequest`, `choosePack`, `research`, `draftProcess`, `prefillAnswers`,
-`intakeReply`). The draft's notes are frozen so a grade moves with the prompt,
-not with the web.
+`tailorChecklist`, `intakeReply`). The draft's notes are frozen so a grade moves
+with the prompt, not with the web.
 
 ## Running them
 

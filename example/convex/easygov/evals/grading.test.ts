@@ -3,11 +3,14 @@ import { describe, expect, test } from "vitest";
 import { normalizeFormId, parseJurisdiction } from "../packs/schema";
 import { draft as draftCases } from "./cases";
 import {
+  gradeAddress,
   gradeDraft,
   gradeIntake,
+  gradeMapping,
   gradePrefill,
   gradeRequest,
   gradeResearch,
+  gradeTailor,
   passes,
 } from "./grading";
 
@@ -185,5 +188,115 @@ test("prefill: everything said is found, and nothing unsaid is guessed", () => {
   ).toEqual({
     checks: { found: true, noGuess: false },
     detail: "guessed: fullName=Ada",
+  });
+});
+
+test("tailoring: steps that apply stay, steps ruled out go", () => {
+  const expected = { keep: [1, 2, 6], drop: [3, 4] };
+  expect(passes(gradeTailor(expected, [1, 2, 5, 6]).checks)).toBe(true);
+  expect(gradeTailor(expected, [1, 3, 6])).toEqual({
+    checks: { keeps: false, drops: false },
+    detail: "lost: 2; should have dropped: 3",
+  });
+});
+
+test("address: each part exact, and nothing the text didn't give", () => {
+  const expected = {
+    parts: { street: "270 Frank H. Ogawa Plaza", city: "Oakland", state: "CA" },
+    blank: ["postalCode"] as const,
+  };
+  const got = {
+    street: "270 Frank H. Ogawa Plaza",
+    city: "oakland",
+    state: "CA",
+    postalCode: "",
+    country: "US",
+  };
+  expect(passes(gradeAddress(expected, got).checks)).toBe(true);
+  expect(gradeAddress(expected, { ...got, postalCode: "94612" })).toMatchObject(
+    {
+      checks: { noGuess: false },
+      detail: "made up: postalCode=94612",
+    },
+  );
+  expect(gradeAddress({ parts: null }, got).checks).toEqual({
+    recognized: false,
+  });
+  expect(passes(gradeAddress({ parts: null }, null).checks)).toBe(true);
+});
+
+test("a draft reads the person's name and address from the profile's keys", () => {
+  const letter =
+    "From {{fullName}}, {{mailingAddress}}. Citation {{citation}}.";
+  const draft = {
+    ...fixed,
+    inputs: ["fullName", "mailingAddress", "citation"],
+    inputQuestions: [
+      { key: "fullName", question: "Full legal name" },
+      { key: "mailingAddress", question: "Mailing address" },
+      { key: "citation", question: "What is your citation number?" },
+    ],
+    output: { ...fixed.output, letter },
+  };
+  expect(
+    gradeDraft(draft, oakland.notes, { usesProfile: true }).checks.usesProfile,
+  ).toBe(true);
+  const asksAgain = {
+    ...draft,
+    inputQuestions: [
+      ...draft.inputQuestions,
+      { key: "telephone", question: "What is your telephone number?" },
+    ],
+  };
+  const graded = gradeDraft(asksAgain, oakland.notes, { usesProfile: true });
+  expect(graded.checks.usesProfile).toBe(false);
+  expect(graded.detail).toMatch(/asks again: telephone/);
+});
+
+test("mapping: the right key for the filer, nothing typed where the person signs", () => {
+  const expected = {
+    name: { readings: ["fullName"] },
+    initial: { readings: ["middleInitial"] },
+    ssn: { left: true as const },
+    spouse: { notProfile: true as const },
+    newAddress: { caseInput: true as const },
+    individual: { group: "returns", many: true },
+    gift: { group: "returns", many: true },
+  };
+  const good = [
+    { target: "name", input: "fullName" },
+    { target: "initial", input: "middleInitial" },
+    {
+      target: "ssn",
+      leave: { why: "confidential" as const, note: "Your SSN." },
+    },
+    { target: "newAddress", input: "newAddress" },
+    { target: "individual", input: "returns", includes: "individual" },
+    { target: "gift", input: "returns", includes: "gift" },
+  ];
+  expect(passes(gradeMapping(expected, good).checks)).toBe(true);
+  // The mistakes that matter: a whole name in an initial's box, the filer's
+  // name in the spouse's box, an ID number asked for, a profile key for
+  // something the profile doesn't hold, one question split in two.
+  expect(
+    gradeMapping(expected, [
+      { target: "name", input: "fullName" },
+      { target: "initial", input: "middleName" },
+      { target: "ssn", input: "ssn" },
+      { target: "spouse", input: "fullName" },
+      { target: "newAddress", input: "homeAddressLine" },
+      { target: "individual", input: "individualReturns", includes: "yes" },
+      { target: "gift", input: "giftReturns", includes: "yes" },
+    ]),
+  ).toEqual({
+    checks: {
+      profile: false,
+      caseInputs: false,
+      left: false,
+      notOthers: false,
+      groups: false,
+    },
+    detail:
+      "profile: initial=middleName; caseInputs: newAddress=homeAddressLine; left: ssn=ssn; others: spouse=fullName; groups: returns: split across individualReturns, giftReturns",
   });
 });

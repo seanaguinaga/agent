@@ -143,7 +143,14 @@ export function useAutopilot(session: CaseSession) {
           );
     void step
       .catch((error) => {
-        setError(errorText(error));
+        const message = errorText(error);
+        // A profile save reaches every open case, and may land between the
+        // look and the send. That isn't a failure: look again.
+        if (message.includes("The case has changed")) {
+          sentAt.current = -1;
+          return;
+        }
+        setError(message);
         setOptions(undefined);
       })
       .finally(() => {

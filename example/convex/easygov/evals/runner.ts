@@ -34,16 +34,22 @@ import {
   prefillAnswers,
   readRequest,
   research,
+  tailorChecklist,
 } from "../case/agents";
+import { proposeMapping } from "../forms/agents";
 import { normalizeFormId, parseJurisdiction } from "../packs/schema";
+import { addressFromText } from "../profile/agents";
 import * as cases from "./cases";
 import {
+  gradeAddress,
   gradeDraft,
   gradeIntake,
+  gradeMapping,
   gradePipeline,
   gradePrefill,
   gradeRequest,
   gradeResearch,
+  gradeTailor,
   outcomeOf,
   passes,
   type Graded,
@@ -272,6 +278,24 @@ const run: Record<
     return { ...gradePrefill(expected, answers), output: answers };
   },
 
+  async tailor(ctx, caseId, threadId) {
+    const { checklist, situation, ...expected } = find(cases.tailor, caseId);
+    const kept = await tailorChecklist(ctx, threadId, checklist, situation);
+    return { ...gradeTailor(expected, kept), output: { kept } };
+  },
+
+  async address(_ctx, caseId) {
+    const { text, ...expected } = find(cases.address, caseId);
+    const got = await addressFromText(text);
+    return { ...gradeAddress(expected, got), output: got };
+  },
+
+  async mapping(_ctx, caseId) {
+    const { title, targets, expect } = find(cases.mapping, caseId);
+    const drafted = await proposeMapping(title, targets);
+    return { ...gradeMapping(expect, drafted), output: drafted };
+  },
+
   async search(ctx, caseId) {
     const { jurisdiction, terms, expect } = find(cases.search, caseId);
     const found: { title: string }[] | null = await ctx.runQuery(
@@ -431,9 +455,14 @@ export const stepCase = internalAction({
       await again(0);
       return null;
     } catch (error) {
-      return await finish({
-        error: error instanceof Error ? error.message : String(error),
-      }).catch(() => null);
+      const message = error instanceof Error ? error.message : String(error);
+      // Something else wrote to the case between the look and the send: a
+      // profile save reaches every open case. Look again.
+      if (message.includes("The case has changed")) {
+        await again();
+        return null;
+      }
+      return await finish({ error: message }).catch(() => null);
     }
   },
 });
@@ -496,8 +525,10 @@ async function judgeQuestions(
     prompt: [
       "You are grading the questions a form asks a person, before it writes a letter for them.",
       '"fail" if two questions ask for the same information under different names,',
-      "or if a question asks for something the person would have to look up",
-      '(rules, requirements, which form applies). Otherwise "pass".',
+      "or if a question asks for something the person would have to research",
+      "(rules, eligibility conditions, which form applies).",
+      "Asking what a notice, letter or ticket they were sent says is fine: that is theirs to read.",
+      'Otherwise "pass".',
       `<process>${process}</process>`,
       `<questions>${JSON.stringify(questions)}</questions>`,
     ].join("\n"),

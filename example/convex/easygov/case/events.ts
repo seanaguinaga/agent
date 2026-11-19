@@ -4,6 +4,9 @@
 import { ConvexError } from "convex/values";
 import type { MutationCtx } from "../../_generated/server";
 import { DEFAULT_PRICE_CENTS } from "../firms/schema";
+import { checkChoice } from "../forms/mapping";
+import { currentFacts, keepAnswer } from "../profile/data";
+import { factOf, READINGS, type FactKey } from "../profile/vocabulary";
 import { answerProblem, today } from "./answers";
 import { draftDefinition, logCaseEvent } from "./data";
 import type { CaseEvent, WaitingFor } from "./schema";
@@ -57,24 +60,62 @@ export const EVENTS: {
   // In review too: the changed answer sends the case back around.
   "answers.set": {
     during: ["answers", "approval"],
-    handle: (_ctx, c, { key, value }) => {
+    handle: async (ctx, c, { key, value: given, caseOnly }) => {
       if (!requiredInputs(c)?.includes(key)) {
         throw new ConvexError(`"${key}" isn't one of this case's inputs.`);
       }
-      const problem = answerProblem(value, answerKind(c, key));
+      const problem = answerProblem(given, answerKind(c, key));
       if (problem) throw new ConvexError(problem);
-      return { answers: { ...c.answers, [key]: value } };
+      // A set of tick boxes takes one of its choices, or several.
+      const asked = pinnedPack(c)?.inputQuestions?.find((q) => q.key === key);
+      const checked = checkChoice(asked ?? {}, given);
+      if ("problem" in checked) throw new ConvexError(checked.problem);
+      const { value } = checked;
+      // An answer is the person's before it's the form's: it's kept for
+      // their next form, unless they say it's only for this one.
+      const followsProfile =
+        !caseOnly && (await keepAnswer(ctx, c, key, value));
+      const following = (c.fromProfile ?? []).filter((other) => other !== key);
+      return {
+        answers: { ...c.answers, [key]: value },
+        fromProfile: followsProfile ? [...following, key] : following,
+      };
     },
   },
-  // Takes what was found in the conversation, where nothing was answered.
+  // Takes what was offered, where nothing was answered: what was found in
+  // the conversation, and what the profile remembers.
   "answers.accept": {
     during: ["answers", "approval"],
-    handle: (_ctx, c) => {
+    handle: async (ctx, c) => {
       const offered = suggestions(c);
       if (!Object.keys(offered).length) {
         throw new ConvexError("There's nothing suggested to accept.");
       }
-      return { answers: { ...c.answers, ...offered } };
+      const following = new Set(c.fromProfile ?? []);
+      const { facts } = await currentFacts(ctx, c.userId);
+      const confirmed = new Set<FactKey>();
+      for (const [key, value] of Object.entries(offered)) {
+        const fact = factOf(key);
+        // The profile's own value, offered back because it's old: saying
+        // yes confirms the fact as it stands, and the case follows it.
+        if (fact && READINGS[key].read(facts) === value) {
+          confirmed.add(fact);
+          following.add(key);
+        } else if (await keepAnswer(ctx, c, key, value)) {
+          following.add(key);
+        }
+      }
+      for (const fact of confirmed) {
+        await ctx.db.insert("profileFacts", {
+          userId: c.userId,
+          key: fact,
+          value: facts[fact]!,
+        });
+      }
+      return {
+        answers: { ...c.answers, ...offered },
+        fromProfile: [...following].sort(),
+      };
     },
   },
   // In review too, like an answer.

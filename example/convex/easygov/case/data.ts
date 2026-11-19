@@ -17,8 +17,11 @@ import {
   type QueryCtx,
 } from "../../_generated/server";
 import type { vProcessPackDefinition } from "../packs/schema";
+import { vFilledDocument } from "./schema";
 import { intakeAgent, proposalFields, selectionAgent } from "./agents";
 import { missingInputs, renderLetter } from "./answers";
+import { rememberedElsewhere } from "../profile/data";
+import { isReading, READINGS } from "../profile/vocabulary";
 import { answerKind, readingConversation } from "./state";
 import {
   currentChoice,
@@ -86,13 +89,17 @@ export function processPackDefinition(pack: Doc<"processPacks">) {
     documents: pack.documents,
     deadline: pack.deadline,
     referral: pack.referral,
+    profile: pack.profile,
+    form: pack.form,
   };
 }
 
 /** What a case pins of a draft it confirmed: there's no saved row. */
 export function draftDefinition(draft: Draft) {
-  const { inputs, inputQuestions, documents, deadline, referral } = draft;
-  return { inputs, inputQuestions, documents, deadline, referral };
+  const { inputs, inputQuestions, documents, deadline, referral, profile } =
+    draft;
+  // A draft never fills a form: a form's mapping is reviewed by a person.
+  return { inputs, inputQuestions, documents, deadline, referral, profile };
 }
 
 /** What the case runs on: the saved pack it pinned, or its confirmed draft. */
@@ -328,10 +335,12 @@ export const prefillInput = internalQuery({
       (pack?.inputQuestions ?? []).map(({ key, question }) => [key, question]),
     );
     const questions = (pack?.inputs ?? [])
-      .filter((key) => !found.answers[key])
+      .filter((key) => found.answers[key] === undefined)
       .map((key) => ({
         key,
-        question: asked.get(key) ?? key,
+        // A profile reading is asked for by what it is.
+        question:
+          asked.get(key) ?? (isReading(key) ? READINGS[key].label : key),
         kind: answerKind(found, key),
       }));
     const { page } = await listMessages(ctx, components.agent, {
@@ -344,6 +353,13 @@ export const prefillInput = internalQuery({
       .map((message) => message.text!);
     // The goal is the person's too: a proposal only follows a stated one.
     said.push(found.intake.goal);
+    // So is what they answered on earlier forms: a similar question here
+    // may already be answered. Offered back, never filled in.
+    for (const { question, answer } of await rememberedElsewhere(ctx, found)) {
+      said.push(
+        `On an earlier form, asked "${question}", I answered: ${answer}`,
+      );
+    }
     return {
       goalVersion: found.intake.version,
       threadId: found.threadId,
@@ -405,37 +421,116 @@ export const answersComplete = internalQuery({
     const inputs = found && requiredInputs(found);
     if (!found || !inputs) throw new Error("The case has no confirmed pack");
     const missing =
-      missingInputs(inputs, found.answers).length +
+      missingInputs(inputs, found.answers, found.fromProfile).length +
       missingDocuments(found).length;
     return missing === 0 ? true : null;
+  },
+});
+
+/** The answers to the questions the pack's checklist is tailored by. */
+function situationOf(c: Case, pack: Awaited<ReturnType<typeof packOf>>) {
+  const asked = new Map(
+    (pinnedPack(c)?.inputQuestions ?? []).map(({ key, question }) => [
+      key,
+      question,
+    ]),
+  );
+  return (pack?.output?.tailorBy ?? [])
+    .filter((key) => c.answers[key])
+    .map((key) => ({
+      question: asked.get(key) ?? key,
+      answer: c.answers[key],
+    }));
+}
+
+/** True when the pack's checklist is tailored by answers the person gave. */
+export const needsTailoring = internalQuery({
+  args: { caseId: v.id("cases") },
+  returns: v.boolean(),
+  handler: async (ctx, { caseId }) => {
+    const found = await ctx.db.get("cases", caseId);
+    if (!found) return false;
+    const pack = await packOf(ctx, found);
+    return (
+      !!pack?.output?.checklist.length && situationOf(found, pack).length > 0
+    );
+  },
+});
+
+/** What tailoring reads: the checklist, and the person's situation. */
+export const tailorInput = internalQuery({
+  args: { caseId: v.id("cases") },
+  returns: v.object({
+    threadId: v.string(),
+    fingerprint: v.string(),
+    checklist: v.array(v.string()),
+    situation: v.array(v.object({ question: v.string(), answer: v.string() })),
+  }),
+  handler: async (ctx, { caseId }) => {
+    const found = await ctx.db.get("cases", caseId);
+    if (!found) throw new Error("Case not found");
+    const pack = await packOf(ctx, found);
+    return {
+      threadId: found.threadId,
+      fingerprint: fingerprintOf(found),
+      checklist: pack?.output?.checklist ?? [],
+      situation: situationOf(found, pack),
+    };
   },
 });
 
 /**
  * Builds the document from the current answers, and the pack's letter if it
  * has one. A stand-in for PDF filling.
+ *
+ * With `tailored`, the checklist is cut to the steps that apply to the
+ * person. It was chosen for the answers as they stood (`fingerprint`): if
+ * they've changed since, the document is out of date on its own, and the
+ * workflow goes around again.
  */
 export const fill = internalMutation({
-  args: { caseId: v.id("cases") },
+  args: {
+    caseId: v.id("cases"),
+    tailored: v.optional(
+      v.object({ fingerprint: v.string(), keep: v.array(v.number()) }),
+    ),
+    /** The official form, filled in, when the pack fills one. */
+    document: v.optional(vFilledDocument),
+  },
   returns: v.null(),
-  handler: async (ctx, { caseId }) => {
+  handler: async (ctx, { caseId, tailored, document }) => {
     const found = await ctx.db.get("cases", caseId);
     if (!found) return null;
     const pack = await packOf(ctx, found);
+    const steps = pack?.output?.checklist ?? [];
+    // Only the pack's own steps, in its order.
+    const checklist = tailored
+      ? steps.filter((_, i) => tailored.keep.includes(i + 1))
+      : undefined;
     const summary = JSON.stringify({
       process: pack?.title,
       answers: found.answers,
       output: pack?.output,
+      checklist,
     });
     const letter = pack?.output?.letter;
     await writeCase(ctx, caseId, {
       artifact: {
         summary,
         letter: letter ? renderLetter(letter, found.answers) : undefined,
-        fingerprint: fingerprintOf(found),
+        checklist,
+        document,
+        fingerprint: tailored?.fingerprint ?? fingerprintOf(found),
       },
     });
-    await logCaseEvent(ctx, caseId, "document.filled");
+    await logCaseEvent(
+      ctx,
+      caseId,
+      "document.filled",
+      checklist
+        ? `${checklist.length} of ${steps.length} steps apply`
+        : undefined,
+    );
     return null;
   },
 });
@@ -479,6 +574,19 @@ export const finish = internalMutation({
     if (pack?.delivery) {
       await writeCase(ctx, caseId, {
         delivery: { status: "prepared", channel: pack.delivery },
+      });
+    }
+    // What the case changed about the person is offered to their profile,
+    // for them to confirm: the new address becomes the home address.
+    for (const { input, updates } of pinnedPack(found)?.profile ?? []) {
+      const text = updates && found.answers[input];
+      if (!text) continue;
+      await ctx.db.insert("profileProposals", {
+        userId: found.userId,
+        fact: updates,
+        text,
+        caseId,
+        status: "open",
       });
     }
     await endCase(ctx, found, "done");

@@ -15,6 +15,7 @@ export type CaseView = Infer<typeof vCaseDoc> & {
   waitingFor: WaitingFor;
   deadline: { label: string; date: string } | null;
   suggestions: Record<string, string>;
+  profileInputs: Record<string, string>;
 };
 type Pack = NonNullable<NonNullable<ReturnType<typeof chosen>>["definition"]>;
 
@@ -65,6 +66,9 @@ export function answerFor(
     return pass ? today : shiftDate(today, -(when.withinDays + 1));
   }
   if (pack.deadline?.fromInput === key) return shiftDate(today, -30);
+  // A set of tick boxes: the first choice.
+  const choices = pack.inputQuestions?.find((q) => q.key === key)?.choices;
+  if (choices?.length) return choices[0].value;
   return ANSWER_BOOK[key] ?? `Test ${key}`;
 }
 
@@ -94,11 +98,14 @@ export function pilot(
     case "answers": {
       const pack = selection?.definition;
       if (!pack) return "stop";
-      // What the case found in the conversation, a person would just accept.
-      if (Object.keys(c.suggestions).length) {
+      // What the case offers back, a person would just accept. Not where
+      // this run is steering the answer: last time's amount would undo it.
+      const steered = [pack.referral?.when?.input, pack.deadline?.fromInput];
+      const offered = Object.keys(c.suggestions);
+      if (offered.length && !offered.some((key) => steered.includes(key))) {
         return { event: { type: "answers.accept" } };
       }
-      const key = pack.inputs.find((input) => !c.answers[input]);
+      const key = pack.inputs.find((input) => c.answers[input] === undefined);
       if (key) {
         const value = answerFor(pack, key, options.referral, today);
         return { event: { type: "answers.set", key, value } };

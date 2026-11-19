@@ -4,13 +4,22 @@
 // built from the schema, so they can't also be an input to it.
 import { vWorkflowId } from "@convex-dev/workflow";
 import { v, type Infer } from "convex/values";
+import { vLeft } from "../forms/schema";
 import {
   vPackDeadline,
   vPackDocuments,
+  vPackProfileLinks,
   vPackReferral,
   vProcessPackDefinition,
   vProcessPackQuestions,
 } from "../packs/schema";
+
+/** An official form, filled in for a case. */
+export const vFilledDocument = v.object({
+  storageId: v.id("_storage"),
+  omissions: v.array(v.object({ label: v.string(), reason: v.string() })),
+  toComplete: v.array(vLeft),
+});
 
 /**
  * The `intake.version` a selection was made for. A selection for an earlier
@@ -34,6 +43,8 @@ const selectionFields = {
       documents: v.optional(vPackDocuments),
       deadline: v.optional(vPackDeadline),
       referral: v.optional(vPackReferral),
+      profile: v.optional(vPackProfileLinks),
+      form: v.optional(v.object({ editionId: v.id("formEditions") })),
     }),
   ),
   /**
@@ -113,6 +124,17 @@ export const caseFields = {
   /** The person's answers, by input key. */
   answers: v.record(v.string(), v.string()),
   /**
+   * The answers that were read from the person's profile and still follow
+   * it. An answer given on the case itself isn't listed, and stays as given.
+   */
+  fromProfile: v.optional(v.array(v.string())),
+  /**
+   * Answers offered from the profile for the person to accept, by input key:
+   * a fact old enough to check ("still at this address?"), or what they
+   * answered the last time this pack asked.
+   */
+  offers: v.optional(v.record(v.string(), v.string())),
+  /**
    * Answers found in what the person already said, for them to confirm.
    * They aren't answers until the person accepts them. `goalVersion` is the
    * goal whose questions they were read for; for an earlier goal they're
@@ -138,6 +160,19 @@ export const caseFields = {
     v.object({
       summary: v.string(),
       letter: v.optional(v.string()),
+      /**
+       * The checklist steps that apply to this person, when the pack tailors
+       * them by their answers. Always some of the pack's own steps, in the
+       * pack's order: tailoring leaves steps out, it never writes any.
+       */
+      checklist: v.optional(v.array(v.string())),
+      /**
+       * The official form, filled in, when the pack fills one. `omissions`
+       * are values that weren't written and why. `toComplete` is what's
+       * left for the person: their signature, or something confidential
+       * we don't hold.
+       */
+      document: v.optional(vFilledDocument),
       fingerprint: v.string(),
     }),
   ),
@@ -189,6 +224,8 @@ export const vCaseEvent = v.union(
     type: v.literal("answers.set"),
     key: v.string(),
     value: v.string(),
+    /** Keep it to this case: don't save it for other forms. */
+    caseOnly: v.optional(v.boolean()),
   }),
   // With the answers: take every suggested answer that's still unanswered.
   v.object({ type: v.literal("answers.accept") }),

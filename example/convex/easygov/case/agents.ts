@@ -16,6 +16,7 @@ import {
   parseJurisdiction,
   vProcessPackDefinition,
 } from "../packs/schema";
+import { isReading, READINGS } from "../profile/vocabulary";
 import { answerProblem, placeholders } from "./answers";
 
 // --- Intake -----------------------------------------------------------------
@@ -138,6 +139,21 @@ const zRequest = z.object({
 
 const INPUT_KEY = /^[a-z][a-zA-Z0-9]{0,47}$/;
 
+/** The readings a drafted letter is most likely to want, as it's told them. */
+const PROFILE_PLACEHOLDERS = [
+  "fullName",
+  "mailingAddress",
+  "homeAddress",
+  "phone",
+  "email",
+  "birthDate",
+]
+  .map((key) => `{{${key}}} (${READINGS[key].label.toLowerCase()})`)
+  .join(", ");
+
+/** Few enough that answering them is less work than reading every step. */
+const MAX_SITUATION = 3;
+
 const zDraft = z.object({
   title: z.string().trim().min(1).max(120),
   description: z.string().trim().min(1).max(600),
@@ -157,6 +173,21 @@ const zDraft = z.object({
         keys.every((key) => !Object.hasOwn(Object.prototype, key))
       );
     }, "Each input must have a distinct key"),
+  situationQuestions: z
+    .array(
+      z.object({
+        key: z.string().regex(INPUT_KEY),
+        question: z.string().trim().min(1).max(240),
+      }),
+    )
+    .max(MAX_SITUATION)
+    .optional()
+    .describe(
+      "Questions about the person's own circumstances that decide which checklist steps apply to them, " +
+        "e.g. how they want to file, or whether a date has passed. Each has a yes/no or one-word answer " +
+        "the person knows without looking anything up. Ask one only when the checklist has steps that " +
+        "apply to some people and not others. Leave it out otherwise.",
+    ),
   output: z.object({
     title: z.string().trim().min(1).max(120),
     // Roomy limits: a draft that breaks one is thrown away and redone, and
@@ -175,7 +206,8 @@ const zDraft = z.object({
       .max(4000)
       .optional()
       .describe(
-        "Only if the person sends a letter. Leave it out entirely otherwise.",
+        "Write it whenever the notes say the person writes a letter, a statement or an explanation, " +
+          "or may write one in place of a form. Leave it out only when there is nothing for them to write.",
       ),
   }),
 });
@@ -306,8 +338,9 @@ export async function research(
 
 /**
  * Step 4: a process drafted from the research notes: a checklist, a letter
- * if the process calls for one, and a question for each thing the letter
- * needs from the person. With no notes, it only says what to verify.
+ * if the process calls for one, a question for each thing the letter needs
+ * from the person, and up to three about their situation that decide which
+ * steps apply. With no notes, it only says what to verify.
  */
 export async function draftProcess(
   ctx: ActionCtx,
@@ -328,18 +361,30 @@ export async function draftProcess(
             "with the documents, fees and time limits the notes state. " +
             "Where there is more than one way to do it (online, by mail, in person), give each its own step. " +
             "Where the notes are silent, say to check with the authority. Add nothing the notes don't say."
-          : "No research is available. Write a checklist of what to gather and what to verify with the " +
-            "relevant authority. Do not invent requirements, deadlines, eligibility, URLs or filing instructions.",
+          : "No research is available. Write only a checklist of what to gather and what to verify with the " +
+            "relevant authority: no letter, and no questions. " +
+            "Do not invent requirements, deadlines, eligibility, URLs or filing instructions.",
         "Write to the person, in complete sentences. They can't see the research notes: " +
           'never mention "the notes" or "the research". Say "check with" the authority instead.',
         "Anything the person would have to look up belongs in the checklist, never in a question.",
-        "If the person has to write to the authority (a request, a dispute, a demand, a written explanation), " +
+        "First decide whether the person writes anything to the authority: a request, a dispute, a demand, " +
+          "a written explanation, or a letter they may send in place of a form. If they do, " +
           "always write that letter for them in output.letter, with a {{key}} placeholder for each fact only " +
           "the person knows about their own situation, such as their name or the date on a notice. " +
           "When the letter has to say why, or what happened, that is one of the placeholders. " +
           "Leave the letter out only when there is nothing for the person to write.",
-        "Ask one short, plain question for each placeholder, and no other questions. " +
+        "For these facts about the person, use exactly these placeholder names, and ask no question " +
+          `for them (we already hold them): ${PROFILE_PLACEHOLDERS}.`,
+        "Ask one short, plain question for each other placeholder in inputQuestions. " +
           "Don't ask for the same thing twice under two names.",
+        notes
+          ? "If some checklist steps apply only to some people (a way of filing, an age, a date that has passed), " +
+            `ask up to ${MAX_SITUATION} situationQuestions that settle which. The steps that don't apply to the ` +
+            "person are then left out for them. Ask none if every step applies to everyone. " +
+            "Each asks for one plain fact or preference they can answer in a word: their age, a date, " +
+            "how they would like to do it. Never ask whether a rule, requirement or eligibility condition " +
+            "applies to them, what a notice requires, or anything that lists conditions: that is our job."
+          : "Ask no situationQuestions.",
         "Store questions and general guidance only. Do not include case facts, answers, or identifying information.",
         notes ? `Research notes, from the official website:\n${notes}` : "",
       ]
@@ -349,26 +394,49 @@ export async function draftProcess(
     },
     { contextOptions: { recentMessages: 0 }, ...noStorage },
   );
-  // A question exists because the letter reads its answer: the inputs are
-  // the letter's placeholders, whatever else the model asked.
+  // A question exists because something reads its answer. The letter reads
+  // its placeholders, and tailoring reads the situation questions. Anything
+  // else the model asked is dropped.
+  const usable = (key: string) =>
+    INPUT_KEY.test(key) && !Object.hasOwn(Object.prototype, key);
+  const { situationQuestions = [], ...rest } = recipe;
+  // With no research there's no knowing what the authority wants written,
+  // or which steps are whose: a checklist of what to verify, and no more.
+  if (!notes) delete rest.output.letter;
   const asked = new Map(
-    recipe.inputQuestions.map(({ key, question }) => [key, question]),
+    [...rest.inputQuestions, ...situationQuestions].map(({ key, question }) => [
+      key,
+      question,
+    ]),
   );
-  const inputs = [...new Set(placeholders(recipe.output.letter ?? ""))].filter(
-    (key) => INPUT_KEY.test(key) && !Object.hasOwn(Object.prototype, key),
-  );
+  const letterKeys = [
+    ...new Set(placeholders(rest.output.letter ?? "")),
+  ].filter(usable);
+  // Without research there's nothing solid to leave steps out by.
+  const tailorBy = notes
+    ? [...new Set(situationQuestions.map(({ key }) => key))]
+        .filter((key) => usable(key) && !letterKeys.includes(key))
+        .slice(0, MAX_SITUATION)
+    : [];
+  const inputs = [...letterKeys, ...tailorBy];
   const sources = sourcesIn(notes);
   const { jurisdiction, authority, forms } = subject;
   return {
-    ...recipe,
-    output: { ...recipe.output, sources: sources.length ? sources : undefined },
+    ...rest,
+    output: {
+      ...rest.output,
+      sources: sources.length ? sources : undefined,
+      tailorBy: tailorBy.length ? tailorBy : undefined,
+    },
     jurisdiction,
     authority,
     forms,
     inputs,
     inputQuestions: inputs.map((key) => ({
       key,
-      question: asked.get(key) ?? key,
+      // A profile reading is asked for by what it is, however the model
+      // worded it.
+      question: isReading(key) ? READINGS[key].label : (asked.get(key) ?? key),
     })),
   };
 }
@@ -561,5 +629,84 @@ export const prefill = internalAction({
       },
     );
     return { goalVersion, answers };
+  },
+});
+
+// --- Tailoring --------------------------------------------------------------
+//
+// A researched checklist covers every route. Once the person has said which
+// is theirs, the steps for the others are left out.
+
+/**
+ * The checklist steps that apply to the person, as their numbers (from 1),
+ * in the checklist's order. The model only chooses among the steps: it
+ * can't write one, so nothing can be added that the research didn't say.
+ * Every step is kept if it answers with nothing usable.
+ */
+export async function tailorChecklist(
+  ctx: ActionCtx,
+  threadId: string,
+  checklist: string[],
+  situation: { question: string; answer: string }[],
+): Promise<number[]> {
+  const all = checklist.map((_, i) => i + 1);
+  if (!checklist.length || !situation.length) return all;
+  const { output } = await selectionAgent.generateText(
+    ctx,
+    { threadId },
+    {
+      prompt: [
+        "Below is a checklist for a government process, and what one person said about their situation.",
+        "Give the numbers of the steps that apply to this person.",
+        "Leave out a step only when their answers make it clearly not apply, " +
+          "such as a step for filing by mail when they are filing online.",
+        "Keep every step that applies to everyone, and every step you are unsure about: " +
+          "a step too many costs them a moment, and a missing one can cost them the deadline.",
+        "<situation>",
+        ...situation.map(({ question, answer }) => `${question} ${answer}`),
+        "</situation>",
+        "<checklist>",
+        ...checklist.map((step, i) => `${i + 1}. ${step}`),
+        "</checklist>",
+      ].join("\n"),
+      output: Output.object({
+        schema: z.object({ keep: z.array(z.number().int()) }),
+      }),
+    },
+    { contextOptions: { recentMessages: 0 }, ...noStorage },
+  );
+  const keep = all.filter((n) => output.keep.includes(n));
+  return keep.length ? keep : all;
+}
+
+/**
+ * Chooses the checklist steps that apply to the case's person, for the
+ * answers as they stand (`fingerprint`). On a failure every step is kept:
+ * the person reads a longer checklist, as they would have.
+ */
+export const tailor = internalAction({
+  args: { caseId: v.id("cases") },
+  returns: v.object({ fingerprint: v.string(), keep: v.array(v.number()) }),
+  handler: async (
+    ctx,
+    { caseId },
+  ): Promise<{ fingerprint: string; keep: number[] }> => {
+    const input: {
+      threadId: string;
+      fingerprint: string;
+      checklist: string[];
+      situation: { question: string; answer: string }[];
+    } = await ctx.runQuery(internal.easygov.case.data.tailorInput, { caseId });
+    const { threadId, fingerprint, checklist, situation } = input;
+    const keep = await tailorChecklist(
+      ctx,
+      threadId,
+      checklist,
+      situation,
+    ).catch((error) => {
+      console.error("easygov tailoring failed", error);
+      return checklist.map((_, i) => i + 1);
+    });
+    return { fingerprint, keep };
   },
 });

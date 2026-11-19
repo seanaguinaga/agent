@@ -76,8 +76,10 @@ covers. A person turns a good one into a shared pack with `save`.
 3. The case collects the answers, builds the checklist and letter, and waits for
    review. A draft with no letter asks nothing and goes straight to review.
 
-A draft's questions are exactly its letter's `{{placeholders}}`. Whatever else
-the model asks is dropped: anything to look up belongs in the checklist.
+A draft's questions are its letter's `{{placeholders}}`, plus up to three about
+the person's situation that the checklist is tailored by (`output.tailorBy`).
+Whatever else the model asks is dropped: anything to look up belongs in the
+checklist.
 
 ## What a pack can ask for
 
@@ -87,6 +89,11 @@ the model asks is dropped: anything to look up belongs in the checklist.
   date answered for `fromInput`, which must then be a date (YYYY-MM-DD).
 - **`output.letter`**: text with `{{inputKey}}` placeholders, filled in from the
   answers when the document is built.
+- **`output.tailorBy`**: input keys about the person's own situation ("online or
+  by mail?"). Once they're answered, a model picks which checklist steps apply,
+  and the rest are left out of the person's document (`artifact.checklist`). It
+  only chooses among the pack's steps: it can't write one. If it fails, every
+  step is kept.
 - **`referral`**: `{ kind, when }`. `when` is one check on one answer: `equals`
   some text, `atLeast` a number, or `withinDays` (the date answered is today or
   at most that many days ago). When it passes at approval, the person is asked

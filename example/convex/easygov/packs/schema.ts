@@ -2,7 +2,19 @@ import { defineTable } from "convex/server";
 import { v, type Infer } from "convex/values";
 
 export const vProcessPackQuestions = v.array(
-  v.object({ key: v.string(), question: v.string() }),
+  v.object({
+    key: v.string(),
+    question: v.string(),
+    /**
+     * The answers to pick from, when the question is a set of tick boxes.
+     * The answer is a choice's `value`; with `multiple`, the values of all
+     * that apply, joined by commas.
+     */
+    choices: v.optional(
+      v.array(v.object({ value: v.string(), label: v.string() })),
+    ),
+    multiple: v.optional(v.boolean()),
+  }),
 );
 const vProcessPackOutput = v.object({
   title: v.string(),
@@ -14,6 +26,12 @@ const vProcessPackOutput = v.object({
   letter: v.optional(v.string()),
   /** The official pages a drafted checklist was written from. */
   sources: v.optional(v.array(v.string())),
+  /**
+   * Inputs about the person's own situation ("online or by mail?") that
+   * decide which checklist steps apply to them. Once they're answered, the
+   * steps that don't apply are left out of the person's document.
+   */
+  tailorBy: v.optional(v.array(v.string())),
 });
 
 /** A file the person attaches, e.g. the denial letter they received. */
@@ -56,6 +74,14 @@ export const vPackReferral = v.object({
   priceCents: v.optional(v.number()),
 });
 
+export const vPackProfileLinks = v.array(
+  v.object({
+    input: v.string(),
+    reads: v.optional(v.string()),
+    updates: v.optional(v.string()),
+  }),
+);
+
 /**
  * What a pack is. There is no key: a pack is its row. Every label here comes
  * from a person or a model and varies ("courts" vs "state-court"), so labels
@@ -76,6 +102,19 @@ export const packDefinition = {
   documents: v.optional(vPackDocuments),
   deadline: v.optional(vPackDeadline),
   referral: v.optional(vPackReferral),
+  /**
+   * How inputs that aren't profile readings still meet the profile. `reads`
+   * offers a reading as the input's starting answer ("your old address" is
+   * today's home address). `updates` names the fact the answer becomes once
+   * the case is done ("your new address" becomes the home address), which
+   * the person is then asked to confirm.
+   */
+  profile: v.optional(vPackProfileLinks),
+  /**
+   * The official form this pack fills: one fetched edition, with its
+   * reviewed mapping. The pack's inputs are what that mapping reads.
+   */
+  form: v.optional(v.object({ editionId: v.id("formEditions") })),
   /** How the approved document goes out. Without one, the case just ends. */
   delivery: v.optional(v.union(v.literal("mail"), v.literal("online"))),
   inputQuestions: v.optional(vProcessPackQuestions),

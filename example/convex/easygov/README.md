@@ -21,23 +21,25 @@ A case can also **start on a pack**, from a landing page: `startCase` with a
 
 ## The files
 
-| File               | Job                                                                |
-| ------------------ | ------------------------------------------------------------------ |
-| `case/workflow.ts` | The case's workflow, and how it waits for a person                 |
-| `case/data.ts`     | The queries and mutations the workflow calls, and its `onComplete` |
-| `case/state.ts`    | Pure: what the case's fields mean, including `waitingFor`          |
-| `case/events.ts`   | What a person can send, when it's taken, and what it writes        |
-| `case/public.ts`   | What a client calls: `startCase`, `getCase`, `sendMessage`, `send` |
-| `packs/public.ts`  | What a landing page reads: the shared packs, one page each         |
-| `case/agents.ts`   | The intake and selection agents                                    |
-| `case/schema.ts`   | Every case field and every event                                   |
-| `case/answers.ts`  | Pure helpers over the answers                                      |
-| `packs/`           | The process pack library: search, save, versions (see its README)  |
-| `firms/`           | The law firms, and the cases shared with them (see its README)     |
-| `schema.ts`        | The tables                                                         |
-| `evals/`           | How often the models get each step right (see its README)          |
-| `dev.ts`           | Seeding and inspection for the test pages; not for production      |
-| `autopilot.ts`     | Pure: plays the person's part, for the test pages and the evals    |
+| File               | Job                                                                    |
+| ------------------ | ---------------------------------------------------------------------- |
+| `case/workflow.ts` | The case's workflow, and how it waits for a person                     |
+| `case/data.ts`     | The queries and mutations the workflow calls, and its `onComplete`     |
+| `case/state.ts`    | Pure: what the case's fields mean, including `waitingFor`              |
+| `case/events.ts`   | What a person can send, when it's taken, and what it writes            |
+| `case/public.ts`   | What a client calls: `startCase`, `getCase`, `sendMessage`, `send`     |
+| `packs/public.ts`  | What a landing page reads: the shared packs, one page each             |
+| `case/agents.ts`   | The intake and selection agents                                        |
+| `case/schema.ts`   | Every case field and every event                                       |
+| `case/answers.ts`  | Pure helpers over the answers                                          |
+| `packs/`           | The process pack library: search, save, versions (see its README)      |
+| `firms/`           | The law firms, and the cases shared with them (see its README)         |
+| `schema.ts`        | The tables                                                             |
+| `forms/`           | Official forms: fetched, mapped, filled and read back (see its README) |
+| `profile/`         | The person's own facts, read by every form (see its README)            |
+| `evals/`           | How often the models get each step right (see its README)              |
+| `dev.ts`           | Seeding and inspection for the test pages; not for production          |
+| `autopilot.ts`     | Pure: plays the person's part, for the test pages and the evals        |
 
 ## How it fits together
 
@@ -64,7 +66,9 @@ retried call can't leave a duplicate in the thread.
 - `artifact.fingerprint` is a SHA-256 of the answers and files the document was
   built from; `approval.fingerprint` is the one the person approved.
 - `seq` goes up on every write. `send` takes the `expectedSeq` the sender last
-  saw, so an event sent from an out-of-date screen is refused.
+  saw, so a decision made on an out-of-date screen (confirming, approving,
+  sharing) is refused. An answer or a file is taken either way: it writes its
+  own key.
 
 **The person isn't asked twice.** When a proposal is confirmed, the workflow
 reads what the person already said (their chat and their goal) for answers to

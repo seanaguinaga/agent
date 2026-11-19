@@ -8,6 +8,7 @@ import Transcript from "../chat/Transcript";
 import { Result } from "../components/Example";
 import type { CaseEvent, CaseView } from "../../convex/easygov/autopilot";
 import { chosen } from "../../convex/easygov/case/schema";
+import { AskAhead, FactEditor, Proposals } from "./Profile";
 import { useAct, type CaseSession } from "./session";
 
 const cases = api.easygov.case.public;
@@ -298,10 +299,13 @@ function AnswerRow({
   session,
   name,
   question,
+  caseOnly,
 }: {
   session: CaseSession;
   name: string;
   question: string;
+  /** Keep the answer to this case: don't save it for other forms. */
+  caseOnly?: boolean;
 }) {
   const c = session.c!;
   const saved = c.answers[name] ?? "";
@@ -309,13 +313,66 @@ function AnswerRow({
   const suggested = c.suggestions[name];
   const [value, setValue] = useState(saved || suggested || "");
   const act = useAct();
+  const asked = chosen(c.processPack)?.definition?.inputQuestions?.find(
+    (q) => q.key === name,
+  );
+  if (asked?.choices) {
+    // A set of tick boxes: pick one, or every one that applies.
+    const picked = value.split(",").filter(Boolean);
+    const toggle = (option: string) =>
+      setValue(
+        asked.multiple
+          ? (picked.includes(option)
+              ? picked.filter((other) => other !== option)
+              : [...picked, option]
+            ).join(",")
+          : option,
+      );
+    return (
+      <fieldset className="space-y-1">
+        <legend className="demo-label">
+          {question} <code>({name})</code>
+        </legend>
+        {asked.choices.map((choice) => (
+          <label key={choice.value} className="flex items-start gap-2 text-sm">
+            <input
+              type={asked.multiple ? "checkbox" : "radio"}
+              name={`answer-${name}`}
+              className="mt-1"
+              checked={picked.includes(choice.value)}
+              onChange={() => toggle(choice.value)}
+            />
+            {choice.label}
+          </label>
+        ))}
+        <button
+          className="demo-secondary"
+          disabled={act.pending || value === saved}
+          onClick={() =>
+            void act.run(() =>
+              session.send(
+                { type: "answers.set", key: name, value, caseOnly },
+                c.seq,
+              ),
+            )
+          }
+        >
+          {saved ? "Change" : "Save"}
+        </button>
+        <Refusal error={act.error} />
+      </fieldset>
+    );
+  }
   return (
     <form
       className="space-y-1"
       onSubmit={(event) => {
         event.preventDefault();
         void act.run(() =>
-          session.send({ type: "answers.set", key: name, value }, c.seq),
+          session.send(
+            { type: "answers.set", key: name, value, caseOnly },
+            c.seq,
+          ),
         );
       }}
     >
@@ -352,7 +409,9 @@ function Answers({ session }: { session: CaseSession }) {
       <h2 className="font-semibold">Answers and files</h2>
       {Object.keys(c.suggestions).length > 0 && (
         <div className="space-y-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm">
-          <p className="font-medium">Found in what you already said:</p>
+          <p className="font-medium">
+            From what you said, your profile, or last time:
+          </p>
           <ul className="list-disc pl-5">
             {Object.entries(c.suggestions).map(([key, value]) => (
               <li key={key}>
@@ -373,15 +432,54 @@ function Answers({ session }: { session: CaseSession }) {
           </button>
         </div>
       )}
-      {questions.map(({ key, question }) => (
-        // Remounts when a suggestion arrives or is taken, to refill the box.
-        <AnswerRow
-          key={`${key}:${c.suggestions[key] ?? ""}:${c.answers[key] ?? ""}`}
-          session={session}
-          name={key}
-          question={question}
+      {[...new Set(Object.values(c.profileInputs))].map((fact) => (
+        <FactEditor
+          key={fact}
+          factKey={fact}
+          guestKey={session.guestKey}
+          note={
+            <span className="text-gray-500">
+              · read as{" "}
+              {Object.entries(c.profileInputs)
+                .filter(([, of]) => of === fact)
+                .map(([input]) => input)
+                .join(", ")}
+            </span>
+          }
         />
       ))}
+      {questions
+        .filter(({ key }) => !(key in c.profileInputs))
+        .map(({ key, question }) => (
+          // Remounts when a suggestion arrives or is taken, to refill the box.
+          <AnswerRow
+            key={`${key}:${c.suggestions[key] ?? ""}:${c.answers[key] ?? ""}`}
+            session={session}
+            name={key}
+            question={question}
+          />
+        ))}
+      {Object.keys(c.profileInputs).length > 0 && (
+        <details className="text-sm">
+          <summary className="cursor-pointer text-gray-600">
+            Use something different on this form only
+          </summary>
+          <p className="py-2 text-gray-600">
+            These stay on this case and don't change your profile.
+          </p>
+          {questions
+            .filter(({ key }) => key in c.profileInputs)
+            .map(({ key, question }) => (
+              <AnswerRow
+                key={`${key}:${c.answers[key] ?? ""}`}
+                session={session}
+                name={key}
+                question={question}
+                caseOnly
+              />
+            ))}
+        </details>
+      )}
       {pack.documents?.map((document) => (
         <div key={document.key} className="space-y-1">
           <label className="demo-label" htmlFor={`file-${document.key}`}>
@@ -407,6 +505,65 @@ function Answers({ session }: { session: CaseSession }) {
   );
 }
 
+/** The official form, filled in: a link to it, and what it leaves out. */
+function FilledForm({
+  session,
+  document,
+}: {
+  session: CaseSession;
+  document: NonNullable<NonNullable<CaseView["artifact"]>["document"]>;
+}) {
+  const url = useQuery(api.easygov.forms.data.documentUrl, {
+    caseId: session.c!._id,
+    guestKey: session.guestKey,
+  });
+  return (
+    <div className="space-y-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm">
+      {url && (
+        <a
+          className="link-text font-medium"
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Open the official form, filled in
+        </a>
+      )}
+      <p>
+        {document.omissions.length === 0
+          ? "Every value on it was read back from the PDF."
+          : "These weren't written. They're left out, not cut short:"}
+      </p>
+      {document.omissions.length > 0 && (
+        <ul className="list-disc pl-5">
+          {document.omissions.map((omission) => (
+            <li key={omission.label}>
+              {omission.label}: {omission.reason}
+            </li>
+          ))}
+        </ul>
+      )}
+      {document.toComplete.length > 0 && (
+        <>
+          <p className="font-medium">Left for you to complete:</p>
+          <ul className="list-disc pl-5">
+            {document.toComplete.map(({ why, note }) => (
+              <li key={note}>
+                {note}{" "}
+                <span className="text-gray-600">
+                  {why === "confidential"
+                    ? "(confidential: we don't hold this)"
+                    : "(your signature)"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
 function Review({ session }: { session: CaseSession }) {
   const c = session.c!;
   const act = useAct();
@@ -417,6 +574,22 @@ function Review({ session }: { session: CaseSession }) {
         <pre className="whitespace-pre-wrap rounded-xl border bg-amber-50 p-4 text-sm">
           {c.artifact.letter}
         </pre>
+      )}
+      {c.artifact?.document && (
+        <FilledForm session={session} document={c.artifact.document} />
+      )}
+      {c.artifact?.checklist && (
+        <div className="space-y-1 text-sm">
+          <p className="font-medium">
+            The steps that apply to you ({c.artifact.checklist.length} of the
+            checklist's steps):
+          </p>
+          <ol className="list-decimal space-y-1 pl-5">
+            {c.artifact.checklist.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ol>
+        </div>
       )}
       <Result value={c.artifact && JSON.parse(c.artifact.summary)} />
       <button
@@ -576,7 +749,14 @@ function Now({
 }) {
   const c = session.c!;
   if (c.failure) return <Failed session={session} />;
-  if (c.status !== "active") return <Ended session={session} />;
+  if (c.status !== "active") {
+    return (
+      <>
+        <Ended session={session} />
+        <Proposals guestKey={session.guestKey} />
+      </>
+    );
+  }
   switch (c.waitingFor) {
     case "goal":
       return <Goal session={session} />;
@@ -602,12 +782,21 @@ function Now({
       return <Consent session={session} onClaimed={onClaimed} />;
     case null:
       return (
-        <p className="demo-panel text-sm text-gray-600" role="status">
-          Nothing for the person to do: the workflow is working. If it stays
-          here, check the Convex logs.
-        </p>
+        <>
+          <AskAhead caseId={c._id} guestKey={session.guestKey} />
+          <Busy />
+        </>
       );
   }
+}
+
+function Busy() {
+  return (
+    <p className="demo-panel text-sm text-gray-600" role="status">
+      Nothing for the person to do: the workflow is working. If it stays here,
+      check the Convex logs.
+    </p>
+  );
 }
 
 // --- Underneath -------------------------------------------------------------

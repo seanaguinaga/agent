@@ -36,6 +36,7 @@ function view(fields: Partial<CaseView>): CaseView {
     waitingFor: null,
     deadline: null,
     suggestions: {},
+    profileInputs: {},
     ...fields,
   } as CaseView;
 }
@@ -101,5 +102,23 @@ test("a guest is not made to share, but can decline", () => {
   expect(pilot(guest, run, TODAY)).toBe("stop");
   expect(pilot(guest, { ...run, consent: "decline" }, TODAY)).toEqual({
     event: { type: "referral.decline" },
+  });
+});
+
+test("accepts what the case offers back, unless this run is steering that answer", () => {
+  const offered = onPack({
+    waitingFor: "answers",
+    suggestions: { fullName: "Ada Lovelace" },
+  });
+  expect(pilot(offered, run, TODAY)).toEqual({
+    event: { type: "answers.accept" },
+  });
+  // Last time's amount would decide the referral: answer it afresh instead.
+  const steered = onPack({
+    waitingFor: "answers",
+    suggestions: { amountOwed: "5000" },
+  });
+  expect(pilot(steered, { ...run, referral: "avoid" }, TODAY)).toEqual({
+    event: { type: "answers.set", key: "fullName", value: "Ada Lovelace" },
   });
 });

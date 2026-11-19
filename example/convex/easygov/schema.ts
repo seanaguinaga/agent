@@ -5,6 +5,8 @@ import { v } from "convex/values";
 import { caseFields } from "./case/schema";
 import evalTables from "./evals/tables";
 import firmTables from "./firms/schema";
+import formTables from "./forms/schema";
+import profileTables from "./profile/schema";
 import { processPacks } from "./packs/schema";
 
 export const vCaseDoc = v.object({
@@ -24,4 +26,6 @@ export default {
   }).index("by_caseId", ["caseId"]),
   ...firmTables,
   ...evalTables,
+  ...profileTables,
+  ...formTables,
 };

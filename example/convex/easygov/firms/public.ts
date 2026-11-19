@@ -12,6 +12,8 @@ import { covers } from "./schema";
 
 /** At most this many previews: enough to choose from, and a bounded read. */
 const MAX_PREVIEWS = 50;
+/** How far one kind's open referrals are read to find that many. */
+const MAX_SCANNED = 200;
 
 /**
  * A referral as a firm sees it before accepting: what it's about and how
@@ -65,7 +67,7 @@ export const previews = query({
     for (const { kind, jurisdiction } of firm.coverage) {
       // "us/ca" and everything inside it sorts from "us/ca" up to "us/ca0"
       // ("0" follows "/"). So does "us/ca-x", which `covers` then drops.
-      const rows = await ctx.db
+      const rows = ctx.db
         .query("referrals")
         .withIndex("by_status_and_kind_and_jurisdiction", (q) =>
           q
@@ -73,17 +75,23 @@ export const previews = query({
             .eq("kind", kind)
             .gte("jurisdiction", jurisdiction)
             .lt("jurisdiction", `${jurisdiction}0`),
-        )
-        .take(MAX_PREVIEWS);
-      for (const row of rows) found.set(row._id, row);
+        );
+      // Reads past the ones the firm passed on, so they can't hide the rest.
+      let kept = 0;
+      let scanned = 0;
+      for await (const row of rows) {
+        if (kept === MAX_PREVIEWS || ++scanned > MAX_SCANNED) break;
+        if (found.has(row._id) || !covers(firm.coverage, row)) continue;
+        if (await declined(ctx, firmId, row._id)) continue;
+        found.set(row._id, row);
+        kept++;
+      }
     }
     const open = [...found.values()]
-      .filter((referral) => covers(firm.coverage, referral))
       .sort((a, b) => a._creationTime - b._creationTime)
       .slice(0, MAX_PREVIEWS);
     const previews = [];
     for (const referral of open) {
-      if (await declined(ctx, firmId, referral._id)) continue;
       const pack = referral.packId
         ? await ctx.db.get("processPacks", referral.packId)
         : null;

@@ -187,6 +187,27 @@ describe("accepting", () => {
     expect(await previews(t, other)).toHaveLength(1);
   });
 
+  test("a firm that passed on many still sees the ones after them", async () => {
+    const { t } = await shared();
+    const firmId = await saveFirm(t);
+    const [{ id: first }] = await previews(t, firmId);
+    // Fifty it passed on, then one it hasn't seen.
+    const unseen = await t.run(async (ctx) => {
+      const { _id, _creationTime, ...referral } = (await ctx.db.get(
+        "referrals",
+        first,
+      ))!;
+      let referralId = first;
+      for (let i = 0; i < 50; i++) {
+        await ctx.db.insert("referralDeclines", { firmId, referralId });
+        referralId = await ctx.db.insert("referrals", referral);
+      }
+      return referralId;
+    });
+    const found = await previews(t, firmId);
+    expect(found.map(({ id }) => id)).toEqual([unseen]);
+  });
+
   test("a firm that passed can still accept, and a taken referral can't be passed on", async () => {
     const { t } = await shared();
     const firmId = await saveFirm(t);

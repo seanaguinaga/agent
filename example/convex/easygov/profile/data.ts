@@ -14,7 +14,7 @@ import {
 } from "../../_generated/server";
 import { writeCase } from "../case/data";
 import { pinnedPack, reviewOutcome, type Case } from "../case/state";
-import { nudgeCase } from "../case/workflow";
+import { nudgeIfMoved } from "../case/workflow";
 import { ConvexError, v } from "convex/values";
 import {
   checkFact,
@@ -193,7 +193,7 @@ export async function syncCase(
     return;
   }
   await writeCase(ctx, caseId, { answers, fromProfile, offers });
-  await nudgeCase(ctx, c);
+  await nudgeIfMoved(ctx, c);
 }
 
 /**

@@ -20,7 +20,7 @@ import { v } from "convex/values";
 import { components, internal } from "../../_generated/api";
 import type { Id } from "../../_generated/dataModel";
 import type { MutationCtx } from "../../_generated/server";
-import type { Case } from "./state";
+import { sameWait, type Case } from "./state";
 
 export const workflow = new WorkflowManager(components.workflow, {
   workpoolOptions: {
@@ -189,6 +189,18 @@ export async function nudgeCase(ctx: MutationCtx, c: Case): Promise<void> {
     workflowId: c.workflowId,
     value: null,
   });
+}
+
+/**
+ * Tells the workflow to look again after a write, unless the case still
+ * waits for what it did before: the tenth answer of twelve isn't news.
+ */
+export async function nudgeIfMoved(
+  ctx: MutationCtx,
+  before: Case,
+): Promise<void> {
+  const after = await ctx.db.get("cases", before._id);
+  if (after && !sameWait(before, after)) await nudgeCase(ctx, after);
 }
 
 const MAX_WAKES = 100;

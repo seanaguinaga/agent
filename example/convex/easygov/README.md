@@ -45,8 +45,9 @@ A case can also **start on a pack**, from a landing page: `startCase` with a
 
 **The case in the table is the truth.** Every wait in the workflow is a query
 over the case ("are all the answers in?"), and a person's event only writes the
-case and nudges the workflow to look again. Nothing lives only in the workflow's
-history, so:
+case and nudges the workflow to look again (unless the case still waits for the
+same thing: an answer that leaves others missing isn't news). Nothing lives only
+in the workflow's history, so:
 
 - `send` and the workflow can't disagree about where the case is. `send` accepts
   an event only while `waitingFor(case)` says the case waits for it, and the

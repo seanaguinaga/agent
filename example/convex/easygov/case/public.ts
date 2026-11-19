@@ -31,7 +31,7 @@ import {
   waitingFor,
   type Case,
 } from "./state";
-import { nudgeCase, workflow } from "./workflow";
+import { nudgeCase, nudgeIfMoved, workflow } from "./workflow";
 
 /**
  * Starts a case. With a `packId` (from a landing page) the case starts on
@@ -326,7 +326,7 @@ async function personEvent(
   if (event.type === "answers.set" || event.type === "answers.accept") {
     await scheduleSync(ctx, c.userId);
   }
-  await nudgeCase(ctx, c);
+  await nudgeIfMoved(ctx, c);
   return null;
 }
 

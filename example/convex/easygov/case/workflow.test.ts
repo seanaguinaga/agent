@@ -222,6 +222,35 @@ describe("answers and review", () => {
   });
 });
 
+describe("a busy person", () => {
+  afterEach(resetCases);
+
+  test("many edits to the answers don't fail the case", async () => {
+    const { t, caseId } = await start();
+    await send(t, caseId, { type: "intake.submit", goal: "I moved" });
+    await send(t, caseId, { type: "processPack.confirm" });
+    // Far more edits than the workflow has looks to spend on one wait.
+    for (let i = 0; i < 120; i++) {
+      await t.mutation(api.easygov.case.public.send, {
+        caseId,
+        event: { type: "answers.set", key: "oldAddress", value: `${i} Old Rd` },
+        expectedSeq: 0,
+      });
+    }
+    await t.finishAllScheduledFunctions(vi.runAllTimers, 5000);
+    let found = await read(t, caseId);
+    expect(found.failure).toBeUndefined();
+    expect(found).toMatchObject({ status: "active", waitingFor: "answers" });
+
+    // The edit that completes the answers is still noticed.
+    found = await answer(t, caseId, {
+      fullName: address.fullName,
+      newAddress: address.newAddress,
+    });
+    expect(found).toMatchObject({ waitingFor: "approval" });
+  });
+});
+
 describe("failures", () => {
   afterEach(resetCases);
 

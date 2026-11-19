@@ -140,6 +140,21 @@ export function reviewOutcome(c: Case): "approved" | "changed" | null {
   return c.approval?.fingerprint === current ? "approved" : null;
 }
 
+/**
+ * True when a write left the case waiting for the same thing. The workflow's
+ * waits read the same fields as `waitingFor`, so it has nothing new to find,
+ * and telling it to look again would only spend one of its looks.
+ */
+export function sameWait(before: Case, after: Case): boolean {
+  const waiting = waitingFor(after);
+  return (
+    waiting !== null &&
+    waiting === waitingFor(before) &&
+    // A chat message is answered while the case waits for a goal.
+    before.pendingMessageId === after.pendingMessageId
+  );
+}
+
 /** What the case waits for a person to do; null if nothing right now. */
 export function waitingFor(c: Case): WaitingFor {
   if (c.status !== "active" || c.failure) return null;

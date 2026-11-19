@@ -1,6 +1,5 @@
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
-import { vPlanStep } from "../plans/schema";
 
 export const vProcessPackQuestions = v.array(
   v.object({ key: v.string(), question: v.string() }),
@@ -26,7 +25,18 @@ export const packDefinition = {
   /** Official form numbers, e.g. "IRS-8822". Searched, never filtered on. */
   forms: v.array(v.string()),
   inputs: v.array(v.string()),
-  plan: v.array(vPlanStep),
+  /**
+   * A legal referral to open once the person approves, e.g. representation
+   * for an appeal. With `when`, only if that answer was given.
+   */
+  referral: v.optional(
+    v.object({
+      kind: v.string(),
+      when: v.optional(v.object({ input: v.string(), equals: v.string() })),
+    }),
+  ),
+  /** How the approved document goes out. Without one, the case just ends. */
+  delivery: v.optional(v.union(v.literal("mail"), v.literal("online"))),
   inputQuestions: v.optional(vProcessPackQuestions),
   output: v.optional(vProcessPackOutput),
 };

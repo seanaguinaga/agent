@@ -21,9 +21,10 @@ export type T = ReturnType<typeof initConvexTest>;
  * The agents call a mock model. Each call answers with the next queued JSON
  * reply. With the queue empty it answers as if every request were the IRS 8822
  * one: the request (federal, form IRS-8822) and, when comparing candidates,
- * the first. `start` seeds that pack, so selection proposes it.
+ * the first. `start` seeds that pack, so selection proposes it. While
+ * `failing` is set, every call throws.
  */
-export const model = { replies: [] as string[] };
+export const model = { replies: [] as string[], failing: false };
 const IRS_8822_PROPOSAL = JSON.stringify({
   kind: "process",
   message: "This looks like an IRS change of address.",
@@ -38,17 +39,20 @@ const IRS_8822_PROPOSAL = JSON.stringify({
 export async function mockModels() {
   const { MockLanguageModelV4 } = await import("ai/test");
   const languageModel = new MockLanguageModelV4({
-    doGenerate: async () => ({
-      content: [
-        { type: "text", text: model.replies.shift() ?? IRS_8822_PROPOSAL },
-      ],
-      finishReason: { unified: "stop", raw: undefined },
-      usage: {
-        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
-        outputTokens: { total: 1, text: 1, reasoning: 0 },
-      },
-      warnings: [],
-    }),
+    doGenerate: async () => {
+      if (model.failing) throw new Error("The model is down");
+      return {
+        content: [
+          { type: "text", text: model.replies.shift() ?? IRS_8822_PROPOSAL },
+        ],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: {
+          inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 1, text: 1, reasoning: 0 },
+        },
+        warnings: [],
+      };
+    },
   });
   return { languageModel, embeddingModel: undefined };
 }
@@ -57,6 +61,7 @@ export async function mockModels() {
 export function resetCases() {
   vi.useRealTimers();
   model.replies = [];
+  model.failing = false;
 }
 
 export async function start() {

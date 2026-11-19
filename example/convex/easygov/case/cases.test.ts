@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "../../_generated/api";
 import { model, read, resetCases, send, start, texts } from "./cases.testkit";
-import { workflow } from "../stages/shared";
-import { writeCase } from "./data";
+import { workflow } from "./workflow";
 import type { CaseEvent } from "./schema";
 
 vi.mock("../../modelsForDemo", async () =>
@@ -25,7 +24,7 @@ describe("the case API", () => {
       /isn't expected/,
     );
     await expect(sendAt(seq, { type: "step.retry" })).rejects.toThrow(
-      /No failed step/,
+      /Nothing has failed/,
     );
     await expect(
       sendAt(seq, { type: "intake.submit", goal: "  " }),
@@ -41,7 +40,7 @@ describe("the case API", () => {
     ).rejects.toThrow(/no draft to save/);
   });
 
-  test("every write bumps seq, and only an owner writes a field", async () => {
+  test("every write bumps seq", async () => {
     const { t, caseId } = await start();
     const { seq } = await read(t, caseId);
     await t.mutation(api.easygov.case.public.sendMessage, {
@@ -50,12 +49,6 @@ describe("the case API", () => {
       messageKey: "a",
     });
     expect((await read(t, caseId)).seq).toBe(seq + 1);
-
-    // The types refuse this too; a patch that slips past them throws.
-    const patch = { answers: {} } as object;
-    await expect(
-      t.run((ctx) => writeCase(ctx, "fill", caseId, patch)),
-    ).rejects.toThrow(/"answers" isn't a case field fill owns/);
   });
 
   test("the same chat message sent twice is saved and answered once", async () => {
@@ -91,7 +84,7 @@ describe("the case API", () => {
       status: "canceled",
       endReason: "Canceled by the user",
     });
-    // The intake stage's workflow was canceled with it.
+    // The case's workflow was canceled with it.
     expect(found.workflowId).toBeUndefined();
     const status = await t.run((ctx) => workflow.status(ctx, workflowId!));
     expect(status.type).toBe("canceled");

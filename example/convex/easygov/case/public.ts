@@ -1,17 +1,21 @@
-// The public API: start a case, read it, and send it events.
+// The public API: start a case, read it, chat, and send it events.
 import { createThread, saveMessage } from "@convex-dev/agent";
 import { ConvexError, v } from "convex/values";
-import { components } from "../../_generated/api";
-import type { Doc, Id } from "../../_generated/dataModel";
-import { mutation, query, type QueryCtx } from "../../_generated/server";
+import { components, internal } from "../../_generated/api";
+import type { Id } from "../../_generated/dataModel";
+import {
+  mutation,
+  query,
+  type MutationCtx,
+  type QueryCtx,
+} from "../../_generated/server";
 import { getAuthUserId } from "../../utils";
-import type { Input } from "../plans/decide";
-import { handle } from "../plans/data";
 import { vCaseDoc } from "../schema";
-import { nudgeStage } from "../stages/shared";
-import { writeCase } from "./data";
-import { currentStageType, eventHandler, stageChats } from "../stages/registry";
-import { vCaseEvent, type EventsOf } from "./schema";
+import { endCase, logEvent, writeCase } from "./data";
+import { EVENTS } from "./events";
+import { vCaseEvent, vWaitingFor, type CaseEvent } from "./schema";
+import { waitingFor, type Case } from "./state";
+import { nudgeCase, workflow } from "./workflow";
 
 export const startCase = mutation({
   args: {},
@@ -27,19 +31,39 @@ export const startCase = mutation({
       threadId,
       status: "active",
       seq: 0,
-      plan: [],
-      visits: {},
       answers: {},
-      flags: [],
     });
-    await handle(ctx, caseId, { type: "start" });
+    const workflowId = await workflow.start(
+      ctx,
+      internal.easygov.case.workflow.run,
+      { caseId },
+      {
+        onComplete: internal.easygov.case.data.workflowDone,
+        context: { caseId },
+        // Not inline: a run that fails at once would report back before the
+        // case knows its workflow id, and be ignored.
+        startAsync: true,
+      },
+    );
+    await writeCase(ctx, caseId, { workflowId });
+    await logEvent(ctx, caseId, "case.started");
     return caseId;
   },
 });
 
+/** The case, and what it waits for a person to do. */
+export const getCase = query({
+  args: { caseId: v.id("cases") },
+  returns: v.object({ ...vCaseDoc.fields, waitingFor: vWaitingFor }),
+  handler: async (ctx, { caseId }) => {
+    const found = await authorizeCase(ctx, caseId);
+    return { ...found, waitingFor: waitingFor(found) };
+  },
+});
+
 /**
- * Saves a chat message to the case's thread. A stage that chats (intake)
- * answers it; one that doesn't leaves it pending until one does.
+ * Saves a chat message to the case's thread. Intake answers it; at any other
+ * time it stays pending until intake runs again.
  *
  * `messageKey` is a string the client makes up once per message (a UUID,
  * say) and sends again on a retry. The same key twice in a row is the same
@@ -62,25 +86,18 @@ export const sendMessage = mutation({
       userId: found.userId,
       prompt,
     });
-    await writeCase(ctx, "core", caseId, {
+    await writeCase(ctx, caseId, {
       pendingMessageId: messageId,
       lastMessageKey: messageKey,
     });
-    // Only a stage that chats is nudged. The nudge just says "look again".
-    if (stageChats(currentStageType(found))) await nudgeStage(ctx, found);
+    await nudgeCase(ctx, found);
     return null;
   },
 });
 
-export const getCase = query({
-  args: { caseId: v.id("cases") },
-  returns: vCaseDoc,
-  handler: async (ctx, { caseId }) => await authorizeCase(ctx, caseId),
-});
-
 /**
  * Sends an event to a case. `expectedSeq` is the `seq` the sender last saw,
- * so an event based on a stale view of the case is rejected.
+ * so an event based on a stale view of the case is refused.
  */
 export const send = mutation({
   args: { caseId: v.id("cases"), event: vCaseEvent, expectedSeq: v.number() },
@@ -93,39 +110,66 @@ export const send = mutation({
     if (found.status !== "active") {
       throw new ConvexError(`The case is ${found.status}.`);
     }
-
-    // Control events belong to the whole case, not to one stage: the
-    // pipeline decides. One it ignores (e.g. a second click on retry, which
-    // finds the failure already cleared) is refused.
-    if (event.type in CONTROL_INPUTS) {
-      const input = CONTROL_INPUTS[event.type as EventsOf<"core">];
-      const decision = await handle(ctx, caseId, input);
-      if (decision.type === "ignore") throw new ConvexError(decision.why);
-      return null;
+    switch (event.type) {
+      case "case.cancel":
+        return await cancel(ctx, found);
+      case "step.retry":
+        return await retry(ctx, found);
+      case "step.cancel":
+        if (!found.failure) throw new ConvexError("Nothing has failed.");
+        await endCase(ctx, found, "stopped", "Stopped after a failure");
+        return null;
+      default:
+        return await personEvent(ctx, found, event);
     }
-
-    // Everything else goes to the stage that owns the event, if the current
-    // step's stage takes it and hasn't failed. The handler says what to
-    // write, as the owner; the nudge makes the running stage's workflow look.
-    // If the stage hasn't started yet there is nothing to nudge, and it reads
-    // what was written when it does.
-    const handler = eventHandler(currentStageType(found), event.type);
-    if (!handler || found.failure) {
-      throw new ConvexError(`"${event.type}" isn't expected right now.`);
-    }
-    const patch = await handler.handle(found, event, ctx);
-    await writeCase(ctx, handler.owner, caseId, patch);
-    await nudgeStage(ctx, found);
-    return null;
   },
 });
 
-/** The pipeline input each "core" event stands for. */
-const CONTROL_INPUTS: Record<EventsOf<"core">, Input> = {
-  "case.cancel": { type: "cancel" },
-  "step.retry": { type: "retry" },
-  "step.cancel": { type: "giveUp" },
-};
+/** Writes what the event's handler returns, then tells the workflow. */
+async function personEvent(
+  ctx: MutationCtx,
+  c: Case,
+  event: Exclude<
+    CaseEvent,
+    { type: "step.retry" | "step.cancel" | "case.cancel" }
+  >,
+): Promise<null> {
+  const { during, handle } = EVENTS[event.type] as {
+    during: ReturnType<typeof waitingFor>[];
+    handle: (
+      ctx: MutationCtx,
+      c: Case,
+      event: CaseEvent,
+    ) => Partial<Case> | Promise<Partial<Case>>;
+  };
+  if (!during.includes(waitingFor(c))) {
+    throw new ConvexError(`"${event.type}" isn't expected right now.`);
+  }
+  await writeCase(ctx, c._id, await handle(ctx, c, event));
+  await nudgeCase(ctx, c);
+  return null;
+}
+
+/**
+ * Runs the failed workflow again from the top. Nothing it needs lives only
+ * in its history, so it picks up where the case is.
+ */
+async function retry(ctx: MutationCtx, c: Case): Promise<null> {
+  if (!c.failure) throw new ConvexError("Nothing has failed.");
+  const { workflowId } = c.failure;
+  await workflow.restart(ctx, workflowId, { from: 0 });
+  await writeCase(ctx, c._id, { workflowId, failure: undefined });
+  await logEvent(ctx, c._id, "case.retried");
+  return null;
+}
+
+/** Ends the case, and stops its workflow if one is running. */
+async function cancel(ctx: MutationCtx, c: Case): Promise<null> {
+  // A failed workflow isn't running, and can't be canceled.
+  if (c.workflowId) await workflow.cancel(ctx, c.workflowId);
+  await endCase(ctx, c, "canceled", "Canceled by the user");
+  return null;
+}
 
 // --- Who may touch a case ---------------------------------------------------
 
@@ -139,7 +183,7 @@ async function requireUser(ctx: QueryCtx): Promise<string> {
 async function authorizeCase(
   ctx: QueryCtx,
   caseId: Id<"cases">,
-): Promise<Doc<"cases">> {
+): Promise<Case> {
   const userId = await requireUser(ctx);
   const found = await ctx.db.get("cases", caseId);
   if (!found || found.userId !== userId) {

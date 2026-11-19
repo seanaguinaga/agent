@@ -3,9 +3,9 @@
 **Which saved process pack fits this request?**
 
 A process pack is a reusable definition of one government process: a title and
-description, where it applies, the questions to ask (`inputs`), the steps to run
-(`plan`), and the checklist it produces. Every pack is a row in `processPacks`;
-none are defined in code.
+description, where it applies, the questions to ask (`inputs`), the checklist it
+produces, and optionally a legal referral and a delivery channel. Every pack is
+a row in `processPacks`; none are defined in code.
 
 | File                | Touches the database? | Job                                                  |
 | ------------------- | --------------------- | ---------------------------------------------------- |
@@ -14,11 +14,10 @@ none are defined in code.
 | `packs.testkit.ts`  | (tests)               | Two example packs (IRS 8822, SSA appeal) and seeding |
 | `packs.test.ts`     | (tests)               | Search, saving, duplicates, versions                 |
 | `irs8822.test.ts`   | (tests)               | A whole case on the IRS pack                         |
-| `ssaAppeal.test.ts` | (tests)               | A whole case with a conditional step                 |
+| `ssaAppeal.test.ts` | (tests)               | A whole case with a conditional referral             |
 
-The agent that proposes a pack lives with its stage, in
-`stages/selectProcessPack/agent.ts`. This folder is only the library it
-searches.
+The agent that proposes a pack is in `case/agents.ts`. This folder is only the
+library it searches.
 
 ## A pack has no key
 
@@ -42,7 +41,8 @@ candidates. Selection is three model calls:
 
 Use the internal `easygov/packs/data:save` mutation with a title, description,
 aliases, a `jurisdiction` path, an optional `authority`, any official `forms`,
-the inputs and the plan.
+the inputs, and optionally a `referral` (with a `when` on one answer) and a
+`delivery` channel.
 
 - Leave out `ownerId` to save a shared pack every case can find. A person's own
   packs are saved when they confirm a draft.
@@ -56,7 +56,7 @@ the inputs and the plan.
 ## Confirming a newly drafted pack
 
 1. After intake, read `getCase.processPack.draft` to review the proposed title,
-   questions, plan and checklist.
+   questions and checklist.
 2. Send `{ "type": "processPack.confirm" }` with the case's current
    `expectedSeq`, which makes sure you confirm the proposal you read. The
    mutation checks for similar packs, saves the draft for this owner, and pins

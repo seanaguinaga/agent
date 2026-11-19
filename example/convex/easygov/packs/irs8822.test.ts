@@ -14,50 +14,36 @@ const address = {
 describe("IRS 8822", () => {
   afterEach(resetCases);
 
-  test("runs the IRS 8822 plan from intake to delivery", async () => {
+  test("runs from intake to delivery", async () => {
     const { t, caseId } = await start();
     let found = await read(t, caseId);
-    expect(found).toMatchObject({ status: "active", currentStep: "intake" });
-    expect(found.plan.map((s) => s.id)).toEqual([
-      "intake",
-      "selectProcessPack",
-    ]);
+    expect(found).toMatchObject({ status: "active", waitingFor: "goal" });
 
     found = await send(t, caseId, { type: "intake.submit", goal: "I moved" });
-    expect(found.currentStep).toBe("selectProcessPack");
+    expect(found.waitingFor).toBe("pack");
 
     found = await send(t, caseId, { type: "processPack.confirm" });
     expect(found).toMatchObject({
-      currentStep: "collect",
+      waitingFor: "answers",
       processPack: { status: "confirmed" },
     });
-    expect(found.plan.map((s) => s.id)).toEqual([
-      "intake",
-      "selectProcessPack",
-      "collect",
-      "fill",
-      "review",
-      "deliver",
-    ]);
 
     found = await answer(t, caseId, address);
-    expect(found.currentStep).toBe("review");
+    expect(found.waitingFor).toBe("approval");
     expect(JSON.parse(found.artifact!.summary).answers).toEqual(address);
 
-    // Changing an answer in review sends the case back through collect and
-    // fill, so the artifact is rebuilt and review starts a second visit.
+    // Changing an answer in review goes around again: the document is
+    // rebuilt, and review waits for approval of the new one.
     found = await answer(t, caseId, { newAddress: "3 Newer Street" });
-    expect(found).toMatchObject({
-      currentStep: "review",
-      visits: { collect: 2, fill: 2, review: 2 },
-    });
+    expect(found.waitingFor).toBe("approval");
     expect(found.artifact!.summary).toContain("3 Newer Street");
 
     found = await send(t, caseId, { type: "review.approve" });
     expect(found).toMatchObject({
       status: "done",
+      waitingFor: null,
       delivery: { status: "prepared", channel: "mail" },
     });
-    expect(found.currentStep).toBeUndefined();
+    expect(found.workflowId).toBeUndefined();
   });
 });

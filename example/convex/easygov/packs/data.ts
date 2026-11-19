@@ -10,7 +10,6 @@ import {
   internalQuery,
   type QueryCtx,
 } from "../../_generated/server";
-import { bootstrapPlan, validateAppend } from "../plans/steps";
 import {
   jurisdictionChain,
   normalizeFormId,
@@ -97,12 +96,7 @@ function checkDefinition(raw: Definition): Definition {
   if (forms.some((form) => !form) || forms.length > 10) {
     throw new ConvexError("List up to 10 official form numbers.");
   }
-  const error = validateAppend(bootstrapPlan, raw.plan);
-  if (error) throw new ConvexError(error);
-  if (!raw.plan.length) {
-    throw new ConvexError("A process pack needs at least one step.");
-  }
-  const { inputs, inputQuestions } = raw;
+  const { inputs, inputQuestions, referral } = raw;
   if (
     new Set(inputs).size !== inputs.length ||
     inputs.some((key) => !key.trim() || Object.hasOwn(Object.prototype, key))
@@ -118,6 +112,14 @@ function checkDefinition(raw: Definition): Definition {
   ) {
     throw new ConvexError(
       "Provide a question for each input, in the same order.",
+    );
+  }
+  if (referral && !referral.kind.trim()) {
+    throw new ConvexError("Name the kind of referral.");
+  }
+  if (referral?.when && !inputs.includes(referral.when.input)) {
+    throw new ConvexError(
+      `The referral depends on "${referral.when.input}", which isn't an input.`,
     );
   }
   const authority = raw.authority?.trim() || undefined;

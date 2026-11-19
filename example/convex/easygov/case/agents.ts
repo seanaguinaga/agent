@@ -1,19 +1,67 @@
-// The selection agent: proposes a process pack for the case's goal. Three
-// model calls at most: read the request, compare the saved candidates, and
-// draft a pack if none fits.
+// The two agents. Intake chats until it knows the person's goal; selection
+// proposes a process pack for it. Neither saves anything: the workflow's next
+// mutation decides what to keep, so a retried model call can't leave a
+// duplicate in the thread.
 import { Agent } from "@convex-dev/agent";
 import { vWorkflowId } from "@convex-dev/workflow";
 import { Output } from "ai";
 import { type Infer, v } from "convex/values";
 import { z } from "zod/v4";
-import { components, internal } from "../../../_generated/api";
-import { internalAction } from "../../../_generated/server";
-import { defaultConfig } from "../../../agents/config";
+import { components, internal } from "../../_generated/api";
+import { internalAction } from "../../_generated/server";
+import { defaultConfig } from "../../agents/config";
 import {
   normalizeFormId,
   parseJurisdiction,
   vProcessPackDefinition,
-} from "../../packs/schema";
+} from "../packs/schema";
+
+// --- Intake -----------------------------------------------------------------
+
+export const intakeAgent = new Agent(components.agent, {
+  name: "Intake",
+  instructions:
+    "You help people say what legal or government task they need done. " +
+    "Reply briefly and ask at most one question. " +
+    "Once you know the task, set `goal` to one plain sentence describing it; " +
+    "until then, set `goal` to null.",
+  ...defaultConfig,
+});
+
+const turnSchema = z.object({
+  reply: z.string().describe("What to say to the person."),
+  goal: z.string().nullable().describe("The task, once it's clear."),
+});
+
+/**
+ * Answers one user message. Saves nothing: `recordTurn` decides
+ * what to keep, so a retried turn can't leave a duplicate reply.
+ */
+export const intakeTurn = internalAction({
+  args: { caseId: v.id("cases"), promptMessageId: v.string() },
+  returns: v.object({ reply: v.string(), goal: v.union(v.string(), v.null()) }),
+  handler: async (
+    ctx,
+    { caseId, promptMessageId },
+  ): Promise<{ reply: string; goal: string | null }> => {
+    const { threadId }: { threadId: string } = await ctx.runQuery(
+      internal.easygov.case.data.threadOf,
+      { caseId },
+    );
+    const { object } = await intakeAgent.generateObject(
+      ctx,
+      { threadId },
+      { promptMessageId, schema: turnSchema },
+      { storageOptions: { saveMessages: "none" } },
+    );
+    return object;
+  },
+});
+
+// --- Selection --------------------------------------------------------------
+//
+// Three model calls at most: read the request, compare the saved candidates,
+// and draft a pack if none fits.
 
 export const selectionAgent = new Agent(components.agent, {
   name: "Select process pack",
@@ -111,7 +159,7 @@ export const propose = internalAction({
   returns: vProposal,
   handler: async (ctx, { caseId }): Promise<Infer<typeof vProposal>> => {
     const { goal, goalVersion, threadId, workflowId } = await ctx.runQuery(
-      internal.easygov.stages.selectProcessPack.data.goalOf,
+      internal.easygov.case.data.goalOf,
       { caseId },
     );
     const origin = { goalVersion, workflowId };
@@ -223,11 +271,6 @@ export const propose = internalAction({
         authority,
         forms,
         inputs: recipe.inputQuestions.map(({ key }) => key),
-        plan: [
-          { id: "collect", type: "collect" },
-          { id: "fill", type: "fill" },
-          { id: "review", type: "review", params: { backTo: "collect" } },
-        ],
       },
     };
   },

@@ -14,7 +14,7 @@ export const vCaseDoc = v.object({
 export default {
   cases: defineTable(caseFields).index("by_userId", ["userId"]),
   processPacks,
-  /** The history of a case: how each step ended, and plan changes. */
+  /** The history of a case: what happened, in order. */
   caseEvents: defineTable({
     caseId: v.id("cases"),
     kind: v.string(),

@@ -32,7 +32,6 @@ const renewal = {
   authority: "Department of Motor Vehicles",
   forms: [],
   inputs: ["expirationDate"],
-  plan: [{ id: "collect", type: "collect" }],
 };
 
 // The pack the live run drafted, and the draft the model writes for it.
@@ -45,7 +44,6 @@ const garnishment = {
   authority: "California state court",
   forms: [],
   inputs: ["noticeDate"],
-  plan: [{ id: "collect", type: "collect" }],
 };
 const recipe = {
   title: garnishment.title,
@@ -218,21 +216,22 @@ describe("saving packs", () => {
         terms: "driver license renewal",
       }),
     ).toMatchObject([{ id: v2.id }]);
-    const pinned = await answer(t, caseId, { expirationDate: "2027-01-09" });
+    await answer(t, caseId, { expirationDate: "2027-01-09" });
+    const pinned = await send(t, caseId, { type: "review.approve" });
     expect(pinned).toMatchObject({
       status: "done",
       processPack: { definition: { id: v1.id, inputs: ["expirationDate"] } },
     });
   });
 
-  test("save rejects an unknown stage or jurisdiction", async () => {
+  test("save rejects a referral on a missing input, or a bad jurisdiction", async () => {
     const { t } = await start();
     await expect(
       t.mutation(processPacks.save, {
         ...renewal,
-        plan: [{ id: "pay", type: "payFee" }],
+        referral: { kind: "advice", when: { input: "nope", equals: "yes" } },
       }),
-    ).rejects.toThrow(/Unknown stage type/);
+    ).rejects.toThrow(/isn't an input/);
     await expect(
       t.mutation(processPacks.save, { ...renewal, jurisdiction: "California" }),
     ).rejects.toThrow(/jurisdiction path/);
@@ -258,9 +257,8 @@ describe("selecting a pack for a case", () => {
       definition: { id: saved.id },
     });
     await send(t, caseId, { type: "processPack.confirm" });
-    expect(
-      await answer(t, caseId, { expirationDate: "2027-01-09" }),
-    ).toMatchObject({
+    await answer(t, caseId, { expirationDate: "2027-01-09" });
+    expect(await send(t, caseId, { type: "review.approve" })).toMatchObject({
       status: "done",
       processPack: { status: "confirmed", definition: { id: saved.id } },
     });
@@ -297,7 +295,7 @@ describe("selecting a pack for a case", () => {
     const packId = confirmed.processPack?.definition?.id;
     expect(packId).toBeDefined();
     expect(confirmed).toMatchObject({
-      currentStep: "collect",
+      waitingFor: "answers",
       processPack: {
         status: "confirmed",
         definition: { inputQuestions: recipe.inputQuestions },
@@ -386,7 +384,7 @@ describe("selecting a pack for a case", () => {
     ).rejects.toThrow(/Review the current possible matches/);
     const reviewing = await send(t, caseId, { type: "processPack.confirm" });
     expect(reviewing).toMatchObject({
-      currentStep: "selectProcessPack",
+      waitingFor: "pack",
       processPack: {
         status: "proposed",
         duplicateReview: { matches: [{ id: existing.id }] },
@@ -397,7 +395,7 @@ describe("selecting a pack for a case", () => {
       packId: existing.id,
     });
     expect(reused).toMatchObject({
-      currentStep: "collect",
+      waitingFor: "answers",
       processPack: { status: "confirmed", definition: { id: existing.id } },
     });
     expect(await ownPacks(t, ownerId)).toHaveLength(1);
@@ -432,7 +430,7 @@ describe("selecting a pack for a case", () => {
       type: "processPack.confirm",
       reviewedPackIds: [saved.id],
     });
-    expect(accepted.currentStep).toBe("collect");
+    expect(accepted.waitingFor).toBe("answers");
     expect(accepted.processPack?.definition?.id).not.toBe(saved.id);
   });
 
@@ -444,7 +442,7 @@ describe("selecting a pack for a case", () => {
       goal: "Renew my license",
     });
     expect(found).toMatchObject({
-      currentStep: "intake",
+      waitingFor: "goal",
       processPack: { status: "rejected" },
     });
   });

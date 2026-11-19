@@ -19,12 +19,7 @@ export const irs8822: PackDefinition = {
   authority: "Internal Revenue Service",
   forms: ["IRS-8822"],
   inputs: ["fullName", "oldAddress", "newAddress"],
-  plan: [
-    { id: "collect", type: "collect" },
-    { id: "fill", type: "fill" },
-    { id: "review", type: "review", params: { backTo: "collect" } },
-    { id: "deliver", type: "deliver", params: { channel: "mail" } },
-  ],
+  delivery: "mail",
 };
 
 /** SSA request for reconsideration of a denied claim. */
@@ -36,18 +31,11 @@ export const ssaAppeal: PackDefinition = {
   authority: "Social Security Administration",
   forms: ["SSA-561"],
   inputs: ["fullName", "denialDate", "reasonForAppeal", "wantsRepresentation"],
-  plan: [
-    { id: "collect", type: "collect" },
-    { id: "fill", type: "fill" },
-    { id: "review", type: "review", params: { backTo: "collect" } },
-    {
-      id: "legalReferral",
-      type: "legalReferral",
-      params: { kind: "representation" },
-      when: { input: "wantsRepresentation", equals: "yes" },
-    },
-    { id: "deliver", type: "deliver", params: { channel: "online" } },
-  ],
+  referral: {
+    kind: "representation",
+    when: { input: "wantsRepresentation", equals: "yes" },
+  },
+  delivery: "online",
 };
 
 /** Saves the fixture packs as shared packs, through the same checks as any save. */

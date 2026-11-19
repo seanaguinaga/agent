@@ -33,10 +33,12 @@ describe("SSA appeal", () => {
       const referrals = await t.run((ctx) =>
         ctx.db.query("referrals").collect(),
       );
-      expect(referrals).toHaveLength(wantsRepresentation === "yes" ? 1 : 0);
-      expect(found.visits.legalReferral).toBe(
-        wantsRepresentation === "yes" ? 1 : undefined,
+      expect(referrals).toEqual(
+        wantsRepresentation === "yes"
+          ? [expect.objectContaining({ kind: "representation" })]
+          : [],
       );
+      expect(found.delivery).toEqual({ status: "prepared", channel: "online" });
     }
   });
 });

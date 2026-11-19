@@ -22,10 +22,11 @@ import {
 import { currentFacts, scheduleSync, syncCase } from "../profile/data";
 import { FACT_KEYS, factOf } from "../profile/vocabulary";
 import { EVENTS } from "./events";
-import { vCaseEvent, vWaitingFor, type CaseEvent } from "./schema";
+import { vCaseEvent, vPhase, vWaitingFor, type CaseEvent } from "./schema";
 import {
   currentSelection,
   deadlineOf,
+  phase,
   pinnedPack,
   suggestions,
   waitingFor,
@@ -70,6 +71,7 @@ export const startCase = mutation({
         intake: { goal: pack.title, version: 1 },
         processPack: {
           status: "confirmed" as const,
+          kind: "pack" as const,
           goalVersion: 1,
           definition: processPackDefinition(pack),
         },
@@ -87,7 +89,7 @@ export const startCase = mutation({
         startAsync: true,
       },
     );
-    await writeCase(ctx, caseId, { workflowId });
+    await writeCase(ctx, caseId, { run: { state: "running", workflowId } });
     // Started on a pack: what the profile already knows is filled in.
     await syncCase(ctx, caseId);
     await logCaseEvent(ctx, caseId, "case.started");
@@ -100,6 +102,8 @@ export const getCase = query({
   args: { caseId: v.id("cases"), guestKey: v.optional(v.string()) },
   returns: v.object({
     ...vCaseDoc.fields,
+    /** Where the case is, by name: see `PHASES`. */
+    phase: vPhase,
     waitingFor: vWaitingFor,
     deadline: v.union(
       v.object({ label: v.string(), date: v.string() }),
@@ -120,6 +124,7 @@ export const getCase = query({
     const found = await authorizeCase(ctx, caseId, guestKey);
     return {
       ...found,
+      phase: phase(found),
       waitingFor: waitingFor(found),
       deadline: deadlineOf(found) ?? null,
       suggestions: suggestions(found),
@@ -289,7 +294,9 @@ export const send = mutation({
       case "step.retry":
         return await retry(ctx, found);
       case "step.cancel":
-        if (!found.failure) throw new ConvexError("Nothing has failed.");
+        if (found.run?.state !== "failed") {
+          throw new ConvexError("Nothing has failed.");
+        }
         await endCase(ctx, found, "stopped", "Stopped after a failure");
         return null;
       default:
@@ -335,10 +342,10 @@ async function personEvent(
  * in its history, so it picks up where the case is.
  */
 async function retry(ctx: MutationCtx, c: Case): Promise<null> {
-  if (!c.failure) throw new ConvexError("Nothing has failed.");
-  const { workflowId } = c.failure;
+  if (c.run?.state !== "failed") throw new ConvexError("Nothing has failed.");
+  const { workflowId } = c.run;
   await workflow.restart(ctx, workflowId, { from: 0 });
-  await writeCase(ctx, c._id, { workflowId, failure: undefined });
+  await writeCase(ctx, c._id, { run: { state: "running", workflowId } });
   await logCaseEvent(ctx, c._id, "case.retried");
   return null;
 }
@@ -346,7 +353,7 @@ async function retry(ctx: MutationCtx, c: Case): Promise<null> {
 /** Ends the case, and stops its workflow if one is running. */
 async function cancel(ctx: MutationCtx, c: Case): Promise<null> {
   // A failed workflow isn't running, and can't be canceled.
-  if (c.workflowId) await workflow.cancel(ctx, c.workflowId);
+  if (c.run?.state === "running") await workflow.cancel(ctx, c.run.workflowId);
   await endCase(ctx, c, "canceled", "Canceled by the user");
   return null;
 }

@@ -7,7 +7,12 @@ import { api } from "../../convex/_generated/api";
 import Transcript from "../chat/Transcript";
 import { Result } from "../components/Example";
 import type { CaseEvent, CaseView } from "../../convex/easygov/autopilot";
-import { chosen } from "../../convex/easygov/case/schema";
+import {
+  chosen,
+  definitionOf,
+  draftOf,
+} from "../../convex/easygov/case/schema";
+import { Phases, phaseLine } from "./Phases";
 import { AskAhead, FactEditor, Proposals } from "./Profile";
 import { useAct, type CaseSession } from "./session";
 
@@ -73,32 +78,9 @@ export function Chip({
   );
 }
 
-const STEPS = ["goal", "pack", "answers", "approval", "consent"] as const;
-
-/** How far the case has got: the index of the step it's on, 5 once ended. */
-function reached(c: CaseView): number {
-  if (c.status !== "active") return STEPS.length;
-  if (c.waitingFor) return STEPS.indexOf(c.waitingFor);
-  const selection = c.processPack;
-  const current = selection?.goalVersion === c.intake?.version;
-  if (c.approval) return 4;
-  if (current && selection?.status === "confirmed") return c.artifact ? 3 : 2;
-  return c.intake && !(current && selection?.status === "rejected") ? 1 : 0;
-}
-
 function Where({ c }: { c: CaseView }) {
-  const at = reached(c);
   return (
     <div className="demo-panel" aria-label="Where the case is">
-      <ol className="flex flex-wrap gap-2">
-        {STEPS.map((step, i) => (
-          <li key={step}>
-            <Chip tone={i < at ? "green" : i === at ? "blue" : undefined}>
-              {i + 1}. {step}
-            </Chip>
-          </li>
-        ))}
-      </ol>
       <p className="flex flex-wrap items-center gap-2 text-sm">
         <Chip
           tone={
@@ -111,15 +93,8 @@ function Where({ c }: { c: CaseView }) {
         >
           {c.status}
         </Chip>
-        <span data-testid="waiting">
-          {c.failure
-            ? "The workflow failed"
-            : c.status !== "active"
-              ? (c.endReason ?? "Finished")
-              : c.waitingFor
-                ? `Waiting for the person: ${c.waitingFor}`
-                : "The workflow is working…"}
-        </span>
+        <Chip>{c.phase}</Chip>
+        <span data-testid="waiting">{phaseLine(c)}</span>
         <span className="text-gray-500">
           seq {c.seq}
           {c.source && ` · from ${c.source}`}
@@ -131,6 +106,7 @@ function Where({ c }: { c: CaseView }) {
           <strong>{c.deadline.label}</strong> by {c.deadline.date}
         </p>
       )}
+      <Phases c={c} />
     </div>
   );
 }
@@ -222,7 +198,7 @@ function Sources({ urls }: { urls?: string[] }) {
 function Proposal({ session }: { session: CaseSession }) {
   const c = session.c!;
   const selection = chosen(c.processPack)!;
-  const { draft } = selection;
+  const draft = draftOf(selection);
   const saveCase = useMutation(api.easygov.evals.runner.saveDraftCase);
   const [saved, setSaved] = useState(false);
   const act = useAct();
@@ -232,7 +208,7 @@ function Proposal({ session }: { session: CaseSession }) {
       <h2 className="font-semibold">
         {draft
           ? "No saved pack fits: a process drafted for this goal"
-          : selection.referral
+          : selection.kind === "referral"
             ? "No process fits: a legal referral instead"
             : "A saved process pack fits this goal"}
       </h2>
@@ -256,8 +232,11 @@ function Proposal({ session }: { session: CaseSession }) {
       )}
       <Result
         value={
-          draft ??
-          selection.definition ?? { jurisdiction: selection.jurisdiction }
+          selection.kind === "draft"
+            ? selection.draft
+            : selection.kind === "pack"
+              ? selection.definition
+              : { jurisdiction: selection.jurisdiction }
         }
       />
       <div className="flex gap-2">
@@ -313,7 +292,7 @@ function AnswerRow({
   const suggested = c.suggestions[name];
   const [value, setValue] = useState(saved || suggested || "");
   const act = useAct();
-  const asked = chosen(c.processPack)?.definition?.inputQuestions?.find(
+  const asked = definitionOf(c.processPack)?.inputQuestions?.find(
     (q) => q.key === name,
   );
   if (asked?.choices) {
@@ -400,7 +379,7 @@ function AnswerRow({
 
 function Answers({ session }: { session: CaseSession }) {
   const c = session.c!;
-  const pack = chosen(c.processPack)!.definition!;
+  const pack = definitionOf(c.processPack)!;
   const questions =
     pack.inputQuestions ?? pack.inputs.map((key) => ({ key, question: key }));
   const act = useAct();
@@ -718,7 +697,7 @@ function Failed({ session }: { session: CaseSession }) {
   return (
     <div className="demo-panel border-red-200">
       <h2 className="font-semibold">The workflow failed</h2>
-      <Result value={c.failure?.error} />
+      <Result value={c.run?.state === "failed" ? c.run.error : undefined} />
       <div className="flex gap-2">
         <button
           className="demo-button"
@@ -748,7 +727,7 @@ function Now({
   onClaimed?: () => void;
 }) {
   const c = session.c!;
-  if (c.failure) return <Failed session={session} />;
+  if (c.phase === "failed") return <Failed session={session} />;
   if (c.status !== "active") {
     return (
       <>
@@ -768,7 +747,7 @@ function Now({
       return (
         <>
           <Review session={session} />
-          {(chosen(c.processPack)?.definition?.inputs.length ?? 0) > 0 && (
+          {(definitionOf(c.processPack)?.inputs.length ?? 0) > 0 && (
             <details className="demo-panel">
               <summary className="cursor-pointer font-medium">
                 Change an answer (sends the case back around)
@@ -914,7 +893,7 @@ export function CaseWorkbench({
     <div className="space-y-4">
       <Where c={c} />
       <Now session={session} onClaimed={onClaimed} />
-      <Drawer title="History (caseEvents)">
+      <Drawer title="History (caseEvents), in order">
         <History session={session} />
       </Drawer>
       <Drawer title="The case row (getCase)">

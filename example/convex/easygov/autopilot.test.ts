@@ -45,6 +45,7 @@ const onPack = (fields: Partial<CaseView>) =>
     intake: { goal: "wages", version: 1 },
     processPack: {
       status: "confirmed",
+      kind: "pack",
       goalVersion: 1,
       definition: wagePack,
     } as CaseView["processPack"],
@@ -93,7 +94,11 @@ test("hands the case back where it was told to", () => {
   expect(pilot(view({ waitingFor: "goal" }), run, TODAY)).toBe("stop");
   expect(pilot(view({ status: "done" }), run, TODAY)).toBe("stop");
   expect(
-    pilot(view({ failure: { error: "x" } } as Partial<CaseView>), run, TODAY),
+    pilot(
+      view({ run: { state: "failed", error: "x" } } as Partial<CaseView>),
+      run,
+      TODAY,
+    ),
   ).toBe("stop");
 });
 

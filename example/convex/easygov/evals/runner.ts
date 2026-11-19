@@ -28,6 +28,7 @@ import { languageModel, researchModel } from "../../modelsForDemo";
 import { doc } from "convex-helpers/validators";
 import schema from "../../schema";
 import { pilot, type CaseEvent, type CaseView } from "../autopilot";
+import { chosen } from "../case/schema";
 import {
   choosePack,
   draftProcess,
@@ -443,7 +444,8 @@ export const stepCase = internalAction({
     };
     try {
       const c = await read(ctx, id);
-      const settled = c.waitingFor || c.failure || c.status !== "active";
+      const failed = c.run?.state === "failed";
+      const settled = c.waitingFor || failed || c.status !== "active";
       if (!settled) {
         if (Date.now() - startedAt > CASE_TIMEOUT_MS) {
           return await finish({ error: "The case never settled" });
@@ -464,9 +466,9 @@ export const stepCase = internalAction({
         const { expect } = find(cases.outcome, caseId);
         const got = outcomeOf(c);
         return await finish({
-          checks: { outcome: got === expect, noFailure: !c.failure },
+          checks: { outcome: got === expect, noFailure: !failed },
           detail: `${got}, expected ${expect}`,
-          output: { processPack: c.processPack, failure: c.failure },
+          output: { processPack: c.processPack, run: c.run },
         });
       }
       const { pilot: options, expect } = find(cases.pipeline, caseId);
@@ -849,12 +851,11 @@ export const saveDraftCase = mutation({
   returns: v.id("easygovEvalCases"),
   handler: async (ctx, { caseId, name }) => {
     const found = await ctx.db.get("cases", caseId);
-    const selection = found?.processPack;
-    if (!selection || selection.status === "rejected") {
+    const selection = chosen(found?.processPack);
+    if (!found || selection?.kind !== "draft") {
       throw new ConvexError("That case has no draft.");
     }
     const { draft, research } = selection;
-    if (!draft) throw new ConvexError("That case has no draft.");
     return await ctx.db.insert("easygovEvalCases", {
       name: name?.trim() || draft.title,
       process: found.intake?.goal ?? draft.title,

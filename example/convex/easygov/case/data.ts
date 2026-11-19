@@ -17,7 +17,12 @@ import {
   type QueryCtx,
 } from "../../_generated/server";
 import type { vProcessPackDefinition } from "../packs/schema";
-import { vFilledDocument } from "./schema";
+import {
+  definitionOf,
+  draftOf,
+  vFilledDocument,
+  type HistoryKind,
+} from "./schema";
 import { intakeAgent, proposalFields, selectionAgent } from "./agents";
 import { missingInputs, renderLetter } from "./answers";
 import { rememberedElsewhere } from "../profile/data";
@@ -55,7 +60,7 @@ export async function writeCase(
 export async function logCaseEvent(
   ctx: MutationCtx,
   caseId: Id<"cases">,
-  kind: string,
+  kind: HistoryKind,
   detail?: string,
 ): Promise<void> {
   await ctx.db.insert("caseEvents", { caseId, kind, detail });
@@ -71,8 +76,7 @@ export async function endCase(
   await writeCase(ctx, c._id, {
     status,
     endReason,
-    workflowId: undefined,
-    failure: undefined,
+    run: undefined,
   });
   await logCaseEvent(ctx, c._id, `case.${status}`, endReason);
 }
@@ -108,8 +112,10 @@ async function packOf(
   c: Case,
 ): Promise<Doc<"processPacks"> | Draft | null> {
   const selection = currentChoice(c);
-  const id = selection?.definition?.id;
-  return id ? await ctx.db.get("processPacks", id) : (selection?.draft ?? null);
+  const id = definitionOf(selection)?.id;
+  return id
+    ? await ctx.db.get("processPacks", id)
+    : (draftOf(selection) ?? null);
 }
 
 // --- 1. Intake --------------------------------------------------------------
@@ -193,14 +199,14 @@ export const goalOf = internalQuery({
     workflowId: WorkflowId;
   }> => {
     const found = await ctx.db.get("cases", caseId);
-    if (!found?.intake || !found.workflowId)
+    if (!found?.intake || found.run?.state !== "running")
       throw new Error("The case has no goal or running workflow");
     const { goal, version: goalVersion } = found.intake;
     return {
       goal,
       goalVersion,
       threadId: found.threadId,
-      workflowId: found.workflowId,
+      workflowId: found.run.workflowId,
     };
   },
 });
@@ -242,7 +248,8 @@ export const recordProposal = internalMutation({
     if (currentSelection(found)) return true;
     const { goalVersion } = origin;
     if (
-      found.workflowId !== origin.workflowId ||
+      found.run?.state !== "running" ||
+      found.run.workflowId !== origin.workflowId ||
       found.intake?.version !== goalVersion
     )
       return false;
@@ -252,9 +259,18 @@ export const recordProposal = internalMutation({
       (stored.ownerId === undefined || stored.ownerId === found.userId)
         ? processPackDefinition(stored)
         : undefined;
+    // One kind of thing is proposed: a saved pack, else a draft, else a
+    // referral.
+    const choice = definition
+      ? { kind: "pack" as const, definition }
+      : draft
+        ? { kind: "draft" as const, draft, research }
+        : referral
+          ? { kind: "referral" as const, jurisdiction }
+          : undefined;
     // Nothing usable (e.g. a pack this person can't see): say nothing, so
     // the thread never announces a proposal the case doesn't have.
-    if (!needsClarification && !referral && !draft && !definition) return false;
+    if (!needsClarification && !choice) return false;
     await selectionAgent.saveMessage(ctx, {
       threadId: found.threadId,
       message: { role: "assistant", content: message },
@@ -263,17 +279,10 @@ export const recordProposal = internalMutation({
     // A question for the person sends the case back to intake, like a
     // rejection: the goal as it stands can't be matched.
     await writeCase(ctx, caseId, {
-      processPack: needsClarification
-        ? { status: "rejected", goalVersion }
-        : {
-            status: "proposed",
-            goalVersion,
-            definition,
-            draft,
-            research: draft ? research : undefined,
-            referral,
-            jurisdiction: referral ? jurisdiction : undefined,
-          },
+      processPack:
+        needsClarification || !choice
+          ? { status: "rejected", goalVersion, reason: "clarification" }
+          : { status: "proposed", goalVersion, ...choice },
     });
     // A question isn't a proposal: the history says which one this was.
     await logCaseEvent(
@@ -303,7 +312,7 @@ export const isReferral = internalQuery({
   returns: v.boolean(),
   handler: async (ctx, { caseId }) => {
     const found = await ctx.db.get("cases", caseId);
-    return !!(found && currentChoice(found)?.referral);
+    return !!found && currentChoice(found)?.kind === "referral";
   },
 });
 
@@ -639,11 +648,11 @@ export const workflowDone = internalMutation({
   returns: v.null(),
   handler: async (ctx, { workflowId, result, context }) => {
     const found = await ctx.db.get("cases", context.caseId);
-    if (!found || found.workflowId !== workflowId) return null;
+    if (found?.run?.state !== "running" || found.run.workflowId !== workflowId)
+      return null;
     if (result.kind === "failed") {
       await writeCase(ctx, found._id, {
-        failure: { error: result.error, workflowId },
-        workflowId: undefined,
+        run: { state: "failed", workflowId, error: result.error },
       });
       await logCaseEvent(ctx, found._id, "case.failed", result.error);
     } else if (found.status === "active") {

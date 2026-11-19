@@ -9,8 +9,8 @@ import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { mutation, query } from "../_generated/server";
 import { getAuthUserId } from "../utils";
-import { waitingFor } from "./case/state";
-import { vWaitingFor } from "./case/schema";
+import { phase, waitingFor } from "./case/state";
+import { vHistoryKind, vPhase, vWaitingFor } from "./case/schema";
 import { vCoverage } from "./firms/schema";
 import { candidates, vSaveResult } from "./packs/data";
 import { irs8822, ssaAppeal, wageClaim } from "./packs/packs.testkit";
@@ -162,6 +162,7 @@ export const cases = query({
       id: v.id("cases"),
       startedAt: v.number(),
       status: v.string(),
+      phase: vPhase,
       waitingFor: vWaitingFor,
       failed: v.boolean(),
       goal: v.optional(v.string()),
@@ -179,8 +180,9 @@ export const cases = query({
       id: row._id,
       startedAt: row._creationTime,
       status: row.status,
+      phase: phase(row),
       waitingFor: waitingFor(row),
-      failed: row.failure !== undefined,
+      failed: row.run?.state === "failed",
       goal: row.intake?.goal,
       source: row.source,
     }));
@@ -193,7 +195,7 @@ export const history = query({
   returns: v.array(
     v.object({
       at: v.number(),
-      kind: v.string(),
+      kind: vHistoryKind,
       detail: v.optional(v.string()),
     }),
   ),

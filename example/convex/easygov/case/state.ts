@@ -3,7 +3,13 @@
 // both always agree on where the case is.
 import type { Doc } from "../../_generated/dataModel";
 import { addDays, fingerprint, missingInputs, passes } from "./answers";
-import { chosen, type WaitingFor } from "./schema";
+import {
+  chosen,
+  definitionOf,
+  WAITS,
+  type Phase,
+  type WaitingFor,
+} from "./schema";
 
 export type Case = Doc<"cases">;
 
@@ -39,14 +45,16 @@ export function currentChoice(c: Case) {
 export function requiredInputs(c: Case): string[] | undefined {
   const selection = currentSelection(c);
   return selection?.status === "confirmed"
-    ? selection.definition?.inputs
+    ? definitionOf(selection)?.inputs
     : undefined;
 }
 
 /** The confirmed pack, as the case pinned it. */
 export function pinnedPack(c: Case) {
   const selection = currentSelection(c);
-  return selection?.status === "confirmed" ? selection.definition : undefined;
+  return selection?.status === "confirmed"
+    ? definitionOf(selection)
+    : undefined;
 }
 
 /** What was read from the conversation for the current goal, if started. */
@@ -155,22 +163,30 @@ export function sameWait(before: Case, after: Case): boolean {
   );
 }
 
-/** What the case waits for a person to do; null if nothing right now. */
-export function waitingFor(c: Case): WaitingFor {
-  if (c.status !== "active" || c.failure) return null;
-  if (!standingGoal(c)) return "goal";
+/** Where the case is, by name. Every case is in exactly one phase. */
+export function phase(c: Case): Phase {
+  if (c.status !== "active") return c.status;
+  if (c.run?.state === "failed") return "failed";
+  if (!standingGoal(c)) return "intake";
   const selection = currentSelection(c);
-  if (selection?.status === "proposed") return "pack";
-  if (selection?.status !== "confirmed") return null;
+  if (!selection) return "proposing";
+  if (selection.status === "proposed") return "pack";
+  // A rejection for the current goal leaves no standing goal: not here.
+  if (selection.status !== "confirmed") return "intake";
   // A request for legal advice has no pack: only the referral to agree to.
-  if (!selection.referral) {
+  if (selection.kind !== "referral") {
     // Not yet: what the person said may already answer some of it.
-    if (readingConversation(c)) return null;
-    if (missing(c).length) return "answers";
-    if (missingDocuments(c).length) return "answers";
+    if (readingConversation(c)) return "reading";
+    if (missing(c).length || missingDocuments(c).length) return "answers";
     // All in: in review once the artifact matches them, until approved.
     const review = reviewOutcome(c);
-    if (review !== "approved") return review === null ? "approval" : null;
+    if (review === "changed") return "filling";
+    if (review === null) return "approval";
   }
-  return c.referral?.status === "offered" ? "consent" : null;
+  return c.referral?.status === "offered" ? "consent" : "finishing";
+}
+
+/** What the case waits for a person to do; null if nothing right now. */
+export function waitingFor(c: Case): WaitingFor {
+  return WAITS[phase(c)] ?? null;
 }

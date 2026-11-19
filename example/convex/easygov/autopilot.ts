@@ -3,7 +3,12 @@
 // answers are made up from the pinned pack, so it drives any pack, including
 // one a model drafted.
 import type { Infer } from "convex/values";
-import { chosen, type CaseEvent, type WaitingFor } from "./case/schema";
+import {
+  definitionOf,
+  type CaseEvent,
+  type Phase,
+  type WaitingFor,
+} from "./case/schema";
 import type { vCaseDoc } from "./schema";
 
 // The types come from the schema, not the generated API: the eval runner is
@@ -12,12 +17,13 @@ export type { CaseEvent };
 export type Waiting = WaitingFor;
 /** A case as `getCase` returns it. */
 export type CaseView = Infer<typeof vCaseDoc> & {
+  phase: Phase;
   waitingFor: WaitingFor;
   deadline: { label: string; date: string } | null;
   suggestions: Record<string, string>;
   profileInputs: Record<string, string>;
 };
-type Pack = NonNullable<NonNullable<ReturnType<typeof chosen>>["definition"]>;
+type Pack = NonNullable<ReturnType<typeof definitionOf>>;
 
 export type PilotOptions = {
   /**
@@ -81,11 +87,10 @@ export function pilot(
   options: PilotOptions,
   today: string,
 ): PilotAction | "wait" | "stop" {
-  if (c.status !== "active" || c.failure) return "stop";
+  if (c.status !== "active" || c.run?.state === "failed") return "stop";
   const { until } = options;
   if (until === "approved" ? c.approval !== undefined : c.waitingFor === until)
     return "stop";
-  const selection = chosen(c.processPack);
   switch (c.waitingFor) {
     case null:
       return "wait";
@@ -96,7 +101,7 @@ export function pilot(
     case "pack":
       return { event: { type: "processPack.confirm" } };
     case "answers": {
-      const pack = selection?.definition;
+      const pack = definitionOf(c.processPack);
       if (!pack) return "stop";
       // What the case offers back, a person would just accept. Not where
       // this run is steering the answer: last time's amount would undo it.

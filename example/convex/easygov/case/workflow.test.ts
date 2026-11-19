@@ -75,7 +75,7 @@ describe("agreeing on what to do", () => {
     let found = await send(t, caseId, { type: "processPack.reject" });
     expect(found).toMatchObject({
       waitingFor: "goal",
-      processPack: { status: "rejected" },
+      processPack: { status: "rejected", reason: "person" },
     });
     found = await send(t, caseId, { type: "intake.submit", goal: "I moved" });
     expect(found).toMatchObject({
@@ -177,7 +177,7 @@ describe("agreeing on what to do", () => {
     });
     expect(found.processPack).toMatchObject({
       status: "proposed",
-      referral: true,
+      kind: "referral",
     });
     // Confirming it isn't sharing it: the person is asked first.
     found = await send(t, caseId, { type: "processPack.confirm" });
@@ -239,7 +239,7 @@ describe("a busy person", () => {
     }
     await t.finishAllScheduledFunctions(vi.runAllTimers, 5000);
     let found = await read(t, caseId);
-    expect(found.failure).toBeUndefined();
+    expect(found.run?.state).toBe("running");
     expect(found).toMatchObject({ status: "active", waitingFor: "answers" });
 
     // The edit that completes the answers is still noticed.
@@ -262,8 +262,10 @@ describe("failures", () => {
       goal: "I moved",
     });
     expect(found).toMatchObject({ status: "active", waitingFor: null });
-    expect(found.failure?.error).toMatch(/model is down/);
-    expect(found.workflowId).toBeUndefined();
+    expect(found).toMatchObject({
+      phase: "failed",
+      run: { state: "failed", error: expect.stringMatching(/model is down/) },
+    });
     await expect(
       t.mutation(api.easygov.case.public.send, {
         caseId,
@@ -274,7 +276,7 @@ describe("failures", () => {
 
     model.failing = false;
     found = await send(t, caseId, { type: "step.retry" });
-    expect(found.failure).toBeUndefined();
+    expect(found.run?.state).toBe("running");
     expect(found).toMatchObject({
       waitingFor: "pack",
       intake: { goal: "I moved", version: 1 },
@@ -293,7 +295,8 @@ describe("failures", () => {
       expect(found.status).toBe(
         type === "step.cancel" ? "stopped" : "canceled",
       );
-      expect(found.failure).toBeUndefined();
+      // An ended case has no run, failed or otherwise.
+      expect(found.run).toBeUndefined();
       model.failing = false;
     }
   });
@@ -313,7 +316,7 @@ describe("failures", () => {
       await nudgeCase(ctx, (await ctx.db.get("cases", caseId))!);
     });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect((await read(t, caseId)).failure).toBeDefined();
+    expect((await read(t, caseId)).run?.state).toBe("failed");
 
     // Repair it and retry: the workflow replays from the top, finds the goal
     // and the confirmed pack in place, and waits for the rest of the answers.

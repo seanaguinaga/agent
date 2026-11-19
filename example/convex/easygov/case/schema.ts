@@ -28,52 +28,84 @@ export const vFilledDocument = v.object({
  */
 const goalVersion = v.number();
 
-/** What a proposed or confirmed selection holds. */
-const selectionFields = {
-  goalVersion,
-  /**
-   * What the case asks for: pinned from the saved pack, or from the
-   * draft once it's confirmed. Only a saved pack has an `id`.
-   */
-  definition: v.optional(
-    v.object({
-      id: v.optional(v.id("processPacks")),
-      inputs: v.array(v.string()),
-      inputQuestions: v.optional(vProcessPackQuestions),
-      documents: v.optional(vPackDocuments),
-      deadline: v.optional(vPackDeadline),
-      referral: v.optional(vPackReferral),
-      profile: v.optional(vPackProfileLinks),
-      form: v.optional(v.object({ editionId: v.id("formEditions") })),
-    }),
-  ),
+/**
+ * What the case asks for: pinned from the saved pack, or from the draft
+ * once it's confirmed. Only a saved pack has an `id`.
+ */
+const vPinned = v.object({
+  id: v.optional(v.id("processPacks")),
+  inputs: v.array(v.string()),
+  inputQuestions: v.optional(vProcessPackQuestions),
+  documents: v.optional(vPackDocuments),
+  deadline: v.optional(vPackDeadline),
+  referral: v.optional(vPackReferral),
+  profile: v.optional(vPackProfileLinks),
+  form: v.optional(v.object({ editionId: v.id("formEditions") })),
+});
+
+/** What was chosen, by `kind`: one of three things, never a mix. */
+const kinds = {
+  /** A saved pack fits. */
+  pack: { kind: v.literal("pack"), definition: vPinned },
   /**
    * A process drafted for this goal, when no saved pack fits. The case
-   * runs on it once the person confirms, and it stays here: it's never
-   * saved as a pack, so no other case finds it.
+   * runs on it once the person confirms (`definition` is pinned then), and
+   * it stays here: it's never saved as a pack, so no other case finds it.
    */
-  draft: v.optional(vProcessPackDefinition),
-  /**
-   * What the search found about the process, when the draft was written
-   * from it: where the checklist came from, and what an eval replays.
-   */
-  research: v.optional(v.string()),
+  draft: {
+    kind: v.literal("draft"),
+    draft: vProcessPackDefinition,
+    /**
+     * What the search found about the process, when the draft was written
+     * from it: where the checklist came from, and what an eval replays.
+     */
+    research: v.optional(v.string()),
+    definition: v.optional(vPinned),
+  },
   /** No pack: the request goes to a legal referral. */
-  referral: v.optional(v.literal(true)),
-  /** Where a referral with no pack applies, if the request said. */
-  jurisdiction: v.optional(v.string()),
+  referral: {
+    kind: v.literal("referral"),
+    /** Where it applies, if the request said. */
+    jurisdiction: v.optional(v.string()),
+  },
 };
+const proposed = { status: v.literal("proposed"), goalVersion };
+const confirmed = { status: v.literal("confirmed"), goalVersion };
 
 export const vSelection = v.union(
-  v.object({ status: v.literal("proposed"), ...selectionFields }),
-  v.object({ status: v.literal("confirmed"), ...selectionFields }),
-  v.object({ status: v.literal("rejected"), goalVersion }),
+  v.object({ ...proposed, ...kinds.pack }),
+  v.object({ ...proposed, ...kinds.draft }),
+  v.object({ ...proposed, ...kinds.referral }),
+  v.object({ ...confirmed, ...kinds.pack }),
+  v.object({ ...confirmed, ...kinds.draft }),
+  v.object({ ...confirmed, ...kinds.referral }),
+  v.object({
+    status: v.literal("rejected"),
+    goalVersion,
+    /**
+     * Who turned the goal down: the person rejected the proposal, or the
+     * selection agent couldn't match the goal and asked a question instead.
+     */
+    reason: v.union(v.literal("person"), v.literal("clarification")),
+  }),
 );
 export type Selection = Infer<typeof vSelection>;
 
 /** The selection, if it chose something. A rejection chose nothing. */
 export function chosen(selection: Selection | undefined) {
   return selection?.status === "rejected" ? undefined : selection;
+}
+
+/** What the selection pins for the case to run on. A referral pins nothing. */
+export function definitionOf(selection: Selection | undefined) {
+  const choice = chosen(selection);
+  return choice && choice.kind !== "referral" ? choice.definition : undefined;
+}
+
+/** The selection's draft, if it chose one. */
+export function draftOf(selection: Selection | undefined) {
+  const choice = chosen(selection);
+  return choice?.kind === "draft" ? choice.draft : undefined;
 }
 
 export const caseFields = {
@@ -92,10 +124,20 @@ export const caseFields = {
   endReason: v.optional(v.string()),
   /** Bumped by every write to the case, so a stale `send` is refused. */
   seq: v.number(),
-  /** The case's workflow while it runs. Unset once it has failed or ended. */
-  workflowId: v.optional(vWorkflowId),
-  /** Set while the workflow has failed and waits for a retry or a give-up. */
-  failure: v.optional(v.object({ error: v.string(), workflowId: vWorkflowId })),
+  /**
+   * The case's workflow, by `state`: `running`, or `failed` while it waits
+   * for a retry or a give-up. Unset once the case has ended.
+   */
+  run: v.optional(
+    v.union(
+      v.object({ state: v.literal("running"), workflowId: vWorkflowId }),
+      v.object({
+        state: v.literal("failed"),
+        workflowId: vWorkflowId,
+        error: v.string(),
+      }),
+    ),
+  ),
 
   /**
    * The newest user message no agent has answered yet. `sendMessage` sets
@@ -117,8 +159,8 @@ export const caseFields = {
   intake: v.optional(v.object({ goal: v.string(), version: v.number() })),
 
   /**
-   * What was chosen for a goal, by `status`. A rejection holds nothing but
-   * the goal it was for.
+   * What was chosen for a goal, by `status` and `kind`. A rejection holds
+   * only the goal it was for and who turned it down.
    */
   processPack: v.optional(vSelection),
 
@@ -214,6 +256,87 @@ export const vWaitingFor = v.union(
   v.null(),
 );
 export type WaitingFor = Infer<typeof vWaitingFor>;
+
+/**
+ * Where a case is, by name, worked out from its fields (`phase` in
+ * `state.ts`): every situation has one, so nothing hides behind a null.
+ * In order, though a case can go back: a rejected pack returns to `intake`,
+ * and an answer changed in review returns to `filling`.
+ */
+export const PHASES = [
+  // The person says what they want; intake answers their chat.
+  "intake",
+  // The workflow looks for a process that fits the goal.
+  "proposing",
+  // The person confirms the proposed process, or rejects it.
+  "pack",
+  // The workflow reads the conversation for answers already given.
+  "reading",
+  // The person gives the answers and files the process asks for.
+  "answers",
+  // The workflow builds the document from the answers.
+  "filling",
+  // The person reviews the document and approves it.
+  "approval",
+  // The person says whether to share the case with a lawyer.
+  "consent",
+  // The workflow prepares delivery and ends the case.
+  "finishing",
+  // The workflow failed, and waits for a retry or a give-up.
+  "failed",
+  // Ended: the case's `status`.
+  "done",
+  "stopped",
+  "canceled",
+] as const;
+export type Phase = (typeof PHASES)[number];
+export const vPhase = v.union(
+  v.literal("intake"),
+  v.literal("proposing"),
+  v.literal("pack"),
+  v.literal("reading"),
+  v.literal("answers"),
+  v.literal("filling"),
+  v.literal("approval"),
+  v.literal("consent"),
+  v.literal("finishing"),
+  v.literal("failed"),
+  v.literal("done"),
+  v.literal("stopped"),
+  v.literal("canceled"),
+);
+
+/** What the person is asked for in each phase that waits for them. */
+export const WAITS: Partial<Record<Phase, NonNullable<WaitingFor>>> = {
+  intake: "goal",
+  pack: "pack",
+  answers: "answers",
+  approval: "approval",
+  consent: "consent",
+};
+
+/**
+ * What can be recorded in a case's history (`caseEvents.kind`). These are
+ * what happened, not what was sent: see `vCaseEvent` for the latter.
+ */
+export const vHistoryKind = v.union(
+  v.literal("case.started"),
+  v.literal("case.claimed"),
+  v.literal("case.failed"),
+  v.literal("case.retried"),
+  v.literal("case.done"),
+  v.literal("case.stopped"),
+  v.literal("case.canceled"),
+  v.literal("goal.set"),
+  v.literal("pack.proposed"),
+  v.literal("pack.clarification"),
+  v.literal("answers.suggested"),
+  v.literal("document.filled"),
+  v.literal("referral.shared"),
+  v.literal("referral.accepted"),
+  v.literal("referral.withdrawn"),
+);
+export type HistoryKind = Infer<typeof vHistoryKind>;
 
 /** Everything a person can send to a case. */
 export const vCaseEvent = v.union(

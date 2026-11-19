@@ -69,15 +69,15 @@ describe("the case API", () => {
 
   test("canceling stops the case and its workflows", async () => {
     const { t, caseId } = await start();
-    const { workflowId } = await read(t, caseId);
+    const { run } = await read(t, caseId);
     const found = await send(t, caseId, { type: "case.cancel" });
     expect(found).toMatchObject({
       status: "canceled",
       endReason: "Canceled by the user",
     });
     // The case's workflow was canceled with it.
-    expect(found.workflowId).toBeUndefined();
-    const status = await t.run((ctx) => workflow.status(ctx, workflowId!));
+    expect(found.run).toBeUndefined();
+    const status = await t.run((ctx) => workflow.status(ctx, run!.workflowId));
     expect(status.type).toBe("canceled");
     await expect(
       t.mutation(api.easygov.case.public.send, {

@@ -25,7 +25,7 @@ A case can also **start on a pack**, from a landing page: `startCase` with a
 | ------------------ | ---------------------------------------------------------------------- |
 | `case/workflow.ts` | The case's workflow, and how it waits for a person                     |
 | `case/data.ts`     | The queries and mutations the workflow calls, and its `onComplete`     |
-| `case/state.ts`    | Pure: what the case's fields mean, including `waitingFor`              |
+| `case/state.ts`    | Pure: what the case's fields mean, including `phase` and `waitingFor`  |
 | `case/events.ts`   | What a person can send, when it's taken, and what it writes            |
 | `case/public.ts`   | What a client calls: `startCase`, `getCase`, `sendMessage`, `send`     |
 | `packs/public.ts`  | What a landing page reads: the shared packs, one page each             |
@@ -55,6 +55,20 @@ in the workflow's history, so:
 - A retry restarts the workflow from the top. It finds the goal, the pack and
   the answers already there, and carries on from where the case is. That's also
   how to recover a case whose workflow a code change broke.
+
+**Every case is in one named phase.** `phase(case)` in `case/state.ts` works it
+out from the case's fields; it isn't stored, so it can't fall behind them. In
+order: `intake`, `proposing`, `pack`, `reading`, `answers`, `filling`,
+`approval`, `consent`, `finishing`, then `done`, `stopped` or `canceled`, with
+`failed` while the workflow waits for a retry. The person acts in five of them,
+and `waitingFor` is the phase's name for what they're asked (`intake` waits for
+a `goal`); in the rest the workflow is working and `waitingFor` is null.
+`getCase` returns both, and the workbench shows the phases as a timeline.
+
+What a case holds says which of several things it is, not which fields happen to
+be set: a selection's `kind` is `pack`, `draft` or `referral`, a rejected one
+says whether the `person` turned it down or the agent asked a `clarification`,
+and `run` is the workflow `running` or `failed`.
 
 **The agents save nothing themselves.** Each model call runs as a retried action
 and returns a result; the workflow's next mutation decides what to keep. A
@@ -87,8 +101,9 @@ person can take it back until then (`withdrawReferral`), and the case's referral
 then reads `withdrawn`.
 
 **Failures park the case.** If the workflow fails, `onComplete` records the
-error and the case takes no events until the person sends `step.retry` (run
-again from the top) or `step.cancel` (stop). `case.cancel` works at any time.
+error (`run.state` is `failed`) and the case takes no events until the person
+sends `step.retry` (run again from the top) or `step.cancel` (stop).
+`case.cancel` works at any time.
 
 ## Try it from the dashboard
 

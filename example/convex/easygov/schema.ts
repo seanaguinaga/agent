@@ -2,7 +2,7 @@
 // `case/schema.ts`; the firms and referrals are in `firms/schema.ts`.
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
-import { caseFields } from "./case/schema";
+import { caseFields, vHistoryKind } from "./case/schema";
 import evalTables from "./evals/tables";
 import firmTables from "./firms/schema";
 import formTables from "./forms/schema";
@@ -21,7 +21,7 @@ export default {
   /** The history of a case: what happened, in order. */
   caseEvents: defineTable({
     caseId: v.id("cases"),
-    kind: v.string(),
+    kind: vHistoryKind,
     detail: v.optional(v.string()),
   }).index("by_caseId", ["caseId"]),
   ...firmTables,

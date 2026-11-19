@@ -132,6 +132,7 @@ test("a real draft is saved as a case, and joins the draft slice", async () => {
       intake: { goal: "Contest my ticket", version: 1 },
       processPack: {
         status: "proposed",
+        kind: "draft",
         goalVersion: 1,
         draft,
         research: "Within 21 days. https://www.oaklandca.gov/tickets",

@@ -44,6 +44,6 @@ describe("IRS 8822", () => {
       waitingFor: null,
       delivery: { status: "prepared", channel: "mail" },
     });
-    expect(found.workflowId).toBeUndefined();
+    expect(found.run).toBeUndefined();
   });
 });

@@ -9,7 +9,13 @@ import { currentFacts, keepAnswer } from "../profile/data";
 import { factOf, READINGS, type FactKey } from "../profile/vocabulary";
 import { answerProblem, today } from "./answers";
 import { draftDefinition, logCaseEvent } from "./data";
-import type { CaseEvent, WaitingFor } from "./schema";
+import {
+  definitionOf,
+  draftOf,
+  type CaseEvent,
+  type Selection,
+  type WaitingFor,
+} from "./schema";
 import {
   answerKind,
   currentChoice,
@@ -54,7 +60,11 @@ export const EVENTS: {
   "processPack.reject": {
     during: ["pack"],
     handle: (_ctx, c) => ({
-      processPack: { status: "rejected", goalVersion: c.intake!.version },
+      processPack: {
+        status: "rejected",
+        goalVersion: c.intake!.version,
+        reason: "person",
+      },
     }),
   },
   // In review too: the changed answer sends the case back around.
@@ -175,7 +185,8 @@ async function share(ctx: MutationCtx, c: Case): Promise<Partial<Case>> {
     kind,
     status: "open",
     jurisdiction:
-      (pack || selection?.draft)?.jurisdiction ?? selection?.jurisdiction,
+      (pack || draftOf(selection))?.jurisdiction ??
+      (selection?.kind === "referral" ? selection.jurisdiction : undefined),
     priceCents: pinned?.referral?.priceCents ?? DEFAULT_PRICE_CENTS,
     source: c.source,
     goal: c.intake!.goal,
@@ -197,16 +208,26 @@ async function share(ctx: MutationCtx, c: Case): Promise<Partial<Case>> {
  */
 function confirm(c: Case): Partial<Case> {
   const selection = currentChoice(c)!;
-  const { draft, referral, goalVersion } = selection;
-  const definition = selection.definition ?? (draft && draftDefinition(draft));
+  const { goalVersion } = selection;
+  const processPack: Selection =
+    selection.kind === "draft"
+      ? {
+          ...selection,
+          status: "confirmed",
+          definition: draftDefinition(selection.draft),
+        }
+      : { ...selection, status: "confirmed" };
+  const referral = selection.kind === "referral";
   return {
-    processPack: { ...selection, status: "confirmed", definition },
+    processPack,
     // Intake is over: a message it never answered isn't pending any more.
     // It's still in the conversation, which is read for answers next.
     pendingMessageId: undefined,
     // A proposal follows a stated goal, so there's a conversation to read
     // for answers before asking for them.
-    suggested: definition?.inputs.length ? { goalVersion } : undefined,
+    suggested: definitionOf(processPack)?.inputs.length
+      ? { goalVersion }
+      : undefined,
     // Legal advice has no pack: the referral is all there is to agree to.
     referral: referral ? { kind: "advice", status: "offered" } : undefined,
   };

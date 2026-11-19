@@ -6,7 +6,7 @@ import type { Id } from "../../_generated/dataModel";
 import { initConvexTest } from "../../setup.test";
 import { irs8822, wageClaim } from "../packs/packs.testkit";
 import { addDays, passes, renderLetter } from "./answers";
-import { chosen } from "./schema";
+import { definitionOf } from "./schema";
 import { answer, model, read, resetCases, send, type T } from "./cases.testkit";
 
 vi.mock("../../modelsForDemo", async () =>
@@ -63,7 +63,7 @@ describe("starting on a pack", () => {
       intake: { goal: wageClaim.title },
       processPack: { status: "confirmed" },
     });
-    expect(await read(t, caseId)).not.toHaveProperty("failure");
+    expect((await read(t, caseId)).run?.state).toBe("running");
   });
 
   test("an old link starts the current version; a private pack starts nothing", async () => {
@@ -78,9 +78,7 @@ describe("starting on a pack", () => {
     const caseId = await t.mutation(api.easygov.case.public.startCase, {
       packId: first,
     });
-    expect(chosen((await read(t, caseId)).processPack)?.definition?.id).toBe(
-      second,
-    );
+    expect(definitionOf((await read(t, caseId)).processPack)?.id).toBe(second);
 
     const mine = await savePack(
       t,

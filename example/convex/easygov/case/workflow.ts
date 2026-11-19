@@ -183,10 +183,10 @@ const nudge = defineEvent({ name: "nudge", validator: v.null() });
 
 /** Tells the case's workflow to look again, if one is running. */
 export async function nudgeCase(ctx: MutationCtx, c: Case): Promise<void> {
-  if (!c.workflowId) return;
+  if (c.run?.state !== "running") return;
   await workflow.sendEvent(ctx, {
     ...nudge,
-    workflowId: c.workflowId,
+    workflowId: c.run.workflowId,
     value: null,
   });
 }

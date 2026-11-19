@@ -412,10 +412,11 @@ export type Outcome = "pack" | "draft" | "referral" | "clarification" | "none";
 export function outcomeOf(c: CaseView): Outcome {
   const selection = c.processPack;
   if (!selection || selection.goalVersion !== c.intake?.version) return "none";
-  if (selection.status === "rejected") return "clarification";
-  if (selection.draft) return "draft";
-  if (selection.referral) return "referral";
-  return selection.definition ? "pack" : "none";
+  // A proposal the person turned down came to nothing.
+  if (selection.status === "rejected") {
+    return selection.reason === "clarification" ? "clarification" : "none";
+  }
+  return selection.kind;
 }
 
 export type PipelineExpectation = {
@@ -473,7 +474,7 @@ export function gradePipeline(
   return {
     checks,
     detail:
-      `${c.status}${c.endReason ? `: ${c.endReason}` : ""}${c.failure ? `; failed: ${c.failure.error}` : ""}` +
+      `${c.status}${c.endReason ? `: ${c.endReason}` : ""}${c.run?.state === "failed" ? `; failed: ${c.run.error}` : ""}` +
       (missing.length ? `; not on the PDF: ${missing.join(", ")}` : "") +
       (filled ? `; ${filled.ticked} ticked` : ""),
   };

@@ -10,7 +10,7 @@ import {
   start,
   type T,
 } from "../case/cases.testkit";
-import { chosen } from "../case/schema";
+import { chosen, definitionOf, draftOf } from "../case/schema";
 import { choose, request } from "./packs.testkit";
 import {
   jurisdictionChain,
@@ -371,7 +371,7 @@ describe("selecting a pack for a case", () => {
         draft: { title: recipe.title },
       },
     });
-    expect(chosen(confirmed.processPack)?.definition?.id).toBeUndefined();
+    expect(definitionOf(confirmed.processPack)?.id).toBeUndefined();
     const review = await answer(t, caseId, { noticeDate: "2026-11-01" });
     expect(review.artifact?.letter).toBe(
       "I received a notice dated 2026-11-01.",
@@ -390,8 +390,8 @@ describe("selecting a pack for a case", () => {
     await t.finishAllScheduledFunctions(vi.runAllTimers);
     model.replies.push(...drafting);
     const next = await send(t, nextId, { type: "intake.submit", goal });
-    expect(chosen(next.processPack)?.definition).toBeUndefined();
-    expect(chosen(next.processPack)?.draft?.title).toBe(recipe.title);
+    expect(definitionOf(next.processPack)).toBeUndefined();
+    expect(draftOf(next.processPack)?.title).toBe(recipe.title);
   });
 
   test("a draft with no letter asks nothing: the checklist goes straight to review", async () => {
@@ -406,14 +406,12 @@ describe("selecting a pack for a case", () => {
       type: "intake.submit",
       goal: "Garnishment notice",
     });
-    expect(chosen(proposed.processPack)?.draft).toMatchObject({
+    expect(draftOf(proposed.processPack)).toMatchObject({
       inputs: [],
       inputQuestions: [],
     });
     // No pages found: the checklist carries no sources.
-    expect(
-      chosen(proposed.processPack)?.draft?.output?.sources,
-    ).toBeUndefined();
+    expect(draftOf(proposed.processPack)?.output?.sources).toBeUndefined();
     const review = await send(t, caseId, { type: "processPack.confirm" });
     expect(review.waitingFor).toBe("approval");
     expect(JSON.parse(review.artifact?.summary ?? "{}")).toMatchObject({
@@ -516,7 +514,8 @@ describe("selecting a pack for a case", () => {
       status: "proposed",
       definition: { id: saved.id },
     });
-    expect(chosen(found.processPack)?.referral).toBeUndefined();
+    expect(found.processPack?.status).toBe("proposed");
+    expect(chosen(found.processPack)?.kind).toBe("pack");
   });
 
   test("a request without a usable jurisdiction asks where", async () => {
@@ -528,7 +527,8 @@ describe("selecting a pack for a case", () => {
     });
     expect(found).toMatchObject({
       waitingFor: "goal",
-      processPack: { status: "rejected" },
+      // The agent asked where: the person didn't turn anything down.
+      processPack: { status: "rejected", reason: "clarification" },
     });
   });
 });

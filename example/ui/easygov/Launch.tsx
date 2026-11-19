@@ -157,12 +157,7 @@ export function Launcher({
             <option value="">Recent cases…</option>
             {recent?.map((row) => (
               <option key={row.id} value={row.id}>
-                {new Date(row.startedAt).toLocaleTimeString()} · {row.status}
-                {row.failed
-                  ? " (failed)"
-                  : row.waitingFor
-                    ? ` (${row.waitingFor})`
-                    : ""}
+                {new Date(row.startedAt).toLocaleTimeString()} · {row.phase}
                 {row.goal ? ` · ${row.goal.slice(0, 40)}` : ""}
               </option>
             ))}

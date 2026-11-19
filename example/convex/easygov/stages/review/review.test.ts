@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "../../../_generated/api";
-import { answer, resetCases, send, start } from "../../cases.testkit";
+import { answer, resetCases, send, start } from "../../case/cases.testkit";
 
 vi.mock("../../../modelsForDemo", async () =>
-  (await import("../../cases.testkit")).mockModels(),
+  (await import("../../case/cases.testkit")).mockModels(),
 );
 
 const address = {
@@ -18,7 +18,7 @@ describe("the review stage", () => {
   test("approval is refused when the artifact is out of date", async () => {
     const { t, caseId } = await start();
     await send(t, caseId, { type: "intake.submit", goal: "I moved" });
-    await send(t, caseId, { type: "route.confirm", processKey: "irs8822" });
+    await send(t, caseId, { type: "processPack.confirm" });
     const found = await answer(t, caseId, address);
     await t.run((ctx) =>
       ctx.db.patch("cases", caseId, {
@@ -26,7 +26,7 @@ describe("the review stage", () => {
       }),
     );
     await expect(
-      t.mutation(api.easygov.cases.send, {
+      t.mutation(api.easygov.case.public.send, {
         caseId,
         event: { type: "review.approve" },
         expectedSeq: found.seq,

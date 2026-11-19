@@ -1,0 +1,106 @@
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { api } from "../../_generated/api";
+import { model, read, resetCases, send, start, texts } from "./cases.testkit";
+import { workflow } from "../stages/shared";
+import { writeCase } from "./data";
+import type { CaseEvent } from "./schema";
+
+vi.mock("../../modelsForDemo", async () =>
+  (await import("./cases.testkit")).mockModels(),
+);
+
+describe("the case API", () => {
+  afterEach(resetCases);
+
+  test("send refuses stale, unexpected and invalid events", async () => {
+    const { t, caseId } = await start();
+    const { seq } = await read(t, caseId);
+    const sendAt = (expectedSeq: number, event: CaseEvent) =>
+      t.mutation(api.easygov.case.public.send, { caseId, event, expectedSeq });
+
+    await expect(
+      sendAt(seq - 1, { type: "intake.submit", goal: "I moved" }),
+    ).rejects.toThrow(/changed/);
+    await expect(sendAt(seq, { type: "review.approve" })).rejects.toThrow(
+      /isn't expected/,
+    );
+    await expect(sendAt(seq, { type: "step.retry" })).rejects.toThrow(
+      /No failed step/,
+    );
+    await expect(
+      sendAt(seq, { type: "intake.submit", goal: "  " }),
+    ).rejects.toThrow(/Say what/);
+
+    await send(t, caseId, { type: "intake.submit", goal: "I moved" });
+    const selection = await read(t, caseId);
+    await expect(
+      sendAt(selection.seq, {
+        type: "processPack.confirm",
+        reviewedPackIds: [],
+      }),
+    ).rejects.toThrow(/no draft to save/);
+  });
+
+  test("every write bumps seq, and only an owner writes a field", async () => {
+    const { t, caseId } = await start();
+    const { seq } = await read(t, caseId);
+    await t.mutation(api.easygov.case.public.sendMessage, {
+      caseId,
+      text: "Hi",
+      messageKey: "a",
+    });
+    expect((await read(t, caseId)).seq).toBe(seq + 1);
+
+    // The types refuse this too; a patch that slips past them throws.
+    const patch = { answers: {} } as object;
+    await expect(
+      t.run((ctx) => writeCase(ctx, "fill", caseId, patch)),
+    ).rejects.toThrow(/"answers" isn't a case field fill owns/);
+  });
+
+  test("the same chat message sent twice is saved and answered once", async () => {
+    const { t, caseId } = await start();
+    model.replies.push('{"reply":"What do you need?","goal":null}');
+    const message = { caseId, text: "Hi", messageKey: "one" };
+    await t.mutation(api.easygov.case.public.sendMessage, message);
+    // A double submit, then a client retry after the agent has answered.
+    await t.mutation(api.easygov.case.public.sendMessage, message);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await t.mutation(api.easygov.case.public.sendMessage, message);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await texts(t, caseId)).toEqual([
+      ["user", "Hi"],
+      ["assistant", "What do you need?"],
+    ]);
+
+    // A new key is a new message, even with the same words.
+    model.replies.push('{"reply":"Still here.","goal":null}');
+    await t.mutation(api.easygov.case.public.sendMessage, {
+      ...message,
+      messageKey: "two",
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await texts(t, caseId)).toHaveLength(4);
+  });
+
+  test("canceling stops the case and its workflows", async () => {
+    const { t, caseId } = await start();
+    const { workflowId } = await read(t, caseId);
+    const found = await send(t, caseId, { type: "case.cancel" });
+    expect(found).toMatchObject({
+      status: "canceled",
+      endReason: "Canceled by the user",
+    });
+    // The intake stage's workflow was canceled with it.
+    expect(found.workflowId).toBeUndefined();
+    const status = await t.run((ctx) => workflow.status(ctx, workflowId!));
+    expect(status.type).toBe("canceled");
+    await expect(
+      t.mutation(api.easygov.case.public.send, {
+        caseId,
+        event: { type: "intake.submit", goal: "I moved" },
+        expectedSeq: found.seq,
+      }),
+    ).rejects.toThrow(/canceled/);
+  });
+});

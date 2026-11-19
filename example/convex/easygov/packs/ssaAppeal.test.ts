@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { answer, resetCases, send, start } from "../cases.testkit";
+import { answer, model, resetCases, send, start } from "../case/cases.testkit";
+import { choose, request } from "./packs.testkit";
 
 vi.mock("../../modelsForDemo", async () =>
-  (await import("../cases.testkit")).mockModels(),
+  (await import("../case/cases.testkit")).mockModels(),
 );
 
 describe("SSA appeal", () => {
@@ -11,8 +12,16 @@ describe("SSA appeal", () => {
   test("the SSA appeal opens a referral only when representation is wanted", async () => {
     for (const wantsRepresentation of ["yes", "no"]) {
       const { t, caseId } = await start();
+      model.replies.push(
+        request({
+          jurisdiction: "us",
+          authority: "Social Security Administration",
+          searchTerms: "appeal denied claim reconsideration",
+        }),
+        choose(1),
+      );
       await send(t, caseId, { type: "intake.submit", goal: "Appeal a denial" });
-      await send(t, caseId, { type: "route.confirm", processKey: "ssaAppeal" });
+      await send(t, caseId, { type: "processPack.confirm" });
       await answer(t, caseId, {
         fullName: "Ada Lovelace",
         denialDate: "2026-10-01",
@@ -25,8 +34,8 @@ describe("SSA appeal", () => {
         ctx.db.query("referrals").collect(),
       );
       expect(referrals).toHaveLength(wantsRepresentation === "yes" ? 1 : 0);
-      expect(found.stepStatus.legalReferral?.status).toBe(
-        wantsRepresentation === "yes" ? "done" : undefined,
+      expect(found.visits.legalReferral).toBe(
+        wantsRepresentation === "yes" ? 1 : undefined,
       );
     }
   });

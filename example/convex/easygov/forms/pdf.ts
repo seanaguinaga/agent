@@ -52,6 +52,8 @@ export type Inspection = {
   /** False for a flat PDF: its targets were found on the page. */
   fillable: boolean;
   targets: Target[];
+  /** The start of the first page's words: enough to tell which form it is. */
+  opening: string;
 };
 
 type Text = { str: string; x: number; y: number; w: number; h: number };
@@ -424,7 +426,11 @@ export async function inspectPdf(bytes: Uint8Array): Promise<Inspection> {
       }
     });
   }
-  return { pages: pages.length, edition, fillable, targets };
+  const opening = (marks[0]?.text ?? [])
+    .map((t) => t.str)
+    .join(" ")
+    .slice(0, 2000);
+  return { pages: pages.length, edition, fillable, targets, opening };
 }
 
 // --- Filling ----------------------------------------------------------------

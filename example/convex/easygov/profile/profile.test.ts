@@ -1,5 +1,6 @@
 // The profile meeting cases: filled ahead, followed until approval, written
 // back from answers, and offered back when it needs a look.
+import type { FunctionArgs } from "convex/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "../../_generated/api";
 import type { Id } from "../../_generated/dataModel";
@@ -21,6 +22,12 @@ const home = {
   country: "US",
 };
 
+/** Saves a fact, and lets the person's open cases pick it up. */
+async function save(t: T, args: FunctionArgs<typeof profile.save>) {
+  await t.mutation(profile.save, args);
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+}
+
 /** A fresh backend with the fixture packs, by fixture name. */
 async function setup() {
   vi.useFakeTimers();
@@ -41,8 +48,8 @@ describe("a profile filled in before the form is known", () => {
   test("answers what the pack reads, and offers what it points at", async () => {
     const { t, packs } = await setup();
     // No case and no pack yet: saving a fact needs neither.
-    await t.mutation(profile.save, { key: "name", value: name });
-    await t.mutation(profile.save, { key: "homeAddress", value: home });
+    await save(t, { key: "name", value: name });
+    await save(t, { key: "homeAddress", value: home });
     const caseId = await startOn(t, packs.irs8822);
     expect(await read(t, caseId)).toMatchObject({
       waitingFor: "answers",
@@ -71,10 +78,10 @@ describe("a profile filled in before the form is known", () => {
 describe("a case and the profile", () => {
   test("the case follows the profile until it's approved, then keeps its own", async () => {
     const { t, packs } = await setup();
-    await t.mutation(profile.save, { key: "name", value: name });
+    await save(t, { key: "name", value: name });
     const caseId = await startOn(t, packs.irs8822);
     // A correction to the profile reaches the open case.
-    await t.mutation(profile.save, {
+    await save(t, {
       key: "name",
       value: { ...name, middle: "King" },
     });
@@ -93,7 +100,7 @@ describe("a case and the profile", () => {
     const done = await send(t, caseId, { type: "review.approve" });
     expect(done.status).toBe("done");
     // A later change is the person's, not this document's.
-    await t.mutation(profile.save, {
+    await save(t, {
       key: "name",
       value: { given: "Ada", family: "Byron" },
     });
@@ -102,7 +109,7 @@ describe("a case and the profile", () => {
 
   test("an answer kept to one case stops following, and leaves the profile alone", async () => {
     const { t, packs } = await setup();
-    await t.mutation(profile.save, { key: "name", value: name });
+    await save(t, { key: "name", value: name });
     const caseId = await startOn(t, packs.irs8822);
     const found = await send(t, caseId, {
       type: "answers.set",
@@ -114,7 +121,7 @@ describe("a case and the profile", () => {
       answers: { fullName: "A. Lovelace" },
       fromProfile: [],
     });
-    await t.mutation(profile.save, {
+    await save(t, {
       key: "name",
       value: { given: "Ada", family: "Byron" },
     });
@@ -171,8 +178,8 @@ describe("what a person answers on a form", () => {
 
 test("an old address is offered back, not filled in; a yes confirms it", async () => {
   const { t } = await setup();
-  await t.mutation(profile.save, { key: "name", value: name });
-  await t.mutation(profile.save, { key: "homeAddress", value: home });
+  await save(t, { key: "name", value: name });
+  await save(t, { key: "homeAddress", value: home });
   vi.setSystemTime(Date.now() + 400 * 24 * 60 * 60 * 1000);
   const saved = await t.run(async (ctx) => {
     const id = await ctx.db.insert("processPacks", {
@@ -209,8 +216,8 @@ test("an old address is offered back, not filled in; a yes confirms it", async (
 
 test("a finished change of address suggests the new home address", async () => {
   const { t, packs } = await setup();
-  await t.mutation(profile.save, { key: "name", value: name });
-  await t.mutation(profile.save, { key: "homeAddress", value: home });
+  await save(t, { key: "name", value: name });
+  await save(t, { key: "homeAddress", value: home });
   const caseId = await startOn(t, packs.irs8822);
   await send(t, caseId, { type: "answers.accept" });
   await send(t, caseId, {
@@ -249,7 +256,7 @@ describe("what to ask before the form is known", () => {
     expect(await t.query(profile.askAhead, { caseId })).toEqual([
       { fact: "name", label: "Legal name", why: "needed" },
     ]);
-    await t.mutation(profile.save, { key: "name", value: name });
+    await save(t, { key: "name", value: name });
     expect(await t.query(profile.askAhead, { caseId })).toEqual([]);
   });
 });
@@ -257,7 +264,7 @@ describe("what to ask before the form is known", () => {
 test("a guest's facts come along when the case is claimed", async () => {
   const { t, packs } = await setup();
   const guestKey = "g".repeat(40);
-  await t.mutation(profile.save, { key: "name", value: name, guestKey });
+  await save(t, { key: "name", value: name, guestKey });
   const caseId = await t.mutation(api.easygov.case.public.startCase, {
     packId: packs.irs8822,
     guestKey,
@@ -274,7 +281,7 @@ test("a guest's facts come along when the case is claimed", async () => {
 
 test("forgetting removes what's kept apart from the cases", async () => {
   const { t, packs } = await setup();
-  await t.mutation(profile.save, { key: "name", value: name });
+  await save(t, { key: "name", value: name });
   const caseId = await startOn(t, packs.ssaAppeal);
   await send(t, caseId, {
     type: "answers.set",

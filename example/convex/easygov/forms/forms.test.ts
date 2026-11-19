@@ -38,7 +38,17 @@ async function recorded(t: T, bytes = original) {
   const editionId = (await t.mutation(internal.easygov.forms.data.recordFetch, {
     formId,
     sha256: "a".repeat(64),
-    fresh: { storageId, pages, edition, fillable, targets },
+    fresh: {
+      storageId,
+      pages,
+      edition,
+      fillable,
+      targets,
+      obtained: {
+        via: "request",
+        url: "https://www.irs.gov/pub/irs-pdf/f8822.pdf",
+      },
+    },
   })) as Id<"formEditions">;
   const at = (pattern: RegExp) =>
     targets.find((target) => pattern.test(target.label))!.id;

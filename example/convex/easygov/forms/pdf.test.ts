@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { PDFDocument } from "pdf-lib";
 import { beforeAll, describe, expect, test } from "vitest";
 import { fillPdf, inspectPdf, verifyPdf, type Inspection } from "./pdf";
+import { namesForm } from "./sources";
 
 const original = new Uint8Array(
   readFileSync(new URL("./fixtures/f8822.pdf", import.meta.url)),
@@ -42,6 +43,9 @@ describe("a fillable form", () => {
     );
     expect(labels.some((l) => /^text: 3a Your name/.test(l))).toBe(true);
     expect(labels.some((l) => /social security number/i.test(l))).toBe(true);
+    // Its own words say which form it is, whatever address it came from.
+    expect(namesForm("IRS-8822", fillable.opening)).toBe(true);
+    expect(namesForm("IRS-8821", fillable.opening)).toBe(false);
     // Every field says something about itself.
     expect(fillable.targets.filter((t) => !t.label)).toEqual([]);
   });

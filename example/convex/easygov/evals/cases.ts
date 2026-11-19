@@ -743,15 +743,82 @@ export const outcome: { id: string; goal: string; expect: Outcome }[] = [
   },
 ];
 
+/**
+ * IRS Form 8822 and a reviewed mapping for it, by the words printed beside
+ * each place. This is what a person signs off on the forms page.
+ */
+export const FORM_8822 = {
+  code: "IRS-8822",
+  title: "Change of Address",
+  jurisdiction: "us",
+  sourceUrl: "https://www.irs.gov/pub/irs-pdf/f8822.pdf",
+  delivery: "mail" as const,
+  mapping: [
+    {
+      label: "^Individual income tax returns",
+      entry: {
+        input: "returnTypes",
+        includes: "individual",
+        question: "Which returns does this change affect?",
+      },
+    },
+    {
+      label: "^Gift, estate",
+      entry: { input: "returnTypes", includes: "gift" },
+    },
+    { label: "^3a Your name", entry: { input: "fullName" } },
+    {
+      label: "^3b Your social security",
+      entry: {
+        leave: {
+          why: "confidential" as const,
+          note: "Your Social Security number, on line 3b.",
+        },
+      },
+    },
+    { label: "^6a Your old address", entry: { input: "homeAddressLine" } },
+    {
+      label: "^7 New address",
+      entry: { input: "newAddress", question: "What is your new address?" },
+    },
+    {
+      label: "^Signature of representative",
+      entry: {
+        leave: { why: "signature" as const, note: "Sign and date the form." },
+      },
+    },
+  ],
+};
+
 // --- Pipeline: a whole case, played by the autopilot ------------------------
 
 export const pipeline: {
   id: string;
   /** Start on this fixture pack (no model), or from a goal (with models). */
-  start: { pack: "irs8822" | "ssaAppeal" | "wageClaim" } | { goal: string };
+  start:
+    | { pack: "irs8822" | "ssaAppeal" | "wageClaim" }
+    | { goal: string }
+    /** A real form: fetched from its source, mapped as below, then filled. */
+    | { form: typeof FORM_8822 };
   pilot: Pick<PilotOptions, "referral" | "consent">;
   expect: PipelineExpectation;
 }[] = [
+  {
+    // The official PDF: fetched from irs.gov now, filled from the answers,
+    // and read back from the file.
+    id: "a real form, fetched and filled",
+    start: { form: FORM_8822 },
+    pilot: { referral: "avoid", consent: "decline" },
+    expect: {
+      delivery: "mail",
+      form: {
+        inputs: ["fullName", "homeAddressLine", "newAddress"],
+        // "Which returns": the autopilot picks the first choice.
+        ticked: 1,
+        toComplete: 2,
+      },
+    },
+  },
   {
     id: "a form, delivered by mail",
     start: { pack: "irs8822" },

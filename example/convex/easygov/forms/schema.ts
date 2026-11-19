@@ -57,6 +57,15 @@ export const vMappingEntry = v.object({
 export const vMapping = v.array(vMappingEntry);
 export type Mapping = Infer<typeof vMapping>;
 
+/** How a form's bytes were got. See `sources.ts`. */
+export const vVia = v.union(v.literal("request"), v.literal("browser"));
+export const vAttempt = v.object({
+  via: vVia,
+  url: v.string(),
+  ok: v.boolean(),
+  note: v.string(),
+});
+
 export default {
   /** A form we know where to get: a small registry, added to by hand. */
   forms: defineTable({
@@ -66,6 +75,19 @@ export default {
     jurisdiction: v.string(),
     /** Where the authority publishes it. Fetched from here and nowhere else. */
     sourceUrl: v.string(),
+    /** Other places the same authority publishes the same file. */
+    alternateUrls: v.optional(v.array(v.string())),
+    /**
+     * The last fetch: every way and address tried, in order. A form that
+     * can't be reached says so here, with why.
+     */
+    lastFetch: v.optional(
+      v.object({
+        at: v.number(),
+        ok: v.boolean(),
+        attempts: v.array(vAttempt),
+      }),
+    ),
   }).index("by_code", ["code"]),
 
   /**
@@ -78,6 +100,8 @@ export default {
     storageId: v.id("_storage"),
     /** When the source last served these same bytes. */
     checkedAt: v.number(),
+    /** How these bytes were first got: a plain request, or a real browser. */
+    obtained: v.optional(v.object({ via: vVia, url: v.string() })),
     /** The revision printed on it, e.g. "Rev. February 2021". */
     edition: v.optional(v.string()),
     pages: v.number(),

@@ -19,7 +19,7 @@ import {
   processPackDefinition,
   writeCase,
 } from "./data";
-import { currentFacts, syncCase, syncUserCases } from "../profile/data";
+import { currentFacts, scheduleSync, syncCase } from "../profile/data";
 import { FACT_KEYS, factOf } from "../profile/vocabulary";
 import { EVENTS } from "./events";
 import { vCaseEvent, vWaitingFor, type CaseEvent } from "./schema";
@@ -309,12 +309,12 @@ async function personEvent(
     throw new ConvexError(`"${event.type}" isn't expected right now.`);
   }
   await writeCase(ctx, c._id, await handle(ctx, c, event));
-  // An answer may have gone to the profile, which the person's other open
-  // cases read too. Any other event may have changed what this one reads.
+  // What this case reads from the profile may have changed. An answer may
+  // also have gone to the profile, which the person's other open cases read:
+  // those pick it up in their own transactions.
+  await syncCase(ctx, c._id);
   if (event.type === "answers.set" || event.type === "answers.accept") {
-    await syncUserCases(ctx, c.userId);
-  } else {
-    await syncCase(ctx, c._id);
+    await scheduleSync(ctx, c.userId);
   }
   await nudgeCase(ctx, c);
   return null;

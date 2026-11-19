@@ -7,6 +7,7 @@ import {
   gradeDraft,
   gradeIntake,
   gradeMapping,
+  gradePipeline,
   gradePrefill,
   gradeRequest,
   gradeResearch,
@@ -298,5 +299,40 @@ test("mapping: the right key for the filer, nothing typed where the person signs
     },
     detail:
       "profile: initial=middleName; caseInputs: newAddress=homeAddressLine; left: ssn=ssn; others: spouse=fullName; groups: returns: split across individualReturns, giftReturns",
+  });
+});
+
+test("a case on a real form is graded on what the PDF itself holds", () => {
+  const expected = {
+    form: { inputs: ["fullName", "newAddress"], ticked: 1, toComplete: 2 },
+  };
+  const c = {
+    status: "done",
+    answers: { fullName: "Ada Lovelace", newAddress: "2 New Street" },
+    approval: { fingerprint: "f" },
+    artifact: {
+      fingerprint: "f",
+      document: {
+        omissions: [],
+        toComplete: [
+          { why: "confidential", note: "SSN" },
+          { why: "signature", note: "Sign" },
+        ],
+      },
+    },
+  } as unknown as Parameters<typeof gradePipeline>[1];
+  const onForm = { texts: ["Ada Lovelace", "2 New Street"], ticked: 1 };
+  expect(passes(gradePipeline(expected, c, onForm).checks)).toBe(true);
+  // The case says it wrote the address; the PDF doesn't have it.
+  const graded = gradePipeline(expected, c, {
+    texts: ["Ada Lovelace"],
+    ticked: 2,
+  });
+  expect(graded.checks).toMatchObject({ written: false, ticked: false });
+  expect(graded.detail).toMatch(/not on the PDF: newAddress; 2 ticked/);
+  // No PDF to read at all.
+  expect(gradePipeline(expected, c).checks).toMatchObject({
+    document: false,
+    written: false,
   });
 });

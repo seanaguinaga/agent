@@ -4,6 +4,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { ConvexError, v } from "convex/values";
+import { PDFCheckBox, PDFDocument, PDFTextField } from "pdf-lib";
 import { internal } from "../../_generated/api";
 import type { Id } from "../../_generated/dataModel";
 import {
@@ -11,12 +12,11 @@ import {
   internalAction,
   type ActionCtx,
 } from "../../_generated/server";
+import { browserService, downloadViaBrowser } from "./browser";
 import { resolveMapping } from "./mapping";
 import { fillPdf, inspectPdf, verifyPdf } from "./pdf";
 import { vLeft } from "./schema";
-
-/** Larger than any form we'd fill, small enough to hold in memory. */
-const MAX_BYTES = 20 * 1024 * 1024;
+import { namesForm, obtain } from "./sources";
 
 /**
  * Fetches a form from its source and records what came back. The same bytes
@@ -34,30 +34,61 @@ export const fetchForm = action({
     ctx,
     { formId, reinspect },
   ): Promise<{ editionId: Id<"formEditions">; fresh: boolean }> => {
-    const form: { sourceUrl: string; code: string } | null = await ctx.runQuery(
+    const form: { urls: string[]; code: string } | null = await ctx.runQuery(
       internal.easygov.forms.data.formOf,
       { formId },
     );
     if (!form) throw new ConvexError("Form not found.");
-    const response = await fetch(form.sourceUrl, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; form-fetch)" },
+    // A plain request first. Where that's refused, a real browser opens the
+    // same address, if one is set up.
+    const service = browserService();
+    const got = await obtain(form.urls, {
+      request: async (url) => {
+        const response = await fetch(url, {
+          headers: { "User-Agent": "Mozilla/5.0 (compatible; form-fetch)" },
+        });
+        if (!response.ok) {
+          throw new Error(`The source answered ${response.status}.`);
+        }
+        return new Uint8Array(await response.arrayBuffer());
+      },
+      browser: service && ((url) => downloadViaBrowser(url, service)),
     });
-    if (!response.ok) {
-      throw new ConvexError(`The source answered ${response.status}.`);
+    const record = (ok: boolean, attempts = got.attempts) =>
+      ctx.runMutation(internal.easygov.forms.data.recordAttempts, {
+        formId,
+        ok,
+        attempts,
+      });
+    if (!("bytes" in got)) {
+      await record(false);
+      const last = got.attempts.at(-1);
+      throw new ConvexError(
+        `The form couldn't be fetched. ${last?.note ?? ""}` +
+          (service ? "" : " No browser is set up to try next."),
+      );
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.length > MAX_BYTES)
-      throw new ConvexError("The file is too large.");
-    if (new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-") {
-      throw new ConvexError("The source didn't return a PDF.");
-    }
+    const { bytes, via, url } = got;
     const hash = bytesToHex(sha256(bytes));
     const known: Id<"formEditions"> | null = await ctx.runMutation(
       internal.easygov.forms.data.recordFetch,
       { formId, sha256: hash },
     );
-    if (known && !reinspect) return { editionId: known, fresh: false };
-    const { pages, edition, fillable, targets } = await inspectPdf(bytes);
+    if (known && !reinspect) {
+      await record(true);
+      return { editionId: known, fresh: false };
+    }
+    const { pages, edition, fillable, targets, opening } =
+      await inspectPdf(bytes);
+    // Whatever way it came, it has to be the form it's meant to be.
+    if (!namesForm(form.code, opening)) {
+      await record(false, [
+        ...got.attempts,
+        { via, url, ok: false, note: `The file doesn't name ${form.code}.` },
+      ]);
+      throw new ConvexError(`What came back isn't ${form.code}.`);
+    }
+    await record(true);
     if (known) {
       await ctx.runMutation(internal.easygov.forms.data.replaceTargets, {
         editionId: known,
@@ -73,7 +104,14 @@ export const fetchForm = action({
       {
         formId,
         sha256: hash,
-        fresh: { storageId, edition, pages, fillable, targets },
+        fresh: {
+          storageId,
+          edition,
+          pages,
+          fillable,
+          targets,
+          obtained: { via, url },
+        },
       },
     );
     if (!editionId) throw new Error("The edition wasn't recorded");
@@ -169,5 +207,30 @@ export const testFill = action({
       false,
     );
     return { url: await ctx.storage.getUrl(storageId), omissions, toComplete };
+  },
+});
+
+/** What a filled form holds, read from the PDF itself: for checking it. */
+export const readFilled = internalAction({
+  args: { storageId: v.id("_storage") },
+  returns: v.object({ texts: v.array(v.string()), ticked: v.number() }),
+  handler: async (ctx, { storageId }) => {
+    const blob = await ctx.storage.get(storageId);
+    if (!blob) throw new Error("The filled form is missing");
+    const doc = await PDFDocument.load(await blob.arrayBuffer(), {
+      ignoreEncryption: true,
+      parseSpeed: Infinity,
+    });
+    const texts: string[] = [];
+    let ticked = 0;
+    for (const field of doc.getForm().getFields()) {
+      if (field instanceof PDFTextField) {
+        const text = field.getText();
+        if (text) texts.push(text);
+      } else if (field instanceof PDFCheckBox && field.isChecked()) {
+        ticked++;
+      }
+    }
+    return { texts, ticked };
   },
 });

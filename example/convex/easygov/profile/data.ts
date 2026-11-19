@@ -6,11 +6,16 @@
 // itself stops following. After approval nothing here touches the case, so
 // it keeps what it was built from.
 import type { Id } from "../../_generated/dataModel";
-import type { MutationCtx, QueryCtx } from "../../_generated/server";
+import { internal } from "../../_generated/api";
+import {
+  internalMutation,
+  type MutationCtx,
+  type QueryCtx,
+} from "../../_generated/server";
 import { writeCase } from "../case/data";
 import { pinnedPack, reviewOutcome, type Case } from "../case/state";
 import { nudgeCase } from "../case/workflow";
-import { ConvexError } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import {
   checkFact,
   FACT_KEYS,
@@ -58,8 +63,8 @@ export function isStale(key: FactKey, at: number, now: number): boolean {
 }
 
 /**
- * Saves a fact, and lets the person's open cases pick it up. Throws what's
- * wrong with the value, in words for the person.
+ * Saves a fact, and lets the person's open cases pick it up a moment later.
+ * Throws what's wrong with the value, in words for the person.
  */
 export async function saveFact(
   ctx: MutationCtx,
@@ -70,21 +75,53 @@ export async function saveFact(
   const checked = checkFact(key, value);
   if ("problem" in checked) throw new ConvexError(checked.problem);
   await ctx.db.insert("profileFacts", { userId, key, value: checked.value });
-  await syncUserCases(ctx, userId);
+  await scheduleSync(ctx, userId);
 }
 
-/** Re-reads the profile into each of a person's open cases. */
-export async function syncUserCases(
+/**
+ * Lets a person's other open cases pick up a change to their profile, soon
+ * after. Not in this transaction: a mutation that wrote every one of their
+ * cases would collide with whatever those cases are doing.
+ */
+export async function scheduleSync(
   ctx: MutationCtx,
   userId: string,
 ): Promise<void> {
-  const cases = await ctx.db
-    .query("cases")
-    .withIndex("by_userId", (q) => q.eq("userId", userId))
-    .order("desc")
-    .take(50);
-  for (const c of cases) await syncCase(ctx, c._id);
+  await ctx.scheduler.runAfter(0, internal.easygov.profile.data.fanOutSync, {
+    userId,
+  });
 }
+
+/** Schedules a re-read of the profile into each of a person's open cases. */
+export const fanOutSync = internalMutation({
+  args: { userId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { userId }) => {
+    const cases = await ctx.db
+      .query("cases")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(50);
+    for (const c of cases) {
+      if (c.status !== "active") continue;
+      // One case to a transaction, so they don't wait on each other.
+      await ctx.scheduler.runAfter(0, internal.easygov.profile.data.syncOne, {
+        caseId: c._id,
+      });
+    }
+    return null;
+  },
+});
+
+/** Re-reads the profile into one case. */
+export const syncOne = internalMutation({
+  args: { caseId: v.id("cases") },
+  returns: v.null(),
+  handler: async (ctx, { caseId }) => {
+    await syncCase(ctx, caseId);
+    return null;
+  },
+});
 
 /**
  * Re-reads the profile into one case: fills what the pack reads from it,

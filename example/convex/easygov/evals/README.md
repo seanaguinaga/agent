@@ -28,6 +28,15 @@ fixed inputs. That's why `case/agents.ts` keeps each call in its own function
 `tailorChecklist`, `intakeReply`). The draft's notes are frozen so a grade moves
 with the prompt, not with the web.
 
+One `pipeline` case runs a real form: it fetches IRS Form 8822 from irs.gov,
+signs off a mapping, starts a case, and grades what's read back from the filled
+PDF itself.
+
+How well a **flat** page is read has no model in it, so it's a test, not a
+slice: `forms/corpus.test.ts` flattens four real government forms and scores the
+blanks found against where the fields were. Its floors are the measured state,
+form by form.
+
 ## Running them
 
 ```sh

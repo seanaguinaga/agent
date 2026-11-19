@@ -14,7 +14,7 @@ import { pinnedPack } from "../case/state";
 import { parseJurisdiction, vPackProfileLinks } from "../packs/schema";
 import { isReading, READINGS } from "../profile/vocabulary";
 import { mappingInputs, mappingQuestions } from "./mapping";
-import { vMapping, vTarget } from "./schema";
+import { vAttempt, vMapping, vTarget, vVia } from "./schema";
 
 /** Hosts a form may be fetched from: the authority's own. */
 export function isOfficialHost(url: string): boolean {
@@ -36,15 +36,20 @@ export const register = mutation({
     title: v.string(),
     jurisdiction: v.string(),
     sourceUrl: v.string(),
+    /** Other places the same authority publishes the same file. */
+    alternateUrls: v.optional(v.array(v.string())),
   },
   returns: v.id("forms"),
-  handler: async (ctx, { code, title, jurisdiction, sourceUrl }) => {
+  handler: async (
+    ctx,
+    { code, title, jurisdiction, sourceUrl, alternateUrls },
+  ) => {
     const place = parseJurisdiction(jurisdiction);
     if (!place) throw new ConvexError('Use a jurisdiction path such as "us".');
     if (!code.trim() || !title.trim()) {
       throw new ConvexError("A form needs a code and a title.");
     }
-    if (!isOfficialHost(sourceUrl)) {
+    if (![sourceUrl, ...(alternateUrls ?? [])].every(isOfficialHost)) {
       throw new ConvexError(
         "A form is fetched from its authority's own https site (.gov).",
       );
@@ -54,13 +59,14 @@ export const register = mutation({
       title: title.trim(),
       jurisdiction: place,
       sourceUrl,
+      alternateUrls: alternateUrls?.length ? alternateUrls : undefined,
     };
     const existing = await ctx.db
       .query("forms")
       .withIndex("by_code", (q) => q.eq("code", form.code))
       .first();
     if (!existing) return await ctx.db.insert("forms", form);
-    await ctx.db.replace("forms", existing._id, form);
+    await ctx.db.patch("forms", existing._id, form);
     return existing._id;
   },
 });
@@ -77,6 +83,8 @@ const vEditionSummary = v.object({
   mapped: v.number(),
   mappingStatus: v.string(),
   currency: v.string(),
+  /** How its bytes were got: a plain request, or a real browser. */
+  via: v.optional(vVia),
 });
 
 /** The registry, each form with its editions, newest first. */
@@ -89,6 +97,16 @@ export const list = query({
       title: v.string(),
       jurisdiction: v.string(),
       sourceUrl: v.string(),
+      /** The last fetch, with every way and address tried. */
+      lastFetch: v.optional(
+        v.object({
+          at: v.number(),
+          ok: v.boolean(),
+          attempts: v.array(vAttempt),
+        }),
+      ),
+      /** Whether a hosted browser is set up to fall back on. */
+      browser: v.boolean(),
       editions: v.array(vEditionSummary),
     }),
   ),
@@ -107,6 +125,8 @@ export const list = query({
         title: form.title,
         jurisdiction: form.jurisdiction,
         sourceUrl: form.sourceUrl,
+        lastFetch: form.lastFetch,
+        browser: !!process.env.BROWSERBASE_API_KEY,
         editions: editions.map((e) => ({
           id: e._id,
           sha256: e.sha256,
@@ -119,6 +139,7 @@ export const list = query({
           mapped: e.mapping.length,
           mappingStatus: e.mappingStatus,
           currency: e.currency.status,
+          via: e.obtained?.via,
         })),
       });
     }
@@ -278,6 +299,23 @@ export const publishPack = mutation({
       )
       .take(200);
     const previous = shared.find((pack) => pack.title === title);
+    const inputQuestions = mappingQuestions(
+      found.mapping,
+      Object.fromEntries(found.targets.map(({ id, kind }) => [id, kind])),
+      (target) => labels.get(target) ?? target,
+      (key) => (isReading(key) ? READINGS[key].label : undefined),
+    );
+    // Publishing the same thing twice is the pack that's already there.
+    const same = (a: unknown, b: unknown) =>
+      JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+    if (
+      previous?.form?.editionId === editionId &&
+      same(previous.inputQuestions, inputQuestions) &&
+      same(previous.profile, profile) &&
+      previous.delivery === delivery
+    ) {
+      return previous._id;
+    }
     const saved: { kind: string; id?: Id<"processPacks"> } =
       await ctx.runMutation(internal.easygov.packs.data.save, {
         title,
@@ -288,12 +326,7 @@ export const publishPack = mutation({
         inputs,
         // One question for each input: a profile reading by what it is, a
         // group of tick boxes as its choices.
-        inputQuestions: mappingQuestions(
-          found.mapping,
-          Object.fromEntries(found.targets.map(({ id, kind }) => [id, kind])),
-          (target) => labels.get(target) ?? target,
-          (key) => (isReading(key) ? READINGS[key].label : undefined),
-        ),
+        inputQuestions,
         form: { editionId },
         profile,
         delivery,
@@ -311,12 +344,29 @@ export const publishPack = mutation({
 export const formOf = internalQuery({
   args: { formId: v.id("forms") },
   returns: v.union(
-    v.object({ sourceUrl: v.string(), code: v.string() }),
+    v.object({ urls: v.array(v.string()), code: v.string() }),
     v.null(),
   ),
   handler: async (ctx, { formId }) => {
     const form = await ctx.db.get("forms", formId);
-    return form && { sourceUrl: form.sourceUrl, code: form.code };
+    return (
+      form && {
+        urls: [form.sourceUrl, ...(form.alternateUrls ?? [])],
+        code: form.code,
+      }
+    );
+  },
+});
+
+/** Keeps how the last fetch went: every way and address tried. */
+export const recordAttempts = internalMutation({
+  args: { formId: v.id("forms"), ok: v.boolean(), attempts: v.array(vAttempt) },
+  returns: v.null(),
+  handler: async (ctx, { formId, ok, attempts }) => {
+    await ctx.db.patch("forms", formId, {
+      lastFetch: { at: Date.now(), ok, attempts },
+    });
+    return null;
   },
 });
 
@@ -333,6 +383,7 @@ export const recordFetch = internalMutation({
         pages: v.number(),
         fillable: v.boolean(),
         targets: v.array(vTarget),
+        obtained: v.object({ via: vVia, url: v.string() }),
       }),
     ),
   },

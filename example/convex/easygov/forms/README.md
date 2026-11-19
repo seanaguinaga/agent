@@ -29,9 +29,31 @@ IRS Form 8822 and checks the blanks found against where its fields were.
 
 ## Fetching, and what "current" means
 
-`forms` is a small registry, added to by hand: a code, and the one URL the
-authority publishes it at. `actions.ts:fetchForm` fetches from there and nowhere
-else (`isOfficialHost`).
+`forms` is a small registry, added to by hand: a code, and the address the
+authority publishes it at (`sourceUrl`, plus any `alternateUrls` on the same
+authority's sites). Only an authority's own https site is accepted
+(`isOfficialHost`).
+
+What's needed is the exact bytes the authority publishes, and to be able to say
+where they came from. `sources.ts` tries the ways to get them in order, cheapest
+first, and stops at the first usable PDF:
+
+1. **A plain request** to each address.
+2. **A real browser** opening each address (`browser.ts`), for sites a plain
+   request can't read. It uses a hosted browser (Browserbase) and needs
+   `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` on the deployment. Without
+   them this step is skipped.
+
+A person is never asked to fetch a form for us. Every try is kept on the form
+(`lastFetch`), so one that can't be reached says which ways were tried and why
+each failed, and an edition records how it was got (`obtained`).
+
+The browser is a plain one. Captcha solving, proxies and fingerprint masking are
+left off on purpose: if a site turns it away, the form is unreachable.
+
+Whatever way the bytes come, they have to be a PDF and name the form they're
+meant to be (`namesForm`): a site answering with some other document doesn't
+become an edition.
 
 - **An edition is its bytes.** `formEditions` is keyed by SHA-256. The same
   bytes again only refresh `checkedAt`; different bytes are a new edition, and
@@ -102,7 +124,9 @@ fills the form (`fillForCase`). The review shows the PDF
   of those it applies to.
 - **Comb fields and split boxes** beyond what a reading already gives
   (`mailingZip`, `mailingZip4`).
-- **Encrypted forms, and sites that refuse a plain fetch.**
+- **Encrypted forms.** A file that downloads but won't parse.
+- **A download that starts from a page.** The browser opens the file's own
+  address; it doesn't yet click through a landing page to find it.
 - **Confirming currency** from the authority's page.
 - **Confidential values, entered once.** A Social Security number is left for
   the person today. Better: they type it when the form is filled, it's written
@@ -110,11 +134,13 @@ fills the form (`fillForCase`). The review shows the PDF
 
 ## The files
 
-| File         | Job                                                        |
-| ------------ | ---------------------------------------------------------- |
-| `pdf.ts`     | Pure: read a PDF's places, fill them, read them back       |
-| `mapping.ts` | Pure: a mapping and answers to what goes where             |
-| `schema.ts`  | The registry, editions, targets and mappings               |
-| `data.ts`    | Registry and edition queries, saving a mapping, publishing |
-| `actions.ts` | In Node: fetch from the source, fill for a case            |
-| `agents.ts`  | The model step: draft a mapping from the printed words     |
+| File         | Job                                                            |
+| ------------ | -------------------------------------------------------------- |
+| `pdf.ts`     | Pure: read a PDF's places, fill them, read them back           |
+| `mapping.ts` | Pure: a mapping and answers to what goes where                 |
+| `schema.ts`  | The registry, editions, targets and mappings                   |
+| `data.ts`    | Registry and edition queries, saving a mapping, publishing     |
+| `sources.ts` | Pure: the ways to get a form's bytes, tried in order           |
+| `browser.ts` | In Node: open an address in a hosted browser, collect the file |
+| `actions.ts` | In Node: fetch from the source, fill for a case                |
+| `agents.ts`  | The model step: draft a mapping from the printed words         |

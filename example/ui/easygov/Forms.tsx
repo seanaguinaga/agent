@@ -103,6 +103,37 @@ function Registry({
               {act.pending ? "Fetching…" : "Fetch from source"}
             </button>
           </p>
+          {form.lastFetch && (
+            <div className="space-y-1">
+              <p
+                className={form.lastFetch.ok ? "" : "font-medium text-red-700"}
+              >
+                {form.lastFetch.ok
+                  ? "Last fetch worked."
+                  : "Last fetch couldn't reach the form."}{" "}
+                <span className="font-normal text-gray-500">
+                  {new Date(form.lastFetch.at).toLocaleString()}
+                </span>
+              </p>
+              <ol className="list-decimal pl-5 text-gray-700">
+                {form.lastFetch.attempts.map((attempt, i) => (
+                  <li key={i}>
+                    {attempt.via === "browser"
+                      ? "A real browser"
+                      : "A plain request"}
+                    : {attempt.ok ? "got it" : "no"} ({attempt.note})
+                  </li>
+                ))}
+              </ol>
+              {!form.lastFetch.ok && !form.browser && (
+                <p className="text-gray-600">
+                  No hosted browser is set up to try next. Set{" "}
+                  <code>BROWSERBASE_API_KEY</code> and{" "}
+                  <code>BROWSERBASE_PROJECT_ID</code> on the deployment.
+                </p>
+              )}
+            </div>
+          )}
           {form.editions.map((edition) => (
             <button
               key={edition.id}
@@ -113,6 +144,11 @@ function Registry({
               <code>{edition.sha256.slice(0, 12)}</code>
               <span>{edition.edition ?? "no edition printed"}</span>
               <Chip>{edition.fillable ? "fillable" : "flat"}</Chip>
+              {edition.via && (
+                <Chip tone={edition.via === "browser" ? "blue" : undefined}>
+                  got by {edition.via}
+                </Chip>
+              )}
               <span>
                 {edition.targets} places, {edition.mapped} mapped
               </span>

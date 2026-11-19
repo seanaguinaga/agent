@@ -52,6 +52,7 @@ import {
   gradeTailor,
   outcomeOf,
   passes,
+  type FilledForm,
   type Graded,
 } from "./grading";
 import {
@@ -339,12 +340,51 @@ function goalOf(slice: Slice, caseId: string): string | undefined {
   return "goal" in start ? start.goal : undefined;
 }
 
+/**
+ * Gets a real form ready to fill, as a person would on the forms page: fetch
+ * it from its source, sign off its mapping, publish its pack. Each step is
+ * the same thing done twice, so trials can share it.
+ */
+async function formPack(
+  ctx: ActionCtx,
+  form: typeof cases.FORM_8822,
+): Promise<Id<"processPacks">> {
+  const { code, title, jurisdiction, sourceUrl, delivery } = form;
+  const formId: Id<"forms"> = await ctx.runMutation(
+    api.easygov.forms.data.register,
+    { code, title, jurisdiction, sourceUrl },
+  );
+  const { editionId }: { editionId: Id<"formEditions"> } = await ctx.runAction(
+    api.easygov.forms.actions.fetchForm,
+    { formId },
+  );
+  const edition: { targets: { id: string; label: string }[] } | null =
+    await ctx.runQuery(api.easygov.forms.data.edition, { editionId });
+  if (!edition) throw new Error("The fetched edition is missing");
+  const mapping = form.mapping.map(({ label, entry }) => {
+    const target = edition.targets.find((t) => new RegExp(label).test(t.label));
+    if (!target) throw new Error(`No place on the form matches /${label}/`);
+    return { target: target.id, ...entry };
+  });
+  await ctx.runMutation(api.easygov.forms.data.saveMapping, {
+    editionId,
+    mapping,
+    reviewed: true,
+  });
+  return await ctx.runMutation(api.easygov.forms.data.publishPack, {
+    editionId,
+    delivery,
+  });
+}
+
 /** Starts the trial's case; `stepCase` takes it from there. */
 async function startCase(ctx: ActionCtx, slice: Slice, caseId: string) {
   const start =
     slice === "pipeline" ? find(cases.pipeline, caseId).start : undefined;
   let packId: Id<"processPacks"> | undefined;
-  if (start && "pack" in start) {
+  if (start && "form" in start) {
+    packId = await formPack(ctx, start.form);
+  } else if (start && "pack" in start) {
     const { packs }: { packs: Record<string, Id<"processPacks">> } =
       await ctx.runMutation(api.easygov.dev.seed, {});
     packId = packs[start.pack];
@@ -432,8 +472,15 @@ export const stepCase = internalAction({
       // "wait" can't follow a settled case unless it's stuck on its own state.
       if (next === "stop" || next === "wait") {
         const { answers, artifact, delivery, referral, status, endReason } = c;
+        // What the PDF itself holds, not what the case says it wrote.
+        const storageId = artifact?.document?.storageId;
+        const filled: FilledForm | undefined = storageId
+          ? await ctx.runAction(internal.easygov.forms.actions.readFilled, {
+              storageId,
+            })
+          : undefined;
         return await finish({
-          ...gradePipeline(expect, c),
+          ...gradePipeline(expect, c, filled),
           output: { status, endReason, answers, artifact, delivery, referral },
         });
       }

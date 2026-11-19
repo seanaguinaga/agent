@@ -423,11 +423,21 @@ export type PipelineExpectation = {
   referral?: "shared" | "declined" | null;
   /** Text the finished letter must contain, e.g. an answer it was built from. */
   letterHas?: string;
+  /**
+   * For a pack that fills an official form: the inputs whose answers must be
+   * on the PDF, how many boxes are ticked, and how many things are left for
+   * the person.
+   */
+  form?: { inputs: readonly string[]; ticked: number; toComplete: number };
 };
+
+/** What was read back from a filled form's PDF. */
+export type FilledForm = { texts: string[]; ticked: number };
 
 export function gradePipeline(
   expected: PipelineExpectation,
   c: CaseView,
+  filled?: FilledForm,
 ): Graded {
   const checks: Checks = {
     done: c.status === "done",
@@ -445,8 +455,26 @@ export function gradePipeline(
   }
   // No placeholder left unfilled.
   if (letter !== undefined) checks.filled = !/\{\{\w+\}\}/.test(letter);
+  let missing: string[] = [];
+  if (expected.form) {
+    const document = c.artifact?.document;
+    checks.document = document !== undefined && filled !== undefined;
+    // Nothing was left out for not fitting, and nothing failed its read-back.
+    checks.noOmissions = document?.omissions.length === 0;
+    checks.toComplete =
+      document?.toComplete.length === expected.form.toComplete;
+    // Read from the PDF itself, not from what the case says it wrote.
+    missing = expected.form.inputs.filter(
+      (key) => !filled?.texts.includes(c.answers[key] ?? "\u0000"),
+    );
+    checks.written = missing.length === 0;
+    checks.ticked = filled?.ticked === expected.form.ticked;
+  }
   return {
     checks,
-    detail: `${c.status}${c.endReason ? `: ${c.endReason}` : ""}${c.failure ? `; failed: ${c.failure.error}` : ""}`,
+    detail:
+      `${c.status}${c.endReason ? `: ${c.endReason}` : ""}${c.failure ? `; failed: ${c.failure.error}` : ""}` +
+      (missing.length ? `; not on the PDF: ${missing.join(", ")}` : "") +
+      (filled ? `; ${filled.ticked} ticked` : ""),
   };
 }

@@ -41,18 +41,18 @@ async function authorizeFirm(
   return firm;
 }
 
+/** The record that the firm passed on the referral, if it did. */
 async function declined(
   ctx: QueryCtx,
   firmId: Id<"firms">,
   referralId: Id<"referrals">,
-): Promise<boolean> {
-  const row = await ctx.db
+): Promise<Doc<"referralDeclines"> | null> {
+  return await ctx.db
     .query("referralDeclines")
     .withIndex("by_firmId_and_referralId", (q) =>
       q.eq("firmId", firmId).eq("referralId", referralId),
     )
     .first();
-  return row !== null;
 }
 
 /** The open referrals the firm covers and hasn't passed on, oldest first. */
@@ -124,6 +124,9 @@ export const accept = mutation({
       status: "accepted",
       firmId,
     });
+    // A firm that passed and now accepts changed its mind: it didn't pass.
+    const passed = await declined(ctx, firmId, referralId);
+    if (passed) await ctx.db.delete("referralDeclines", passed._id);
     await ctx.db.insert("referralCharges", {
       firmId,
       referralId,
@@ -145,6 +148,11 @@ export const decline = mutation({
     const referral = await ctx.db.get("referrals", referralId);
     if (!referral || !covers(firm.coverage, referral)) {
       throw new ConvexError("Referral not found.");
+    }
+    // Only an open referral is anyone's to pass on: not one a firm has
+    // taken (this firm included), or one the person took back.
+    if (referral.status !== "open") {
+      throw new ConvexError("This referral is no longer available.");
     }
     if (!(await declined(ctx, firmId, referralId))) {
       await ctx.db.insert("referralDeclines", { firmId, referralId });

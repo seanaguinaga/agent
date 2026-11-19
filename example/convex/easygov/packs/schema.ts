@@ -137,6 +137,8 @@ export const processPacks = defineTable({
   .index("by_ownerId_and_status", ["ownerId", "status"])
   // The version that replaced a pack, to follow an old link to the new one.
   .index("by_supersedes", ["supersedes"])
+  // The packs that fill an edition: its mapping can't be taken back.
+  .index("by_form_editionId", ["form.editionId"])
   .searchIndex("search_packs", {
     searchField: "searchText",
     filterFields: ["ownerId", "jurisdiction", "status"],

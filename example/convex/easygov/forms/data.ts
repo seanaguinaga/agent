@@ -8,9 +8,10 @@ import {
   internalQuery,
   mutation,
   query,
+  type QueryCtx,
 } from "../../_generated/server";
 import { caller } from "../case/public";
-import { pinnedPack } from "../case/state";
+import { fingerprintOf, pinnedPack } from "../case/state";
 import { parseJurisdiction, vPackProfileLinks } from "../packs/schema";
 import { isReading, READINGS } from "../profile/vocabulary";
 import { mappingInputs, mappingQuestions } from "./mapping";
@@ -189,8 +190,24 @@ export const edition = query({
 });
 
 /**
+ * True once a pack fills the edition, in any version: cases pinned to it
+ * fill the form from this mapping, so it can't go back to unreviewed.
+ */
+async function isPublished(
+  ctx: QueryCtx,
+  editionId: Id<"formEditions">,
+): Promise<boolean> {
+  const pack = await ctx.db
+    .query("processPacks")
+    .withIndex("by_form_editionId", (q) => q.eq("form.editionId", editionId))
+    .first();
+  return pack !== null;
+}
+
+/**
  * Saves a mapping for an edition. `reviewed` is a person saying they've
- * checked it against the form: only then is it used to fill a case.
+ * checked it against the form: only then is it used to fill a case. Once a
+ * pack fills the edition, the mapping can be corrected but not unreviewed.
  */
 export const saveMapping = mutation({
   args: {
@@ -246,6 +263,11 @@ export const saveMapping = mutation({
           `The boxes for "${key}" mix "equals" and "includes".`,
         );
       }
+    }
+    if (!reviewed && (await isPublished(ctx, editionId))) {
+      throw new ConvexError(
+        "A pack fills this edition, so its mapping stays reviewed.",
+      );
     }
     await ctx.db.patch("formEditions", editionId, {
       mapping,
@@ -426,6 +448,11 @@ export const replaceTargets = internalMutation({
   args: { editionId: v.id("formEditions"), targets: v.array(vTarget) },
   returns: v.null(),
   handler: async (ctx, { editionId, targets }) => {
+    if (await isPublished(ctx, editionId)) {
+      throw new ConvexError(
+        "A pack fills this edition, so its targets can't be read again.",
+      );
+    }
     await ctx.db.patch("formEditions", editionId, {
       targets,
       mapping: [],
@@ -459,7 +486,8 @@ export const fillInput = internalQuery({
       mapping: found.mapping,
       reviewed: found.mappingStatus === "reviewed",
       answers: c?.answers ?? {},
-      fingerprint: undefined,
+      // Read with the answers, so the filled form says which ones it holds.
+      fingerprint: c ? fingerprintOf(c) : undefined,
     };
   },
 });

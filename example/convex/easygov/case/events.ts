@@ -201,6 +201,9 @@ function confirm(c: Case): Partial<Case> {
   const definition = selection.definition ?? (draft && draftDefinition(draft));
   return {
     processPack: { ...selection, status: "confirmed", definition },
+    // Intake is over: a message it never answered isn't pending any more.
+    // It's still in the conversation, which is read for answers next.
+    pendingMessageId: undefined,
     // A proposal follows a stated goal, so there's a conversation to read
     // for answers before asking for them.
     suggested: definition?.inputs.length ? { goalVersion } : undefined,

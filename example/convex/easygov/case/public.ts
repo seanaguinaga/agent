@@ -24,6 +24,7 @@ import { FACT_KEYS, factOf } from "../profile/vocabulary";
 import { EVENTS } from "./events";
 import { vCaseEvent, vWaitingFor, type CaseEvent } from "./schema";
 import {
+  currentSelection,
   deadlineOf,
   pinnedPack,
   suggestions,
@@ -178,11 +179,13 @@ export const withdrawReferral = mutation({
               q.eq("caseId", caseId).eq("kind", kind),
             )
             .first();
-    if (referral?.status !== "open") return false;
+    if (kind === undefined || referral?.status !== "open") return false;
     await ctx.db.replace("referrals", referral._id, {
       ...referral,
       status: "withdrawn",
     });
+    // The case says so too: it's no longer shared with anyone.
+    await writeCase(ctx, caseId, { referral: { kind, status: "withdrawn" } });
     await logCaseEvent(ctx, caseId, "referral.withdrawn", kind);
     return true;
   },
@@ -205,8 +208,9 @@ export const uploadUrl = mutation({
 });
 
 /**
- * Saves a chat message to the case's thread. Intake answers it; at any other
- * time it stays pending until intake runs again.
+ * Saves a chat message to the case's thread. Intake answers it: at once
+ * while the case waits for a goal, or when a proposed pack is rejected. Once
+ * a pack is confirmed there's no intake left, and a message is refused.
  *
  * `messageKey` is a string the client makes up once per message (a UUID,
  * say) and sends again on a retry. The same key twice in a row is the same
@@ -224,6 +228,12 @@ export const sendMessage = mutation({
     const found = await authorizeCase(ctx, caseId, guestKey);
     if (found.status !== "active") {
       throw new ConvexError(`The case is ${found.status}.`);
+    }
+    // Only intake answers chat, and it's over once a pack is confirmed.
+    if (currentSelection(found)?.status === "confirmed") {
+      throw new ConvexError(
+        "The process is chosen: answer its questions instead of chatting.",
+      );
     }
     const prompt = text.trim();
     if (!prompt) throw new ConvexError("Type a message first.");

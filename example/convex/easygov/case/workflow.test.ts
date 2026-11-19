@@ -100,12 +100,25 @@ describe("agreeing on what to do", () => {
         ],
       }),
     );
+    // Said while the pack is proposed: no intake is running to answer it.
+    const { sendMessage } = api.easygov.case.public;
+    await t.mutation(sendMessage, {
+      caseId,
+      text: "Yes, that one",
+      messageKey: "while proposed",
+    });
+    expect((await read(t, caseId)).pendingMessageId).toBeDefined();
     let found = await send(t, caseId, { type: "processPack.confirm" });
     expect(found).toMatchObject({
       waitingFor: "answers",
       answers: {},
       suggestions: { newAddress: "2 New Street" },
     });
+    // Confirming ends intake: nothing is left pending, and chat is closed.
+    expect(found.pendingMessageId).toBeUndefined();
+    await expect(
+      t.mutation(sendMessage, { caseId, text: "Hello?", messageKey: "late" }),
+    ).rejects.toThrow(/process is chosen/);
     // A suggestion isn't an answer until the person takes it.
     found = await send(t, caseId, { type: "answers.accept" });
     expect(found).toMatchObject({

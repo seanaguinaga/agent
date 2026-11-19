@@ -82,7 +82,8 @@ waits for `consent`. `referral.share` copies what the person approved into
 `referrals`, as it was at that moment; `referral.decline` ends the case with
 nothing copied. Whether the referral applies is settled once, at approval. One
 firm that covers the referral then accepts it, and only that firm reads it; the
-person can take it back until then (`withdrawReferral`).
+person can take it back until then (`withdrawReferral`), and the case's referral
+then reads `withdrawn`.
 
 **Failures park the case.** If the workflow fails, `onComplete` records the
 error and the case takes no events until the person sends `step.retry` (run
@@ -106,7 +107,8 @@ the case is `waitingFor`.
    `{ "caseId": "<id>", "text": "I moved and need to tell the IRS", "messageKey": "m1" }`
    (a new `messageKey` for each message). Once intake knows the goal, a pack is
    proposed and the case waits for the `pack`. (Or skip the chat: send
-   `intake.submit` below instead.)
+   `intake.submit` below instead.) Chat is for intake only: once a pack is
+   confirmed, `sendMessage` is refused.
 4. `easygov/case/public:send` with each of these events in turn, as
    `{ "caseId": "<id>", "expectedSeq": <seq>, "event": <event> }`:
 

@@ -1,9 +1,9 @@
 // The runner's bookkeeping, with a mock model: trials are planned, run,
 // graded and tallied.
 import { afterEach, expect, test, vi } from "vitest";
-import { api } from "../../_generated/api";
+import { api, internal } from "../../_generated/api";
 import { initConvexTest } from "../../setup.test";
-import { model, resetCases } from "../case/cases.testkit";
+import { model, read, resetCases } from "../case/cases.testkit";
 import { choose, search } from "./cases";
 
 vi.mock("../../modelsForDemo", async () =>
@@ -68,6 +68,47 @@ test("a crashed trial is an error, not a failure", async () => {
     status: "error",
     error: expect.stringMatching(/down/),
   });
+});
+
+test("a trial that never reports back is ended, and its case canceled", async () => {
+  vi.useFakeTimers();
+  const t = initConvexTest();
+  const caseId = await t.mutation(api.easygov.case.public.startCase, {});
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  // A trial whose action died after starting its case.
+  const { runId, trialId } = await t.run(async (ctx) => {
+    const runId = await ctx.db.insert("easygovEvalRuns", {
+      note: "stuck",
+      models: "mock",
+      trialsPerCase: 1,
+      totalTrials: 1,
+      finishedTrials: 0,
+      status: "running",
+    });
+    const trialId = await ctx.db.insert("easygovEvalTrials", {
+      runId,
+      slice: "outcome",
+      caseId: "a referral",
+      trial: 1,
+      status: "pending",
+      realCase: { id: caseId, startedAt: Date.now(), goalSent: true },
+    });
+    return { runId, trialId };
+  });
+  const { expireTrial } = internal.easygov.evals.runner;
+  await t.mutation(expireTrial, { trialId });
+  expect((await t.query(runner.trials, { runId }))[0]).toMatchObject({
+    status: "error",
+    error: "The trial never finished",
+  });
+  expect((await t.query(runner.runs, {}))[0]).toMatchObject({
+    status: "done",
+    finishedTrials: 1,
+  });
+  expect((await read(t, caseId)).status).toBe("canceled");
+  // Once: a trial that has ended isn't counted again.
+  await t.mutation(expireTrial, { trialId });
+  expect((await t.query(runner.runs, {}))[0].finishedTrials).toBe(1);
 });
 
 test("a real draft is saved as a case, and joins the draft slice", async () => {

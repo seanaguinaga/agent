@@ -99,7 +99,8 @@ export const caseFields = {
 
   /**
    * The newest user message no agent has answered yet. `sendMessage` sets
-   * it; intake clears it once it has replied.
+   * it; intake clears it once it has replied, and so does confirming a
+   * pack, after which there's no intake to answer it.
    */
   pendingMessageId: v.optional(v.string()),
   /**
@@ -180,7 +181,8 @@ export const caseFields = {
   approval: v.optional(v.object({ fingerprint: v.string() })),
   /**
    * A legal referral offered to the person, and what they said. Nothing is
-   * shared while it's only `offered`.
+   * shared while it's only `offered`. `withdrawn` is a shared one the person
+   * took back before a firm accepted it.
    */
   referral: v.optional(
     v.object({
@@ -189,6 +191,7 @@ export const caseFields = {
         v.literal("offered"),
         v.literal("shared"),
         v.literal("declined"),
+        v.literal("withdrawn"),
       ),
     }),
   ),

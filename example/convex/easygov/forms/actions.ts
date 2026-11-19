@@ -192,21 +192,36 @@ async function fill(
   };
 }
 
-/** Fills the form a case's pack is for, from the case's answers. */
+/**
+ * Fills the form a case's pack is for, from the case's answers.
+ * `fingerprint` is of the answers it read: if they've moved on by the time
+ * the document is kept, the case knows the form is behind them.
+ */
 export const fillForCase = internalAction({
   args: { caseId: v.id("cases") },
-  returns: v.union(vFilled, v.null()),
-  handler: async (ctx, { caseId }): Promise<Filled | null> => {
+  returns: v.union(
+    v.object({ ...vFilled.fields, fingerprint: v.string() }),
+    v.null(),
+  ),
+  handler: async (
+    ctx,
+    { caseId },
+  ): Promise<(Filled & { fingerprint: string }) | null> => {
     const editionId: Id<"formEditions"> | null = await ctx.runQuery(
       internal.easygov.forms.data.editionOfCase,
       { caseId },
     );
     if (!editionId) return null;
-    const { answers }: { answers: Record<string, string> } = await ctx.runQuery(
-      internal.easygov.forms.data.fillInput,
-      { editionId, caseId },
-    );
-    return await fill(ctx, editionId, answers, true);
+    const {
+      answers,
+      fingerprint,
+    }: { answers: Record<string, string>; fingerprint?: string } =
+      await ctx.runQuery(internal.easygov.forms.data.fillInput, {
+        editionId,
+        caseId,
+      });
+    if (fingerprint === undefined) throw new Error("Case not found");
+    return { ...(await fill(ctx, editionId, answers, true)), fingerprint };
   },
 });
 

@@ -22,12 +22,14 @@ reads it.
    which files attached. Nothing the person wrote is in a preview.
 3. **Accepted.** `accept` gives the referral to the first firm that takes it and
    records what the firm owes in `referralCharges`. `decline` hides it from that
-   firm only.
+   firm only, and only while it's `open`. A firm that declined can still accept:
+   that undoes its decline.
 4. **Read.** `packet` returns the goal, answers and file links to the firm that
    accepted, and to no one else.
 
-The person can take an `open` referral back with `case/public:withdrawReferral`.
-Once a firm has accepted it, they can't.
+The person can take an `open` referral back with `case/public:withdrawReferral`:
+the referral and the case's own `referral.status` both become `withdrawn`. Once
+a firm has accepted it, they can't.
 
 ## Coverage
 

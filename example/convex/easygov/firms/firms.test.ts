@@ -7,6 +7,7 @@ import { initConvexTest } from "../../setup.test";
 import {
   answer,
   model,
+  read,
   resetCases,
   send,
   start,
@@ -186,6 +187,24 @@ describe("accepting", () => {
     expect(await previews(t, other)).toHaveLength(1);
   });
 
+  test("a firm that passed can still accept, and a taken referral can't be passed on", async () => {
+    const { t } = await shared();
+    const firmId = await saveFirm(t);
+    const other = await saveFirm(t, { name: "Second & Sons" });
+    const [{ id: referralId }] = await previews(t, firmId);
+    await t.mutation(firms.decline, { firmId, referralId });
+    await t.mutation(firms.accept, { firmId, referralId });
+    // Accepting undoes the pass: the firm isn't on record as both.
+    expect(
+      await t.run((ctx) => ctx.db.query("referralDeclines").collect()),
+    ).toEqual([]);
+    for (const firm of [firmId, other]) {
+      await expect(
+        t.mutation(firms.decline, { firmId: firm, referralId }),
+      ).rejects.toThrow(/no longer available/);
+    }
+  });
+
   test("only the firm's account acts for it, and only on what it covers", async () => {
     const { t } = await shared();
     const mine = await saveFirm(t);
@@ -214,9 +233,17 @@ describe("the person", () => {
     const [{ id: referralId }] = await previews(t, firmId);
     const { withdrawReferral } = api.easygov.case.public;
     expect(await t.mutation(withdrawReferral, { caseId })).toBe(true);
+    // The case says so too, not only the referral.
+    expect((await read(t, caseId)).referral).toEqual({
+      kind: "employment",
+      status: "withdrawn",
+    });
     expect(await previews(t, firmId)).toEqual([]);
     await expect(
       t.mutation(firms.accept, { firmId, referralId }),
+    ).rejects.toThrow(/no longer available/);
+    await expect(
+      t.mutation(firms.decline, { firmId, referralId }),
     ).rejects.toThrow(/no longer available/);
     expect(await t.mutation(withdrawReferral, { caseId })).toBe(false);
   });

@@ -11,7 +11,7 @@
 // pages. Don't ship this file.
 import { createThread, saveMessage } from "@convex-dev/agent";
 import { generateText, Output } from "ai";
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import { z } from "zod/v4";
 import { api, components, internal } from "../../_generated/api";
 import type { Doc, Id } from "../../_generated/dataModel";
@@ -22,6 +22,7 @@ import {
   mutation,
   query,
   type ActionCtx,
+  type MutationCtx,
 } from "../../_generated/server";
 import { languageModel, researchModel } from "../../modelsForDemo";
 import { doc } from "convex-helpers/validators";
@@ -72,6 +73,11 @@ const DETERMINISTIC: Slice[] = ["search"];
 const SAVED = "saved:";
 /** Trials start this far apart, so a run doesn't hit the gateway all at once. */
 const STAGGER_MS = 400;
+/**
+ * Longer than any trial takes: a model step is one action (ten minutes at
+ * most), and a real case settles in a few short steps.
+ */
+const TRIAL_TIMEOUT_MS = 30 * 60 * 1000;
 
 /** Starts a run: every case of the chosen slices, `trials` times each. */
 export const start = mutation({
@@ -659,25 +665,71 @@ export const beginTrial = internalMutation({
     if (caseId.startsWith(SAVED) && !saved) {
       throw new Error(`The saved case ${caseId} is gone`);
     }
+    // A trial whose action died without reporting, or whose chain of looks
+    // at a real case broke, would stay pending, and its run would never be
+    // done: this ends it.
+    await ctx.scheduler.runAfter(
+      TRIAL_TIMEOUT_MS,
+      internal.easygov.evals.runner.expireTrial,
+      { trialId },
+    );
     return { slice, caseId, threadId, saved };
   },
 });
+
+/** Ends a pending trial, once, and counts it toward its run. */
+async function endTrial(
+  ctx: MutationCtx,
+  trialId: Id<"easygovEvalTrials">,
+  outcome: Infer<typeof vTrialOutcome>,
+): Promise<void> {
+  const trial = await ctx.db.get("easygovEvalTrials", trialId);
+  if (trial?.status !== "pending") return;
+  // The case it drove, if any, belongs to the pending trial only.
+  const { realCase: _realCase, ...row } = trial;
+  await ctx.db.replace("easygovEvalTrials", trialId, { ...row, ...outcome });
+  const run = await ctx.db.get("easygovEvalRuns", trial.runId);
+  if (!run) return;
+  const finishedTrials = run.finishedTrials + 1;
+  await ctx.db.patch("easygovEvalRuns", run._id, {
+    finishedTrials,
+    status: finishedTrials >= run.totalTrials ? "done" : "running",
+  });
+}
 
 export const finishTrial = internalMutation({
   args: { trialId: v.id("easygovEvalTrials"), outcome: vTrialOutcome },
   returns: v.null(),
   handler: async (ctx, { trialId, outcome }) => {
+    await endTrial(ctx, trialId, outcome);
+    return null;
+  },
+});
+
+/**
+ * Ends a trial that is still pending long after it should have finished, as
+ * an error, and cancels the case it was driving. Does nothing to a trial
+ * that has ended.
+ */
+export const expireTrial = internalMutation({
+  args: { trialId: v.id("easygovEvalTrials") },
+  returns: v.null(),
+  handler: async (ctx, { trialId }) => {
     const trial = await ctx.db.get("easygovEvalTrials", trialId);
     if (trial?.status !== "pending") return null;
-    // The case it drove, if any, belongs to the pending trial only.
-    const { realCase: _realCase, ...row } = trial;
-    await ctx.db.replace("easygovEvalTrials", trialId, { ...row, ...outcome });
-    const run = await ctx.db.get("easygovEvalRuns", trial.runId);
-    if (!run) return null;
-    const finishedTrials = run.finishedTrials + 1;
-    await ctx.db.patch("easygovEvalRuns", run._id, {
-      finishedTrials,
-      status: finishedTrials >= run.totalTrials ? "done" : "running",
+    const c = trial.realCase && (await ctx.db.get("cases", trial.realCase.id));
+    // Don't leave the case's workflow waiting on a person who has left.
+    if (c?.status === "active") {
+      await ctx.runMutation(api.easygov.case.public.send, {
+        caseId: c._id,
+        expectedSeq: c.seq,
+        event: { type: "case.cancel" },
+      });
+    }
+    await endTrial(ctx, trialId, {
+      status: "error",
+      error: "The trial never finished",
+      ms: TRIAL_TIMEOUT_MS,
     });
     return null;
   },

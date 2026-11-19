@@ -484,9 +484,9 @@ export const tailorInput = internalQuery({
  * has one. A stand-in for PDF filling.
  *
  * With `tailored`, the checklist is cut to the steps that apply to the
- * person. It was chosen for the answers as they stood (`fingerprint`): if
- * they've changed since, the document is out of date on its own, and the
- * workflow goes around again.
+ * person. It was chosen for the answers as they stood (`fingerprint`), and
+ * so was the filled form: if they've changed since, the document is out of
+ * date on its own, and the workflow goes around again.
  */
 export const fill = internalMutation({
   args: {
@@ -494,13 +494,31 @@ export const fill = internalMutation({
     tailored: v.optional(
       v.object({ fingerprint: v.string(), keep: v.array(v.number()) }),
     ),
-    /** The official form, filled in, when the pack fills one. */
-    document: v.optional(vFilledDocument),
+    /**
+     * The official form, filled in, when the pack fills one, with the
+     * fingerprint of the answers it was filled from.
+     */
+    document: v.optional(
+      v.object({ ...vFilledDocument.fields, fingerprint: v.string() }),
+    ),
   },
   returns: v.null(),
-  handler: async (ctx, { caseId, tailored, document }) => {
+  handler: async (ctx, { caseId, tailored, document: filled }) => {
     const found = await ctx.db.get("cases", caseId);
     if (!found) return null;
+    const current = fingerprintOf(found);
+    // Each part was made from the answers as they stood then. If any part
+    // is behind them now (a profile save reaches a case at any time), so is
+    // the artifact: it takes that part's fingerprint, and the workflow goes
+    // around again.
+    const behind = [tailored?.fingerprint, filled?.fingerprint].find(
+      (made) => made !== undefined && made !== current,
+    );
+    let document: Infer<typeof vFilledDocument> | undefined;
+    if (filled) {
+      const { fingerprint: _madeFrom, ...rest } = filled;
+      document = rest;
+    }
     const pack = await packOf(ctx, found);
     const steps = pack?.output?.checklist ?? [];
     // Only the pack's own steps, in its order.
@@ -520,7 +538,7 @@ export const fill = internalMutation({
         letter: letter ? renderLetter(letter, found.answers) : undefined,
         checklist,
         document,
-        fingerprint: tailored?.fingerprint ?? fingerprintOf(found),
+        fingerprint: behind ?? current,
       },
     });
     await logCaseEvent(

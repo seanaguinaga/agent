@@ -104,6 +104,10 @@ group), `pdf.ts` reads each box's `option` and turns on exactly one.
 - **A model drafts it** from the printed words (`agents.ts:proposeMapping`).
 - **A person reviews it.** Only a `reviewed` mapping fills a case.
 - **It's frozen with the bytes.** A new edition starts again.
+- **Once a pack fills the edition, it stays reviewed.** The mapping can be
+  corrected and saved as reviewed again, but not saved unreviewed, and the
+  targets can't be re-read (`fetchForm` with `reinspect`): cases pinned to the
+  pack fill the form from it.
 
 `mapping.ts` turns a mapping and the answers into values, in code. No model runs
 when a form is filled.

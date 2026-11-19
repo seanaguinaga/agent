@@ -212,6 +212,35 @@ test("a case on the form's pack is filled from the profile, and read back", asyn
     "2 New Street, Berkeley, CA 94704",
   ]);
   expect(await t.query(forms.documentUrl, { caseId })).toMatch(/^https?:/);
+
+  // A form filled from answers that have since moved on (a profile save
+  // reaches a case at any time) is behind them: it isn't put up for review.
+  const { document, fingerprint } = review.artifact!;
+  const fill = internal.easygov.case.data.fill;
+  await t.mutation(fill, {
+    caseId,
+    document: { ...document!, fingerprint: "the answers before" },
+  });
+  expect(await read(t, caseId)).toMatchObject({
+    waitingFor: null,
+    artifact: { fingerprint: "the answers before" },
+  });
+  await t.mutation(fill, { caseId, document: { ...document!, fingerprint } });
+  expect((await read(t, caseId)).waitingFor).toBe("approval");
+
+  // A pack fills this edition now, so its mapping can be corrected but not
+  // taken back to unreviewed, and its targets can't be read again.
+  await expect(
+    t.mutation(forms.saveMapping, { editionId, mapping, reviewed: false }),
+  ).rejects.toThrow(/stays reviewed/);
+  await expect(
+    t.mutation(internal.easygov.forms.data.replaceTargets, {
+      editionId,
+      targets: [],
+    }),
+  ).rejects.toThrow(/can't be read again/);
+  await t.mutation(forms.saveMapping, { editionId, mapping, reviewed: true });
+
   expect(await send(t, caseId, { type: "review.approve" })).toMatchObject({
     status: "done",
   });

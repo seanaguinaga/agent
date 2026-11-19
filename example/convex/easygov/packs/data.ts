@@ -10,6 +10,7 @@ import {
   internalQuery,
   type QueryCtx,
 } from "../../_generated/server";
+import { placeholders } from "../case/answers";
 import {
   jurisdictionChain,
   normalizeFormId,
@@ -117,9 +118,45 @@ function checkDefinition(raw: Definition): Definition {
   if (referral && !referral.kind.trim()) {
     throw new ConvexError("Name the kind of referral.");
   }
+  const price = referral?.priceCents;
+  if (price !== undefined && (!Number.isInteger(price) || price < 0)) {
+    throw new ConvexError("The referral's price is a whole number of cents.");
+  }
   if (referral?.when && !inputs.includes(referral.when.input)) {
     throw new ConvexError(
       `The referral depends on "${referral.when.input}", which isn't an input.`,
+    );
+  }
+  const { documents = [], deadline, output } = raw;
+  const documentKeys = documents.map(({ key }) => key);
+  if (
+    documents.length > 20 ||
+    new Set(documentKeys).size !== documentKeys.length ||
+    documents.some(({ key, label }) => !key.trim() || !label.trim())
+  ) {
+    throw new ConvexError(
+      "List up to 20 documents, each with a label and its own key.",
+    );
+  }
+  if (deadline) {
+    const { label, fromInput, days } = deadline;
+    if (!inputs.includes(fromInput)) {
+      throw new ConvexError(
+        `The deadline counts from "${fromInput}", which isn't an input.`,
+      );
+    }
+    if (!label.trim() || !Number.isInteger(days) || days < 1 || days > 3650) {
+      throw new ConvexError(
+        "A deadline needs a label and a whole number of days.",
+      );
+    }
+  }
+  const unknown = placeholders(output?.letter ?? "").find(
+    (key) => !inputs.includes(key),
+  );
+  if (unknown) {
+    throw new ConvexError(
+      `The letter uses "${unknown}", which isn't an input.`,
     );
   }
   const authority = raw.authority?.trim() || undefined;
@@ -130,6 +167,28 @@ function searchTextOf(definition: Definition): string {
   const { title, description, aliases, authority, forms } = definition;
   const text = [title, description, ...aliases, authority ?? "", ...forms];
   return searchWords(text.join(" ")).join(" ");
+}
+
+/** How many versions `currentVersion` follows before giving up. */
+const MAX_VERSIONS = 50;
+
+/**
+ * The current version of a shared pack, following the versions that replaced
+ * it, so an old link still starts the process as it is now. Null if the pack
+ * is missing or isn't shared.
+ */
+export async function currentVersion(
+  ctx: QueryCtx,
+  id: Id<"processPacks">,
+): Promise<Doc<"processPacks"> | null> {
+  let pack = await ctx.db.get("processPacks", id);
+  for (let i = 0; pack && pack.status !== "current" && i < MAX_VERSIONS; i++) {
+    pack = await ctx.db
+      .query("processPacks")
+      .withIndex("by_supersedes", (q) => q.eq("supersedes", pack!._id))
+      .first();
+  }
+  return pack?.status === "current" && pack.ownerId === undefined ? pack : null;
 }
 
 /** Packs that may fit a case's request, for the selection model to compare. */

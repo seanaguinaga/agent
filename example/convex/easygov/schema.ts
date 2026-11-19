@@ -1,8 +1,9 @@
 // The easygov tables, spread into the root schema. What a case holds is in
-// `case/schema.ts`.
+// `case/schema.ts`; the firms and referrals are in `firms/schema.ts`.
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
 import { caseFields } from "./case/schema";
+import firmTables from "./firms/schema";
 import { processPacks } from "./packs/schema";
 
 export const vCaseDoc = v.object({
@@ -20,10 +21,5 @@ export default {
     kind: v.string(),
     detail: v.optional(v.string()),
   }).index("by_caseId", ["caseId"]),
-  referrals: defineTable({
-    caseId: v.id("cases"),
-    userId: v.string(),
-    kind: v.string(),
-    status: v.literal("open"),
-  }).index("by_caseId_and_kind", ["caseId", "kind"]),
+  ...firmTables,
 };

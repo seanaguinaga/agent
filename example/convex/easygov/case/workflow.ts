@@ -3,9 +3,10 @@
 //
 // 1. Agree on what to do: chat until there's a goal, propose a process pack,
 //    and wait for the person to confirm it (or reject it and try again).
-// 2. Collect the pack's answers, build the document, and wait for approval.
-//    Editing an answer in review goes around again.
-// 3. Finish: open a referral or prepare delivery if the pack says so.
+// 2. Collect the pack's answers and files, build the document, and wait for
+//    approval. Editing an answer in review goes around again.
+// 3. Finish: ask before sharing the case with a lawyer, if a referral is
+//    offered, and prepare delivery if the pack says so.
 //
 // The case in the table is the truth. Each wait reads it and nothing else,
 // and a person's event only says "look again". So a retry restarts this
@@ -75,29 +76,40 @@ export const run = workflow.define({
       );
       if (decision === "confirmed") break;
     }
-    if (await step.runQuery(data.isReferral, { caseId })) {
-      await step.runMutation(data.finish, { caseId });
-      return null;
+
+    // 2. Answers, the document, and review. Legal advice has no pack, so
+    // there's nothing to collect.
+    if (
+      !(await step.runQuery(data.isReferral, { caseId })) &&
+      !(await reviewUntilApproved(step, caseId))
+    ) {
+      return stop(`Reviewed ${MAX_REVIEWS} times without approval`);
     }
 
-    // 2. Answers, the document, and review.
-    for (let reviews = 0; reviews < MAX_REVIEWS; reviews++) {
-      await waitFor(step, () =>
-        step.runQuery(data.answersComplete, { caseId }),
-      );
-      await step.runMutation(data.fill, { caseId });
-      const outcome = await waitFor(step, () =>
-        step.runQuery(data.reviewResult, { caseId }),
-      );
-      if (outcome === "approved") {
-        // 3. Finish.
-        await step.runMutation(data.finish, { caseId });
-        return null;
-      }
-    }
-    return stop(`Reviewed ${MAX_REVIEWS} times without approval`);
+    // 3. Finish, once the person has said whether to share an offered
+    // referral.
+    await waitFor(step, () => step.runQuery(data.referralSettled, { caseId }));
+    await step.runMutation(data.finish, { caseId });
+    return null;
   },
 });
+
+/** Collects, builds and reviews until approved. False if it ran out of tries. */
+async function reviewUntilApproved(
+  step: WorkflowCtx,
+  caseId: Id<"cases">,
+): Promise<boolean> {
+  const data = internal.easygov.case.data;
+  for (let reviews = 0; reviews < MAX_REVIEWS; reviews++) {
+    await waitFor(step, () => step.runQuery(data.answersComplete, { caseId }));
+    await step.runMutation(data.fill, { caseId });
+    const outcome = await waitFor(step, () =>
+      step.runQuery(data.reviewResult, { caseId }),
+    );
+    if (outcome === "approved") return true;
+  }
+  return false;
+}
 
 /** Answers chat messages until there's a goal. False if it ran out of turns. */
 async function chatUntilGoal(

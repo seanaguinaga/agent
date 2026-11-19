@@ -2,7 +2,7 @@
 // with plain values. The workflow waits on them, and `send` checks them, so
 // both always agree on where the case is.
 import type { Doc } from "../../_generated/dataModel";
-import { fingerprint, missingInputs } from "./answers";
+import { addDays, fingerprint, missingInputs, passes } from "./answers";
 import type { WaitingFor } from "./schema";
 
 export type Case = Doc<"cases">;
@@ -38,9 +38,67 @@ export function requiredInputs(c: Case): string[] | undefined {
     : undefined;
 }
 
+/** The confirmed pack, as the case pinned it. */
+export function pinnedPack(c: Case) {
+  const selection = currentSelection(c);
+  return selection?.status === "confirmed" ? selection.definition : undefined;
+}
+
+/** The keys of the required files the person hasn't attached yet. */
+export function missingDocuments(c: Case): string[] {
+  return (pinnedPack(c)?.documents ?? [])
+    .filter(({ key, required }) => required && !c.documents[key])
+    .map(({ key }) => key);
+}
+
+/** The answers and files as they stand: what a document is built from. */
+export function fingerprintOf(c: Case): string {
+  return fingerprint(c.answers, c.documents);
+}
+
+/** The date to act by, once the answer it's counted from is in. */
+export function deadlineOf(
+  c: Case,
+): { label: string; date: string } | undefined {
+  const deadline = pinnedPack(c)?.deadline;
+  const from = deadline && c.answers[deadline.fromInput];
+  const date = from ? addDays(from, deadline.days) : undefined;
+  return date ? { label: deadline!.label, date } : undefined;
+}
+
+/**
+ * What an answer to `key` must be, because the deadline or the referral
+ * check reads it: a date, a number, or (undefined) any text.
+ */
+export function answerKind(
+  c: Case,
+  key: string,
+): "date" | "number" | undefined {
+  const pack = pinnedPack(c);
+  if (pack?.deadline?.fromInput === key) return "date";
+  const when = pack?.referral?.when;
+  if (when?.input !== key) return undefined;
+  if ("withinDays" in when) return "date";
+  return "atLeast" in when ? "number" : undefined;
+}
+
+/** The referral to offer for the pack, if its check passes on this day. */
+export function packReferral(c: Case, on: string): string | undefined {
+  const referral = pinnedPack(c)?.referral;
+  if (!referral) return undefined;
+  return !referral.when || passes(referral.when, c.answers, on)
+    ? referral.kind
+    : undefined;
+}
+
+/** A case started without an account. */
+export function isGuest(c: Pick<Case, "userId">): boolean {
+  return c.userId.startsWith("guest:");
+}
+
 /** "approved", "changed" (an answer moved on since the artifact), or null. */
 export function reviewOutcome(c: Case): "approved" | "changed" | null {
-  const current = fingerprint(c.answers);
+  const current = fingerprintOf(c);
   if (c.artifact?.fingerprint !== current) return "changed";
   return c.approval?.fingerprint === current ? "approved" : null;
 }
@@ -51,9 +109,15 @@ export function waitingFor(c: Case): WaitingFor {
   if (!standingGoal(c)) return "goal";
   const selection = currentSelection(c);
   if (selection?.status === "proposed") return "pack";
-  if (selection?.status !== "confirmed" || selection.referral) return null;
-  const inputs = requiredInputs(c) ?? [];
-  if (missingInputs(inputs, c.answers).length) return "answers";
-  // All answered: in review once the artifact matches them, until approved.
-  return reviewOutcome(c) === null ? "approval" : null;
+  if (selection?.status !== "confirmed") return null;
+  // A request for legal advice has no pack: only the referral to agree to.
+  if (!selection.referral) {
+    const inputs = requiredInputs(c) ?? [];
+    if (missingInputs(inputs, c.answers).length) return "answers";
+    if (missingDocuments(c).length) return "answers";
+    // All in: in review once the artifact matches them, until approved.
+    const review = reviewOutcome(c);
+    if (review !== "approved") return review === null ? "approval" : null;
+  }
+  return c.referral?.status === "offered" ? "consent" : null;
 }

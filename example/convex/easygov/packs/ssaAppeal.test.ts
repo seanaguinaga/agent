@@ -9,8 +9,12 @@ vi.mock("../../modelsForDemo", async () =>
 describe("SSA appeal", () => {
   afterEach(resetCases);
 
-  test("the SSA appeal opens a referral only when representation is wanted", async () => {
-    for (const wantsRepresentation of ["yes", "no"]) {
+  test("a referral is offered only when representation is wanted, and shared only on a yes", async () => {
+    for (const [wantsRepresentation, reply] of [
+      ["yes", "referral.share"],
+      ["yes", "referral.decline"],
+      ["no", undefined],
+    ] as const) {
       const { t, caseId } = await start();
       model.replies.push(
         request({
@@ -28,14 +32,26 @@ describe("SSA appeal", () => {
         reasonForAppeal: "New evidence",
         wantsRepresentation,
       });
-      const found = await send(t, caseId, { type: "review.approve" });
+      let found = await send(t, caseId, { type: "review.approve" });
+      if (reply) {
+        expect(found).toMatchObject({
+          status: "active",
+          waitingFor: "consent",
+        });
+        found = await send(t, caseId, { type: reply });
+      }
       expect(found.status).toBe("done");
       const referrals = await t.run((ctx) =>
         ctx.db.query("referrals").collect(),
       );
       expect(referrals).toEqual(
-        wantsRepresentation === "yes"
-          ? [expect.objectContaining({ kind: "representation" })]
+        reply === "referral.share"
+          ? [
+              expect.objectContaining({
+                kind: "representation",
+                answers: expect.objectContaining({ denialDate: "2026-10-01" }),
+              }),
+            ]
           : [],
       );
       expect(found.delivery).toEqual({ status: "prepared", channel: "online" });

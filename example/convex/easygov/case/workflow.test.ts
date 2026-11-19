@@ -120,10 +120,21 @@ describe("agreeing on what to do", () => {
       status: "proposed",
       referral: true,
     });
+    // Confirming it isn't sharing it: the person is asked first.
     found = await send(t, caseId, { type: "processPack.confirm" });
-    expect(found).toMatchObject({ status: "done", waitingFor: null });
-    const referrals = await t.run((ctx) => ctx.db.query("referrals").collect());
-    expect(referrals).toMatchObject([{ kind: "advice" }]);
+    expect(found).toMatchObject({ status: "active", waitingFor: "consent" });
+    const referrals = () => t.run((ctx) => ctx.db.query("referrals").collect());
+    expect(await referrals()).toEqual([]);
+
+    found = await send(t, caseId, { type: "referral.share" });
+    expect(found).toMatchObject({
+      status: "done",
+      waitingFor: null,
+      referral: { kind: "advice", status: "shared" },
+    });
+    expect(await referrals()).toMatchObject([
+      { kind: "advice", goal: "Should I sue my former employer?" },
+    ]);
   });
 });
 

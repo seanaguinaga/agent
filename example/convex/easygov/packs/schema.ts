@@ -1,5 +1,5 @@
 import { defineTable } from "convex/server";
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 
 export const vProcessPackQuestions = v.array(
   v.object({ key: v.string(), question: v.string() }),
@@ -7,6 +7,51 @@ export const vProcessPackQuestions = v.array(
 const vProcessPackOutput = v.object({
   title: v.string(),
   checklist: v.array(v.string()),
+  /**
+   * A letter to write from the answers, e.g. a complaint or a demand letter.
+   * `{{fullName}}` is replaced by the answer to `fullName`.
+   */
+  letter: v.optional(v.string()),
+});
+
+/** A file the person attaches, e.g. the denial letter they received. */
+export const vPackDocuments = v.array(
+  v.object({ key: v.string(), label: v.string(), required: v.boolean() }),
+);
+
+/**
+ * A date the person must act by: `days` after the date they answered
+ * `fromInput` with, e.g. 60 days after `denialDate`.
+ */
+export const vPackDeadline = v.object({
+  label: v.string(),
+  fromInput: v.string(),
+  days: v.number(),
+});
+
+/**
+ * A check on one answer. `atLeast` reads the answer as a number;
+ * `withinDays` reads it as a date (YYYY-MM-DD) and passes while that date is
+ * today or at most that many days ago.
+ */
+export const vSignal = v.union(
+  v.object({ input: v.string(), equals: v.string() }),
+  v.object({ input: v.string(), atLeast: v.number() }),
+  v.object({ input: v.string(), withinDays: v.number() }),
+);
+export type Signal = Infer<typeof vSignal>;
+
+/**
+ * A legal referral to offer once the person approves, e.g. representation
+ * for an appeal. With `when`, only if that answer passes. The person is
+ * asked first: nothing is shared unless they say so. The price is fixed: it
+ * doesn't depend on what comes of the case.
+ */
+export const vPackReferral = v.object({
+  kind: v.string(),
+  when: v.optional(vSignal),
+  /** What the firm that accepts it pays, if not the usual price. */
+  priceCents: v.optional(v.number()),
 });
 
 /**
@@ -25,16 +70,10 @@ export const packDefinition = {
   /** Official form numbers, e.g. "IRS-8822". Searched, never filtered on. */
   forms: v.array(v.string()),
   inputs: v.array(v.string()),
-  /**
-   * A legal referral to open once the person approves, e.g. representation
-   * for an appeal. With `when`, only if that answer was given.
-   */
-  referral: v.optional(
-    v.object({
-      kind: v.string(),
-      when: v.optional(v.object({ input: v.string(), equals: v.string() })),
-    }),
-  ),
+  /** Files to attach along with the answers. */
+  documents: v.optional(vPackDocuments),
+  deadline: v.optional(vPackDeadline),
+  referral: v.optional(vPackReferral),
   /** How the approved document goes out. Without one, the case just ends. */
   delivery: v.optional(v.union(v.literal("mail"), v.literal("online"))),
   inputQuestions: v.optional(vProcessPackQuestions),
@@ -52,10 +91,15 @@ export const processPacks = defineTable({
   supersedes: v.optional(v.id("processPacks")),
   /** Derived from the definition because each search index takes one text field. */
   searchText: v.string(),
-}).searchIndex("search_packs", {
-  searchField: "searchText",
-  filterFields: ["ownerId", "jurisdiction", "status"],
-});
+})
+  // Shared current packs, for landing pages.
+  .index("by_ownerId_and_status", ["ownerId", "status"])
+  // The version that replaced a pack, to follow an old link to the new one.
+  .index("by_supersedes", ["supersedes"])
+  .searchIndex("search_packs", {
+    searchField: "searchText",
+    filterFields: ["ownerId", "jurisdiction", "status"],
+  });
 
 export const vPackMatch = v.object({
   id: v.id("processPacks"),

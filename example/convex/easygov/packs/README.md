@@ -3,18 +3,21 @@
 **Which saved process pack fits this request?**
 
 A process pack is a reusable definition of one government process: a title and
-description, where it applies, the questions to ask (`inputs`), the checklist it
-produces, and optionally a legal referral and a delivery channel. Every pack is
-a row in `processPacks`; none are defined in code.
+description, where it applies, the questions to ask (`inputs`), and the
+checklist it produces. It can also name files to attach, a deadline, a letter to
+write, a legal referral to offer, and a delivery channel (see
+[What a pack can ask for](#what-a-pack-can-ask-for)). Every pack is a row in
+`processPacks`; none are defined in code.
 
-| File                | Touches the database? | Job                                                  |
-| ------------------- | --------------------- | ---------------------------------------------------- |
-| `schema.ts`         | no                    | The table, and jurisdiction and form-number helpers  |
-| `data.ts`           | yes                   | `findMatch` (search) and `save`                      |
-| `packs.testkit.ts`  | (tests)               | Two example packs (IRS 8822, SSA appeal) and seeding |
-| `packs.test.ts`     | (tests)               | Search, saving, duplicates, versions                 |
-| `irs8822.test.ts`   | (tests)               | A whole case on the IRS pack                         |
-| `ssaAppeal.test.ts` | (tests)               | A whole case with a conditional referral             |
+| File                | Touches the database? | Job                                                 |
+| ------------------- | --------------------- | --------------------------------------------------- |
+| `schema.ts`         | no                    | The table, and jurisdiction and form-number helpers |
+| `data.ts`           | yes                   | `findMatch` (search) and `save`                     |
+| `public.ts`         | yes                   | What a landing page reads: the shared packs         |
+| `packs.testkit.ts`  | (tests)               | Example packs (IRS 8822, SSA appeal, wage claim)    |
+| `packs.test.ts`     | (tests)               | Search, saving, duplicates, versions                |
+| `irs8822.test.ts`   | (tests)               | A whole case on the IRS pack                        |
+| `ssaAppeal.test.ts` | (tests)               | A whole case with a conditional referral            |
 
 The agent that proposes a pack is in `case/agents.ts`. This folder is only the
 library it searches.
@@ -67,6 +70,22 @@ the inputs, and optionally a `referral` (with a `when` on one answer) and a
    `reviewedPackIds` and the latest `expectedSeq`.
 4. After confirmation the case collects its answers, builds the checklist, and
    waits for review. A later case can find and pin the saved pack.
+
+## What a pack can ask for
+
+- **`documents`**: files to attach, each `required` or not. A case waits for the
+  required ones along with the answers.
+- **`deadline`**: `{ label, fromInput, days }`. The date is `days` after the
+  date answered for `fromInput`, which must then be a date (YYYY-MM-DD).
+- **`output.letter`**: text with `{{inputKey}}` placeholders, filled in from the
+  answers when the document is built.
+- **`referral`**: `{ kind, when }`. `when` is one check on one answer: `equals`
+  some text, `atLeast` a number, or `withinDays` (the date answered is today or
+  at most that many days ago). When it passes at approval, the person is asked
+  whether to share the case. Without `when` they're always asked.
+
+`save` refuses a pack whose deadline, referral or letter names an input the pack
+doesn't have.
 
 ## The parts that are hard to follow
 

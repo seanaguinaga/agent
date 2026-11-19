@@ -78,6 +78,8 @@ export const proposalFields = {
   draft: v.optional(vProcessPackDefinition),
   /** The request needs legal advice, not a process pack. */
   referral: v.optional(v.literal(true)),
+  /** Where a referral applies, if the request said. */
+  jurisdiction: v.optional(v.string()),
   needsClarification: v.optional(v.literal(true)),
   /** The goal and workflow it was proposed for, to drop a stale result. */
   origin: v.object({ goalVersion: v.number(), workflowId: vWorkflowId }),
@@ -239,7 +241,12 @@ export const propose = internalAction({
     }
 
     if (request.kind === "referral" || !jurisdiction) {
-      return { message: request.message, referral: true, origin };
+      return {
+        message: request.message,
+        referral: true,
+        jurisdiction: jurisdiction ?? undefined,
+        origin,
+      };
     }
 
     const { output: recipe } = await selectionAgent.generateText(

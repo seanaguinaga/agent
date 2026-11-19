@@ -14,9 +14,11 @@ import {
   type MutationCtx,
 } from "../../_generated/server";
 import { intakeAgent, proposalFields, selectionAgent } from "./agents";
-import { fingerprint, missingInputs } from "./answers";
+import { missingInputs, renderLetter } from "./answers";
 import {
   currentSelection,
+  fingerprintOf,
+  missingDocuments,
   newGoal,
   requiredInputs,
   reviewOutcome,
@@ -38,7 +40,7 @@ export async function writeCase(
 }
 
 /** Appends to `caseEvents`, the history of a case. */
-export async function logEvent(
+export async function logCaseEvent(
   ctx: MutationCtx,
   caseId: Id<"cases">,
   kind: string,
@@ -60,15 +62,21 @@ export async function endCase(
     workflowId: undefined,
     failure: undefined,
   });
-  await logEvent(ctx, c._id, `case.${status}`, endReason);
+  await logCaseEvent(ctx, c._id, `case.${status}`, endReason);
 }
 
-/** What a case pins of the pack it chose: the saved row and its questions. */
+/**
+ * What a case pins of the pack it chose: the saved row, and the parts that
+ * say what the case waits for.
+ */
 export function processPackDefinition(pack: Doc<"processPacks">) {
   return {
     id: pack._id,
     inputs: pack.inputs,
     inputQuestions: pack.inputQuestions,
+    documents: pack.documents,
+    deadline: pack.deadline,
+    referral: pack.referral,
   };
 }
 
@@ -184,7 +192,16 @@ export const recordProposal = internalMutation({
   returns: v.boolean(),
   handler: async (
     ctx,
-    { caseId, message, packId, draft, referral, origin, needsClarification },
+    {
+      caseId,
+      message,
+      packId,
+      draft,
+      referral,
+      jurisdiction,
+      origin,
+      needsClarification,
+    },
   ) => {
     const found = await ctx.db.get("cases", caseId);
     if (!found || found.status !== "active") return false;
@@ -214,9 +231,16 @@ export const recordProposal = internalMutation({
     await writeCase(ctx, caseId, {
       processPack: needsClarification
         ? { status: "rejected", goalVersion }
-        : { status: "proposed", goalVersion, definition, draft, referral },
+        : {
+            status: "proposed",
+            goalVersion,
+            definition,
+            draft,
+            referral,
+            jurisdiction: referral ? jurisdiction : undefined,
+          },
     });
-    await logEvent(ctx, caseId, "pack.proposed", message);
+    await logCaseEvent(ctx, caseId, "pack.proposed", message);
     return true;
   },
 });
@@ -244,7 +268,7 @@ export const isReferral = internalQuery({
 
 // --- 3. Answers, the document, and review -----------------------------------
 
-/** True once every input the pack asks for has an answer. */
+/** True once every answer and required file the pack asks for is in. */
 export const answersComplete = internalQuery({
   args: { caseId: v.id("cases") },
   returns: v.union(v.literal(true), v.null()),
@@ -252,11 +276,17 @@ export const answersComplete = internalQuery({
     const found = await ctx.db.get("cases", caseId);
     const inputs = found && requiredInputs(found);
     if (!found || !inputs) throw new Error("The case has no confirmed pack");
-    return missingInputs(inputs, found.answers).length === 0 ? true : null;
+    const missing =
+      missingInputs(inputs, found.answers).length +
+      missingDocuments(found).length;
+    return missing === 0 ? true : null;
   },
 });
 
-/** Builds the document from the current answers. A stand-in for PDF filling. */
+/**
+ * Builds the document from the current answers, and the pack's letter if it
+ * has one. A stand-in for PDF filling.
+ */
 export const fill = internalMutation({
   args: { caseId: v.id("cases") },
   returns: v.null(),
@@ -270,10 +300,15 @@ export const fill = internalMutation({
       answers: found.answers,
       output: pack?.output,
     });
+    const letter = pack?.output?.letter;
     await writeCase(ctx, caseId, {
-      artifact: { summary, fingerprint: fingerprint(found.answers) },
+      artifact: {
+        summary,
+        letter: letter ? renderLetter(letter, found.answers) : undefined,
+        fingerprint: fingerprintOf(found),
+      },
     });
-    await logEvent(ctx, caseId, "document.filled");
+    await logCaseEvent(ctx, caseId, "document.filled");
     return null;
   },
 });
@@ -291,8 +326,21 @@ export const reviewResult = internalQuery({
 // --- 4. The end -------------------------------------------------------------
 
 /**
- * Finishes the case: opens a referral if one applies, prepares delivery if
- * the pack has a channel, and marks it done. Safe to run twice.
+ * True once no referral is waiting on the person: none was offered, or they
+ * shared the case or declined.
+ */
+export const referralSettled = internalQuery({
+  args: { caseId: v.id("cases") },
+  returns: v.union(v.literal(true), v.null()),
+  handler: async (ctx, { caseId }) => {
+    const found = await ctx.db.get("cases", caseId);
+    return found?.referral?.status === "offered" ? null : true;
+  },
+});
+
+/**
+ * Finishes the case: prepares delivery if the pack has a channel, and marks
+ * it done. Safe to run twice.
  */
 export const finish = internalMutation({
   args: { caseId: v.id("cases") },
@@ -304,15 +352,6 @@ export const finish = internalMutation({
     const pack = selection?.definition
       ? await ctx.db.get("processPacks", selection.definition.id)
       : null;
-    const referral = selection?.referral
-      ? "advice"
-      : pack?.referral &&
-          (!pack.referral.when ||
-            found.answers[pack.referral.when.input] ===
-              pack.referral.when.equals)
-        ? pack.referral.kind
-        : undefined;
-    if (referral) await openReferral(ctx, found, referral);
     if (pack?.delivery) {
       await writeCase(ctx, caseId, {
         delivery: { status: "prepared", channel: pack.delivery },
@@ -335,24 +374,6 @@ export const stop = internalMutation({
   },
 });
 
-/** One referral per kind: a retried finish doesn't open a second. */
-async function openReferral(ctx: MutationCtx, c: Case, kind: string) {
-  const existing = await ctx.db
-    .query("referrals")
-    .withIndex("by_caseId_and_kind", (q) =>
-      q.eq("caseId", c._id).eq("kind", kind),
-    )
-    .first();
-  if (existing) return;
-  await ctx.db.insert("referrals", {
-    caseId: c._id,
-    userId: c.userId,
-    kind,
-    status: "open",
-  });
-  await logEvent(ctx, c._id, "referral.opened", kind);
-}
-
 /**
  * The workflow's `onComplete`, after every run. A failure parks the case: it
  * keeps the workflow id for a retry, and clears `workflowId` so nothing
@@ -374,7 +395,7 @@ export const workflowDone = internalMutation({
         failure: { error: result.error, workflowId },
         workflowId: undefined,
       });
-      await logEvent(ctx, found._id, "case.failed", result.error);
+      await logCaseEvent(ctx, found._id, "case.failed", result.error);
     } else if (found.status === "active") {
       // A run that ended without ending its case is a bug: say so.
       await endCase(ctx, found, "stopped", "The workflow ended early");

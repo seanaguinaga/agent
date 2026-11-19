@@ -13,6 +13,7 @@ const base = {
   status: "active",
   seq: 0,
   answers: {},
+  documents: {},
 } satisfies Case;
 
 /** A case with a goal and a confirmed pack asking for `a` and `b`. */
@@ -68,10 +69,55 @@ describe("waitingFor", () => {
   test("nothing after a failure, for a referral, or once ended", () => {
     const failure = { error: "boom", workflowId: "w" as never };
     expect(waitingFor(confirmed({ failure }))).toBeNull();
-    const referral = confirmed({
+    expect(waitingFor(confirmed({ status: "done" }))).toBeNull();
+  });
+
+  test("a required file, along with the answers", () => {
+    const answers = { a: "1", b: "2" };
+    const needsFile = confirmed({
+      answers,
+      processPack: {
+        status: "confirmed",
+        goalVersion: 1,
+        definition: {
+          id: packId,
+          inputs: ["a", "b"],
+          documents: [
+            { key: "notice", label: "The notice", required: true },
+            { key: "extra", label: "Anything else", required: false },
+          ],
+        },
+      },
+    });
+    expect(waitingFor(needsFile)).toBe("answers");
+    const documents = { notice: "file" as Id<"_storage"> };
+    // All in, document not built yet: the workflow is busy.
+    expect(waitingFor({ ...needsFile, documents })).toBeNull();
+  });
+
+  test("consent, while a referral is offered", () => {
+    const offered = { kind: "advice", status: "offered" } as const;
+    const advice = confirmed({
       processPack: { status: "confirmed", goalVersion: 1, referral: true },
     });
-    expect(waitingFor(referral)).toBeNull();
-    expect(waitingFor(confirmed({ status: "done" }))).toBeNull();
+    expect(waitingFor({ ...advice, referral: offered })).toBe("consent");
+    expect(
+      waitingFor({ ...advice, referral: { ...offered, status: "declined" } }),
+    ).toBeNull();
+
+    // With a pack, only once the document is approved.
+    const answers = { a: "1", b: "2" };
+    const artifact = { summary: "", fingerprint: fingerprint(answers) };
+    const inReview = confirmed({ answers, artifact, referral: offered });
+    expect(waitingFor(inReview)).toBe("approval");
+    const approval = { fingerprint: artifact.fingerprint };
+    expect(waitingFor({ ...inReview, approval })).toBe("consent");
+    expect(
+      waitingFor({
+        ...inReview,
+        approval,
+        referral: { ...offered, status: "shared" },
+      }),
+    ).toBeNull();
   });
 });

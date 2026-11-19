@@ -11,27 +11,59 @@ import {
 } from "../../_generated/server";
 import { getAuthUserId } from "../../utils";
 import { vCaseDoc } from "../schema";
-import { endCase, logEvent, writeCase } from "./data";
+import { currentVersion } from "../packs/data";
+import {
+  endCase,
+  logCaseEvent,
+  processPackDefinition,
+  writeCase,
+} from "./data";
 import { EVENTS } from "./events";
 import { vCaseEvent, vWaitingFor, type CaseEvent } from "./schema";
-import { waitingFor, type Case } from "./state";
+import { deadlineOf, waitingFor, type Case } from "./state";
 import { nudgeCase, workflow } from "./workflow";
 
+/**
+ * Starts a case. With a `packId` (from a landing page) the case starts on
+ * that pack: there's no chat and no proposal, and it waits for the answers.
+ * `source` says where the case came from, e.g. the page's name.
+ *
+ * With a `guestKey` the case needs no account. The key is a secret the
+ * client makes up (a UUID or longer) and keeps: it's the only way back to
+ * the case until `claimCase` moves it to an account.
+ */
 export const startCase = mutation({
-  args: {},
+  args: {
+    packId: v.optional(v.id("processPacks")),
+    source: v.optional(v.string()),
+    guestKey: v.optional(v.string()),
+  },
   returns: v.id("cases"),
-  handler: async (ctx): Promise<Id<"cases">> => {
-    const userId = await requireUser(ctx);
+  handler: async (ctx, { packId, source, guestKey }): Promise<Id<"cases">> => {
+    const userId = await caller(ctx, guestKey);
+    const pack = packId ? await currentVersion(ctx, packId) : null;
+    if (packId && !pack) throw new ConvexError("Process pack not found.");
     const threadId = await createThread(ctx, components.agent, {
       userId,
       title: "easygov case",
     });
     const caseId = await ctx.db.insert("cases", {
       userId,
+      source: source?.trim().slice(0, 200) || undefined,
       threadId,
       status: "active",
       seq: 0,
       answers: {},
+      documents: {},
+      // Choosing the page is choosing the pack: it starts out confirmed.
+      ...(pack && {
+        intake: { goal: pack.title, version: 1 },
+        processPack: {
+          status: "confirmed" as const,
+          goalVersion: 1,
+          definition: processPackDefinition(pack),
+        },
+      }),
     });
     const workflowId = await workflow.start(
       ctx,
@@ -46,18 +78,88 @@ export const startCase = mutation({
       },
     );
     await writeCase(ctx, caseId, { workflowId });
-    await logEvent(ctx, caseId, "case.started");
+    await logCaseEvent(ctx, caseId, "case.started");
     return caseId;
   },
 });
 
-/** The case, and what it waits for a person to do. */
+/** The case, what it waits for a person to do, and the date to act by. */
 export const getCase = query({
-  args: { caseId: v.id("cases") },
-  returns: v.object({ ...vCaseDoc.fields, waitingFor: vWaitingFor }),
-  handler: async (ctx, { caseId }) => {
-    const found = await authorizeCase(ctx, caseId);
-    return { ...found, waitingFor: waitingFor(found) };
+  args: { caseId: v.id("cases"), guestKey: v.optional(v.string()) },
+  returns: v.object({
+    ...vCaseDoc.fields,
+    waitingFor: vWaitingFor,
+    deadline: v.union(
+      v.object({ label: v.string(), date: v.string() }),
+      v.null(),
+    ),
+  }),
+  handler: async (ctx, { caseId, guestKey }) => {
+    const found = await authorizeCase(ctx, caseId, guestKey);
+    return {
+      ...found,
+      waitingFor: waitingFor(found),
+      deadline: deadlineOf(found) ?? null,
+    };
+  },
+});
+
+/**
+ * Moves a guest's case to the signed-in account. The key stops working, and
+ * the case can then be shared with a lawyer.
+ */
+export const claimCase = mutation({
+  args: { caseId: v.id("cases"), guestKey: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { caseId, guestKey }) => {
+    const userId = await requireUser(ctx);
+    await authorizeCase(ctx, caseId, guestKey);
+    await writeCase(ctx, caseId, { userId });
+    await logCaseEvent(ctx, caseId, "case.claimed");
+    return null;
+  },
+});
+
+/**
+ * Takes back a case shared with a lawyer, while no firm has accepted it.
+ * Returns false if there was nothing to take back: nothing was shared, or a
+ * firm already has it.
+ */
+export const withdrawReferral = mutation({
+  args: { caseId: v.id("cases"), guestKey: v.optional(v.string()) },
+  returns: v.boolean(),
+  handler: async (ctx, { caseId, guestKey }) => {
+    const found = await authorizeCase(ctx, caseId, guestKey);
+    const kind = found.referral?.kind;
+    const referral =
+      kind === undefined
+        ? null
+        : await ctx.db
+            .query("referrals")
+            .withIndex("by_caseId_and_kind", (q) =>
+              q.eq("caseId", caseId).eq("kind", kind),
+            )
+            .first();
+    if (referral?.status !== "open") return false;
+    await ctx.db.patch("referrals", referral._id, { status: "withdrawn" });
+    await logCaseEvent(ctx, caseId, "referral.withdrawn", kind);
+    return true;
+  },
+});
+
+/**
+ * Where to upload a file for the case. Post the file to the URL, then send
+ * `document.attach` with the storage id it returns.
+ */
+export const uploadUrl = mutation({
+  args: { caseId: v.id("cases"), guestKey: v.optional(v.string()) },
+  returns: v.string(),
+  handler: async (ctx, { caseId, guestKey }) => {
+    const found = await authorizeCase(ctx, caseId, guestKey);
+    if (found.status !== "active") {
+      throw new ConvexError(`The case is ${found.status}.`);
+    }
+    return await ctx.storage.generateUploadUrl();
   },
 });
 
@@ -70,10 +172,15 @@ export const getCase = query({
  * message, and is saved once.
  */
 export const sendMessage = mutation({
-  args: { caseId: v.id("cases"), text: v.string(), messageKey: v.string() },
+  args: {
+    caseId: v.id("cases"),
+    text: v.string(),
+    messageKey: v.string(),
+    guestKey: v.optional(v.string()),
+  },
   returns: v.null(),
-  handler: async (ctx, { caseId, text, messageKey }) => {
-    const found = await authorizeCase(ctx, caseId);
+  handler: async (ctx, { caseId, text, messageKey, guestKey }) => {
+    const found = await authorizeCase(ctx, caseId, guestKey);
     if (found.status !== "active") {
       throw new ConvexError(`The case is ${found.status}.`);
     }
@@ -100,10 +207,15 @@ export const sendMessage = mutation({
  * so an event based on a stale view of the case is refused.
  */
 export const send = mutation({
-  args: { caseId: v.id("cases"), event: vCaseEvent, expectedSeq: v.number() },
+  args: {
+    caseId: v.id("cases"),
+    event: vCaseEvent,
+    expectedSeq: v.number(),
+    guestKey: v.optional(v.string()),
+  },
   returns: v.null(),
-  handler: async (ctx, { caseId, event, expectedSeq }) => {
-    const found = await authorizeCase(ctx, caseId);
+  handler: async (ctx, { caseId, event, expectedSeq, guestKey }) => {
+    const found = await authorizeCase(ctx, caseId, guestKey);
     if (found.seq !== expectedSeq) {
       throw new ConvexError("The case has changed. Reload and try again.");
     }
@@ -159,7 +271,7 @@ async function retry(ctx: MutationCtx, c: Case): Promise<null> {
   const { workflowId } = c.failure;
   await workflow.restart(ctx, workflowId, { from: 0 });
   await writeCase(ctx, c._id, { workflowId, failure: undefined });
-  await logEvent(ctx, c._id, "case.retried");
+  await logCaseEvent(ctx, c._id, "case.retried");
   return null;
 }
 
@@ -179,12 +291,25 @@ async function requireUser(ctx: QueryCtx): Promise<string> {
   return userId;
 }
 
-/** The case, if it belongs to the signed-in user. */
+/** A guest key is the only thing guarding its case, so it must be long. */
+const MIN_GUEST_KEY = 32;
+
+/** Who is calling: the guest with this key, or the signed-in user. */
+async function caller(ctx: QueryCtx, guestKey?: string): Promise<string> {
+  if (guestKey === undefined) return await requireUser(ctx);
+  if (guestKey.length < MIN_GUEST_KEY) {
+    throw new ConvexError("The guest key is too short.");
+  }
+  return `guest:${guestKey}`;
+}
+
+/** The case, if it belongs to the caller. */
 async function authorizeCase(
   ctx: QueryCtx,
   caseId: Id<"cases">,
+  guestKey?: string,
 ): Promise<Case> {
-  const userId = await requireUser(ctx);
+  const userId = await caller(ctx, guestKey);
   const found = await ctx.db.get("cases", caseId);
   if (!found || found.userId !== userId) {
     throw new ConvexError("Case not found.");

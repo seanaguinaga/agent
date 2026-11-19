@@ -38,6 +38,39 @@ export const ssaAppeal: PackDefinition = {
   delivery: "online",
 };
 
+/**
+ * A demand letter for unpaid wages: a file, a deadline, a letter, and a
+ * referral offered when enough is owed. Not seeded by `seedPacks`.
+ */
+export const wageClaim: PackDefinition = {
+  title: "Unpaid wages demand letter",
+  description: "Write to an employer demanding wages that are owed.",
+  aliases: ["final paycheck not paid", "employer owes me money"],
+  jurisdiction: "us/ca",
+  authority: "Labor Commissioner",
+  forms: [],
+  inputs: ["fullName", "employer", "amountOwed", "lastWorkDate"],
+  documents: [
+    { key: "payStub", label: "Your last pay stub", required: true },
+    { key: "contract", label: "Your offer letter", required: false },
+  ],
+  deadline: {
+    label: "File a wage claim",
+    fromInput: "lastWorkDate",
+    days: 1095,
+  },
+  referral: {
+    kind: "employment",
+    when: { input: "amountOwed", atLeast: 5000 },
+  },
+  output: {
+    title: "Demand letter",
+    checklist: ["Send the letter and keep a copy."],
+    letter:
+      "To {{employer}}: I, {{fullName}}, am owed ${{amountOwed}} in wages.",
+  },
+};
+
 /** Saves the fixture packs as shared packs, through the same checks as any save. */
 export async function seedPacks(t: T) {
   // The fixtures are distinct processes, so each acknowledges the ones before.

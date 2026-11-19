@@ -10,6 +10,7 @@ import {
   start,
   type T,
 } from "../case/cases.testkit";
+import { chosen } from "../case/schema";
 import { choose, request } from "./packs.testkit";
 import {
   jurisdictionChain,
@@ -32,6 +33,11 @@ const renewal = {
   authority: "Department of Motor Vehicles",
   forms: [],
   inputs: ["expirationDate"],
+  output: {
+    title: "Renewal request",
+    checklist: ["Check the renewal notice."],
+    letter: "My license expires on {{expirationDate}}.",
+  },
 };
 
 // The pack the live run drafted, and the draft the model writes for it.
@@ -44,19 +50,33 @@ const garnishment = {
   authority: "California state court",
   forms: [],
   inputs: ["noticeDate"],
+  output: {
+    title: "Notice review preparation",
+    checklist: ["Confirm the court and case number on the notice."],
+    letter: "I received a notice dated {{noticeDate}}.",
+  },
 };
+// What the model writes when asked to draft that process. It asks one
+// question the letter doesn't use.
 const recipe = {
   title: garnishment.title,
   description: garnishment.description,
   aliases: garnishment.aliases,
   inputQuestions: [
     { key: "noticeDate", question: "What date is on the notice?" },
+    { key: "rules", question: "Which exemptions do the court rules allow?" },
   ],
-  output: {
-    title: "Notice review preparation",
-    checklist: ["Confirm the court and case number on the notice."],
-  },
+  output: garnishment.output,
 };
+
+// What the research model reports before a draft is written.
+const sources = [
+  "https://www.courts.ca.gov/garnishment",
+  "https://www.courts.ca.gov/forms/wg-006",
+];
+const notes =
+  `File a claim of exemption (${sources[0]}). ` +
+  `Use form WG-006: \`${sources[1]}\`. See also ${sources[0]}.`;
 
 async function owner(t: T, caseId: Parameters<typeof read>[1]) {
   return (await read(t, caseId)).userId;
@@ -179,6 +199,46 @@ describe("saving packs", () => {
     ).toMatchObject({ kind: "created" });
   });
 
+  test("one shared word doesn't make a look-alike; a shared form does", async () => {
+    const { t } = await start();
+    const petition = {
+      title: "Spouse immigrant petition",
+      description: "Organize a family-based green card petition.",
+      aliases: ["Form I-130 and adjustment of status"],
+      jurisdiction: "us",
+      forms: ["I-130"],
+      inputs: ["route"],
+    };
+    // Only "form" in common with "IRS change of address (Form 8822)".
+    expect(await t.mutation(processPacks.save, petition)).toMatchObject({
+      kind: "created",
+    });
+    // Different words, same form number.
+    expect(
+      await t.mutation(processPacks.save, {
+        ...petition,
+        title: "Tell the tax office you moved",
+        description: "Update where your tax mail goes.",
+        aliases: [],
+        forms: ["irs 8822"],
+      }),
+    ).toMatchObject({
+      kind: "reviewDuplicates",
+      packs: [{ title: "IRS change of address (Form 8822)" }],
+    });
+  });
+
+  test("an input nothing reads is refused, unless the pack fills in a form", async () => {
+    const { t } = await start();
+    const { output: _output, ...unread } = renewal;
+    await expect(t.mutation(processPacks.save, unread)).rejects.toThrow(
+      /Nothing reads "expirationDate"/,
+    );
+    expect(
+      await t.mutation(processPacks.save, { ...unread, forms: ["DL 44"] }),
+    ).toMatchObject({ kind: "created" });
+  });
+
   test("a new version replaces the old one, and pinned cases keep theirs", async () => {
     const { t, caseId } = await start();
     const ownerId = await owner(t, caseId);
@@ -202,6 +262,7 @@ describe("saving packs", () => {
       ...renewal,
       ownerId,
       inputs: ["expirationDate", "licenseClass"],
+      forms: ["DL-44"],
       supersedes: v1.id,
     });
     if (v2.kind !== "created") throw new Error("Expected a new version");
@@ -264,25 +325,35 @@ describe("selecting a pack for a case", () => {
     });
   });
 
-  test("a drafted pack is saved on confirmation, and a reworded case reuses it (live run)", async () => {
+  test("a confirmed draft runs on its own case, and is never saved (live run)", async () => {
     const { t, caseId } = await start();
     const before = await read(t, caseId);
     const goal = "I got a letter about wage garnishment and I need help.";
-    model.replies.push(
-      JSON.stringify({ reply: "Got it.", goal }),
+    const drafting = [
       request({
         jurisdiction: "us/ca",
         authority: "state court",
         searchTerms: "wage garnishment notice review",
       }),
+      notes,
       JSON.stringify(recipe),
-    );
+    ];
+    model.replies.push(JSON.stringify({ reply: "Got it.", goal }), ...drafting);
     const proposed = await chat(t, caseId, goal);
+    // Only the question the letter reads is asked.
+    const asked = [recipe.inputQuestions[0]];
     expect(proposed.processPack).toMatchObject({
       status: "proposed",
-      draft: { ...recipe, jurisdiction: "us/ca", authority: "state court" },
+      draft: {
+        title: recipe.title,
+        // The pages the research named travel with the checklist.
+        output: { ...recipe.output, sources },
+        jurisdiction: "us/ca",
+        authority: "state court",
+        inputs: ["noticeDate"],
+        inputQuestions: asked,
+      },
     });
-    expect(await ownPacks(t, before.userId)).toHaveLength(0);
     await expect(
       t.mutation(api.easygov.case.public.send, {
         caseId,
@@ -292,43 +363,65 @@ describe("selecting a pack for a case", () => {
     ).rejects.toThrow(/case has changed/);
 
     const confirmed = await send(t, caseId, { type: "processPack.confirm" });
-    const packId = confirmed.processPack?.definition?.id;
-    expect(packId).toBeDefined();
     expect(confirmed).toMatchObject({
       waitingFor: "answers",
       processPack: {
         status: "confirmed",
-        definition: { inputQuestions: recipe.inputQuestions },
+        definition: { inputs: ["noticeDate"], inputQuestions: asked },
+        draft: { title: recipe.title },
       },
     });
-    expect(confirmed.processPack?.draft).toBeUndefined();
+    expect(chosen(confirmed.processPack)?.definition?.id).toBeUndefined();
     const review = await answer(t, caseId, { noticeDate: "2026-11-01" });
+    expect(review.artifact?.letter).toBe(
+      "I received a notice dated 2026-11-01.",
+    );
     expect(JSON.parse(review.artifact?.summary ?? "{}")).toMatchObject({
       process: recipe.title,
-      output: recipe.output,
+      output: { ...recipe.output, sources },
+    });
+    expect(await send(t, caseId, { type: "review.approve" })).toMatchObject({
+      status: "done",
     });
 
-    // The second wording the live run used names the authority differently.
+    // The same request again finds nothing saved, and is drafted afresh.
+    expect(await ownPacks(t, before.userId)).toHaveLength(0);
     const nextId = await t.mutation(api.easygov.case.public.startCase, {});
     await t.finishAllScheduledFunctions(vi.runAllTimers);
+    model.replies.push(...drafting);
+    const next = await send(t, nextId, { type: "intake.submit", goal });
+    expect(chosen(next.processPack)?.definition).toBeUndefined();
+    expect(chosen(next.processPack)?.draft?.title).toBe(recipe.title);
+  });
+
+  test("a draft with no letter asks nothing: the checklist goes straight to review", async () => {
+    const { t, caseId } = await start();
+    const { letter: _letter, ...checklist } = recipe.output;
     model.replies.push(
-      request({
-        jurisdiction: "us/ca",
-        authority: "courts",
-        searchTerms: "wage garnishment understand notice",
-      }),
-      choose(1),
+      request({ jurisdiction: "us/ca", searchTerms: "wage garnishment" }),
+      "The search found nothing.",
+      JSON.stringify({ ...recipe, output: checklist }),
     );
-    const next = await send(t, nextId, {
+    const proposed = await send(t, caseId, {
       type: "intake.submit",
-      goal: "What does this wage garnishment notice from the court mean?",
+      goal: "Garnishment notice",
     });
-    expect(next.processPack).toMatchObject({
-      status: "proposed",
-      definition: { id: packId },
+    expect(chosen(proposed.processPack)?.draft).toMatchObject({
+      inputs: [],
+      inputQuestions: [],
     });
-    expect(next.processPack?.draft).toBeUndefined();
-    expect(await ownPacks(t, before.userId)).toHaveLength(1);
+    // No pages found: the checklist carries no sources.
+    expect(
+      chosen(proposed.processPack)?.draft?.output?.sources,
+    ).toBeUndefined();
+    const review = await send(t, caseId, { type: "processPack.confirm" });
+    expect(review.waitingFor).toBe("approval");
+    expect(JSON.parse(review.artifact?.summary ?? "{}")).toMatchObject({
+      output: checklist,
+    });
+    expect(await send(t, caseId, { type: "review.approve" })).toMatchObject({
+      status: "done",
+    });
   });
 
   test("a borderline referral still reuses a saved pack for the same task (live replay)", async () => {
@@ -356,82 +449,7 @@ describe("selecting a pack for a case", () => {
       status: "proposed",
       definition: { id: saved.id },
     });
-    expect(found.processPack?.referral).toBeUndefined();
-  });
-
-  test("a pack saved after drafting pauses confirmation and can be reused", async () => {
-    const { t, caseId } = await start();
-    const ownerId = await owner(t, caseId);
-    model.replies.push(
-      request({ jurisdiction: "us/ca", searchTerms: "wage garnishment" }),
-      JSON.stringify(recipe),
-    );
-    await send(t, caseId, {
-      type: "intake.submit",
-      goal: "Garnishment notice",
-    });
-    const existing = await t.mutation(processPacks.save, {
-      ...garnishment,
-      ownerId,
-    });
-    if (existing.kind !== "created") throw new Error("Expected a saved pack");
-
-    await expect(
-      send(t, caseId, {
-        type: "processPack.confirm",
-        reviewedPackIds: [existing.id],
-      }),
-    ).rejects.toThrow(/Review the current possible matches/);
-    const reviewing = await send(t, caseId, { type: "processPack.confirm" });
-    expect(reviewing).toMatchObject({
-      waitingFor: "pack",
-      processPack: {
-        status: "proposed",
-        duplicateReview: { matches: [{ id: existing.id }] },
-      },
-    });
-    const reused = await send(t, caseId, {
-      type: "processPack.useExisting",
-      packId: existing.id,
-    });
-    expect(reused).toMatchObject({
-      waitingFor: "answers",
-      processPack: { status: "confirmed", definition: { id: existing.id } },
-    });
-    expect(await ownPacks(t, ownerId)).toHaveLength(1);
-  });
-
-  test("a distinct draft is saved after the person reviews the candidates", async () => {
-    const { t, caseId } = await start();
-    const ownerId = await owner(t, caseId);
-    const saved = await t.mutation(processPacks.save, { ...renewal, ownerId });
-    if (saved.kind !== "created") throw new Error("Expected a saved pack");
-    const replacement = {
-      ...recipe,
-      title: "Replace a missing driver's license",
-      description: "Prepare a replacement checklist for a missing license.",
-      aliases: ["replace missing driver license"],
-    };
-    model.replies.push(
-      request({ jurisdiction: "us/ca", searchTerms: "replace driver license" }),
-      choose(0),
-      JSON.stringify(replacement),
-    );
-    const proposed = await send(t, caseId, {
-      type: "intake.submit",
-      goal: "Replace my missing CA DL",
-    });
-    expect(proposed.processPack?.draft?.title).toBe(replacement.title);
-    const reviewing = await send(t, caseId, { type: "processPack.confirm" });
-    expect(reviewing.processPack?.duplicateReview?.matches[0]?.id).toBe(
-      saved.id,
-    );
-    const accepted = await send(t, caseId, {
-      type: "processPack.confirm",
-      reviewedPackIds: [saved.id],
-    });
-    expect(accepted.waitingFor).toBe("answers");
-    expect(accepted.processPack?.definition?.id).not.toBe(saved.id);
+    expect(chosen(found.processPack)?.referral).toBeUndefined();
   });
 
   test("a request without a usable jurisdiction asks where", async () => {

@@ -6,6 +6,7 @@ import type { Id } from "../../_generated/dataModel";
 import { initConvexTest } from "../../setup.test";
 import { irs8822, wageClaim } from "../packs/packs.testkit";
 import { addDays, passes, renderLetter } from "./answers";
+import { chosen } from "./schema";
 import { answer, model, read, resetCases, send, type T } from "./cases.testkit";
 
 vi.mock("../../modelsForDemo", async () =>
@@ -71,13 +72,15 @@ describe("starting on a pack", () => {
     const first = await savePack(t, {});
     const second = await savePack(
       t,
-      { inputs: [...wageClaim.inputs, "state"] },
+      { inputs: [...wageClaim.inputs, "state"], forms: ["DLSE-1"] },
       { supersedes: first },
     );
     const caseId = await t.mutation(api.easygov.case.public.startCase, {
       packId: first,
     });
-    expect((await read(t, caseId)).processPack?.definition?.id).toBe(second);
+    expect(chosen((await read(t, caseId)).processPack)?.definition?.id).toBe(
+      second,
+    );
 
     const mine = await savePack(
       t,

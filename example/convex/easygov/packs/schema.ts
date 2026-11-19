@@ -12,6 +12,8 @@ const vProcessPackOutput = v.object({
    * `{{fullName}}` is replaced by the answer to `fullName`.
    */
   letter: v.optional(v.string()),
+  /** The official pages a drafted checklist was written from. */
+  sources: v.optional(v.array(v.string())),
 });
 
 /** A file the person attaches, e.g. the denial letter they received. */

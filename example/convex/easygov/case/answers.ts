@@ -1,11 +1,12 @@
 // Pure helpers over a case's answers.
 import type { Signal } from "../packs/schema";
+import { sha256Hex } from "../hash";
 
 export type Answers = Record<string, string>;
 
 /**
- * The same answers and files always give the same string, whatever order
- * they came in.
+ * A SHA-256 of the answers and files. The same ones always give the same
+ * hash, whatever order they came in, and the hash holds none of them.
  */
 export function fingerprint(
   answers: Answers,
@@ -14,8 +15,8 @@ export function fingerprint(
   const sorted = (record: Record<string, string>) =>
     Object.entries(record).sort(([a], [b]) => (a < b ? -1 : 1));
   const files = sorted(documents);
-  return JSON.stringify(
-    files.length ? [sorted(answers), files] : sorted(answers),
+  return sha256Hex(
+    JSON.stringify(files.length ? [sorted(answers), files] : sorted(answers)),
   );
 }
 

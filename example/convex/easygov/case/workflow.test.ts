@@ -84,6 +84,45 @@ describe("agreeing on what to do", () => {
     });
   });
 
+  test("answers already given in chat are offered back, not asked again", async () => {
+    const { t, caseId } = await start();
+    model.replies.push(
+      '{"reply":"Got it.","goal":"Tell the IRS my new address"}',
+    );
+    await chat(t, caseId, "I moved to 2 New Street and need to tell the IRS");
+    // Read after the pack is confirmed. The model also offers a key the pack
+    // doesn't ask for; that one is dropped.
+    model.replies.push(
+      JSON.stringify({
+        answers: [
+          { key: "newAddress", value: "2 New Street" },
+          { key: "shoeSize", value: "9" },
+        ],
+      }),
+    );
+    let found = await send(t, caseId, { type: "processPack.confirm" });
+    expect(found).toMatchObject({
+      waitingFor: "answers",
+      answers: {},
+      suggestions: { newAddress: "2 New Street" },
+    });
+    // A suggestion isn't an answer until the person takes it.
+    found = await send(t, caseId, { type: "answers.accept" });
+    expect(found).toMatchObject({
+      waitingFor: "answers",
+      answers: { newAddress: "2 New Street" },
+      suggestions: {},
+    });
+    await expect(send(t, caseId, { type: "answers.accept" })).rejects.toThrow(
+      /nothing suggested/,
+    );
+    const history = await t.query(api.easygov.dev.history, { caseId });
+    expect(history.map(({ kind, detail }) => [kind, detail])).toContainEqual([
+      "answers.suggested",
+      "newAddress",
+    ]);
+  });
+
   test("a clarifying question goes back to intake", async () => {
     const { t, caseId } = await start();
     model.replies.push(
@@ -101,6 +140,13 @@ describe("agreeing on what to do", () => {
     expect((await texts(t, caseId)).at(-1)).toEqual([
       "assistant",
       "Where is the property located?",
+    ]);
+    // The history tells the goal, and the question, from a proposal.
+    const history = await t.query(api.easygov.dev.history, { caseId });
+    expect(history.map(({ kind, detail }) => [kind, detail])).toEqual([
+      ["case.started", undefined],
+      ["goal.set", "Sue my landlord"],
+      ["pack.clarification", "Where is the property located?"],
     ]);
   });
 

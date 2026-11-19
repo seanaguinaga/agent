@@ -3,7 +3,7 @@
 // both always agree on where the case is.
 import type { Doc } from "../../_generated/dataModel";
 import { addDays, fingerprint, missingInputs, passes } from "./answers";
-import type { WaitingFor } from "./schema";
+import { chosen, type WaitingFor } from "./schema";
 
 export type Case = Doc<"cases">;
 
@@ -30,6 +30,11 @@ export function currentSelection(c: Case) {
   return selection?.goalVersion === c.intake?.version ? selection : undefined;
 }
 
+/** What was proposed or confirmed for the current goal. A rejection is none. */
+export function currentChoice(c: Case) {
+  return chosen(currentSelection(c));
+}
+
 /** The input keys the confirmed pack asks for. */
 export function requiredInputs(c: Case): string[] | undefined {
   const selection = currentSelection(c);
@@ -42,6 +47,33 @@ export function requiredInputs(c: Case): string[] | undefined {
 export function pinnedPack(c: Case) {
   const selection = currentSelection(c);
   return selection?.status === "confirmed" ? selection.definition : undefined;
+}
+
+/** What was read from the conversation for the current goal, if started. */
+function currentSuggested(c: Case) {
+  return c.suggested?.goalVersion === c.intake?.version
+    ? c.suggested
+    : undefined;
+}
+
+/** True while the conversation is being read for answers. */
+export function readingConversation(c: Case): boolean {
+  const suggested = currentSuggested(c);
+  return !!suggested && suggested.answers === undefined;
+}
+
+/**
+ * The suggested answers still on offer: for the current goal's questions,
+ * and only where the person hasn't answered yet.
+ */
+export function suggestions(c: Case): Record<string, string> {
+  const found = currentSuggested(c)?.answers;
+  if (!found) return {};
+  return Object.fromEntries(
+    (requiredInputs(c) ?? [])
+      .filter((key) => !c.answers[key] && found[key])
+      .map((key) => [key, found[key]]),
+  );
 }
 
 /** The keys of the required files the person hasn't attached yet. */
@@ -112,6 +144,8 @@ export function waitingFor(c: Case): WaitingFor {
   if (selection?.status !== "confirmed") return null;
   // A request for legal advice has no pack: only the referral to agree to.
   if (!selection.referral) {
+    // Not yet: what the person said may already answer some of it.
+    if (readingConversation(c)) return null;
     const inputs = requiredInputs(c) ?? [];
     if (missingInputs(inputs, c.answers).length) return "answers";
     if (missingDocuments(c).length) return "answers";

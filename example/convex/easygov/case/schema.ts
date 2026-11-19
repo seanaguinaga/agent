@@ -7,14 +7,66 @@ import { v, type Infer } from "convex/values";
 import {
   vPackDeadline,
   vPackDocuments,
-  vPackMatch,
   vPackReferral,
   vProcessPackDefinition,
   vProcessPackQuestions,
 } from "../packs/schema";
 
+/**
+ * The `intake.version` a selection was made for. A selection for an earlier
+ * goal counts as none. A rejected one for the current goal sends the case
+ * back to intake for a new goal.
+ */
+const goalVersion = v.number();
+
+/** What a proposed or confirmed selection holds. */
+const selectionFields = {
+  goalVersion,
+  /**
+   * What the case asks for: pinned from the saved pack, or from the
+   * draft once it's confirmed. Only a saved pack has an `id`.
+   */
+  definition: v.optional(
+    v.object({
+      id: v.optional(v.id("processPacks")),
+      inputs: v.array(v.string()),
+      inputQuestions: v.optional(vProcessPackQuestions),
+      documents: v.optional(vPackDocuments),
+      deadline: v.optional(vPackDeadline),
+      referral: v.optional(vPackReferral),
+    }),
+  ),
+  /**
+   * A process drafted for this goal, when no saved pack fits. The case
+   * runs on it once the person confirms, and it stays here: it's never
+   * saved as a pack, so no other case finds it.
+   */
+  draft: v.optional(vProcessPackDefinition),
+  /**
+   * What the search found about the process, when the draft was written
+   * from it: where the checklist came from, and what an eval replays.
+   */
+  research: v.optional(v.string()),
+  /** No pack: the request goes to a legal referral. */
+  referral: v.optional(v.literal(true)),
+  /** Where a referral with no pack applies, if the request said. */
+  jurisdiction: v.optional(v.string()),
+};
+
+export const vSelection = v.union(
+  v.object({ status: v.literal("proposed"), ...selectionFields }),
+  v.object({ status: v.literal("confirmed"), ...selectionFields }),
+  v.object({ status: v.literal("rejected"), goalVersion }),
+);
+export type Selection = Infer<typeof vSelection>;
+
+/** The selection, if it chose something. A rejection chose nothing. */
+export function chosen(selection: Selection | undefined) {
+  return selection?.status === "rejected" ? undefined : selection;
+}
+
 export const caseFields = {
-  /** The account, or `guest:<key>` for a case started without one. */
+  /** The account, or `guest:<SHA-256 of the key>` for a case started without one. */
   userId: v.string(),
   /** Where the case came from, e.g. the landing page that started it. */
   source: v.optional(v.string()),
@@ -52,48 +104,30 @@ export const caseFields = {
    */
   intake: v.optional(v.object({ goal: v.string(), version: v.number() })),
 
-  processPack: v.optional(
-    v.object({
-      status: v.union(
-        v.literal("proposed"),
-        v.literal("confirmed"),
-        v.literal("rejected"),
-      ),
-      /**
-       * The `intake.version` this was made for. A selection for an earlier
-       * goal counts as none. A rejected one for the current goal sends the
-       * case back to intake for a new goal.
-       */
-      goalVersion: v.number(),
-      /** The saved pack it pins, once there is one. */
-      definition: v.optional(
-        v.object({
-          id: v.id("processPacks"),
-          inputs: v.array(v.string()),
-          inputQuestions: v.optional(vProcessPackQuestions),
-          documents: v.optional(vPackDocuments),
-          deadline: v.optional(vPackDeadline),
-          referral: v.optional(vPackReferral),
-        }),
-      ),
-      /** A new pack for the person to review; saved when they confirm. */
-      draft: v.optional(vProcessPackDefinition),
-      /** No pack: the request goes to a legal referral. */
-      referral: v.optional(v.literal(true)),
-      /** Where a referral with no pack applies, if the request said. */
-      jurisdiction: v.optional(v.string()),
-      /** Saved packs like the draft, for the person to reuse or set aside. */
-      duplicateReview: v.optional(
-        v.object({
-          matches: v.array(vPackMatch),
-          reviewedPackIds: v.array(v.id("processPacks")),
-        }),
-      ),
-    }),
-  ),
+  /**
+   * What was chosen for a goal, by `status`. A rejection holds nothing but
+   * the goal it was for.
+   */
+  processPack: v.optional(vSelection),
 
   /** The person's answers, by input key. */
   answers: v.record(v.string(), v.string()),
+  /**
+   * Answers found in what the person already said, for them to confirm.
+   * They aren't answers until the person accepts them. `goalVersion` is the
+   * goal whose questions they were read for; for an earlier goal they're
+   * out of date. Without `answers` the conversation is still being read,
+   * and the case isn't waiting for the person yet.
+   *
+   * Set when a proposal is confirmed. A case started on a landing page has
+   * said nothing, so it has none.
+   */
+  suggested: v.optional(
+    v.object({
+      goalVersion: v.number(),
+      answers: v.optional(v.record(v.string(), v.string())),
+    }),
+  ),
   /** The files the person attached, by document key. */
   documents: v.record(v.string(), v.id("_storage")),
   /**
@@ -148,14 +182,7 @@ export const vCaseEvent = v.union(
   // While waiting for a goal: state it without chatting.
   v.object({ type: v.literal("intake.submit"), goal: v.string() }),
   // While waiting on a proposed pack.
-  v.object({
-    type: v.literal("processPack.confirm"),
-    reviewedPackIds: v.optional(v.array(v.id("processPacks"))),
-  }),
-  v.object({
-    type: v.literal("processPack.useExisting"),
-    packId: v.id("processPacks"),
-  }),
+  v.object({ type: v.literal("processPack.confirm") }),
   v.object({ type: v.literal("processPack.reject") }),
   // While collecting answers, or in review (which sends the case back).
   v.object({
@@ -163,6 +190,8 @@ export const vCaseEvent = v.union(
     key: v.string(),
     value: v.string(),
   }),
+  // With the answers: take every suggested answer that's still unanswered.
+  v.object({ type: v.literal("answers.accept") }),
   // With the answers: attach a file the pack asks for.
   v.object({
     type: v.literal("document.attach"),

@@ -3,6 +3,7 @@
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
 import { caseFields } from "./case/schema";
+import evalTables from "./evals/tables";
 import firmTables from "./firms/schema";
 import { processPacks } from "./packs/schema";
 
@@ -22,4 +23,5 @@ export default {
     detail: v.optional(v.string()),
   }).index("by_caseId", ["caseId"]),
   ...firmTables,
+  ...evalTables,
 };

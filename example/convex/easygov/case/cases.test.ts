@@ -29,15 +29,6 @@ describe("the case API", () => {
     await expect(
       sendAt(seq, { type: "intake.submit", goal: "  " }),
     ).rejects.toThrow(/Say what/);
-
-    await send(t, caseId, { type: "intake.submit", goal: "I moved" });
-    const selection = await read(t, caseId);
-    await expect(
-      sendAt(selection.seq, {
-        type: "processPack.confirm",
-        reviewedPackIds: [],
-      }),
-    ).rejects.toThrow(/no draft to save/);
   });
 
   test("every write bumps seq", async () => {

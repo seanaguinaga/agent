@@ -34,8 +34,84 @@ const FileMaintenance = lazy(async () => ({
   default: (await import("./files/FileExamples")).FileMaintenance,
 }));
 
+const EasygovPacks = lazy(() => import("./easygov/Packs"));
+const EasygovEvals = lazy(() => import("./easygov/Evals"));
+const easygovPage = (name: keyof typeof import("./easygov/pages")) =>
+  lazy(async () => ({ default: (await import("./easygov/pages"))[name] }));
+const EasygovCase = easygovPage("CaseConsole");
+const EasygovFirms = easygovPage("Firms");
+const EasygovAgree = easygovPage("StageAgree");
+const EasygovCollect = easygovPage("StageCollect");
+const EasygovFinish = easygovPage("StageFinish");
+const EasygovPipeline = easygovPage("Pipeline");
+
 // Routes and catalog cards share one list so every demo stays discoverable.
 export const examples = [
+  {
+    path: "/easygov-evals",
+    group: "easygov test pages",
+    title: "Evals",
+    description:
+      "Pass rates per slice, stage and pipeline, over several trials.",
+    source: "easygov/evals/",
+    element: <EasygovEvals />,
+  },
+  {
+    path: "/easygov-packs",
+    group: "easygov test pages",
+    title: "Slice: pack library",
+    description: "Landing pages, search, look-alike review, and versions.",
+    source: "easygov/packs/",
+    element: <EasygovPacks />,
+  },
+  {
+    path: "/easygov-case",
+    group: "easygov test pages",
+    title: "Slice: case console",
+    description: "One case: its row, history, and any event with any seq.",
+    source: "easygov/case/public.ts",
+    element: <EasygovCase />,
+  },
+  {
+    path: "/easygov-firms",
+    group: "easygov test pages",
+    title: "Slice: firm desk",
+    description: "Previews, accept or pass, the packet, and what's owed.",
+    source: "easygov/firms/public.ts",
+    element: <EasygovFirms />,
+  },
+  {
+    path: "/easygov-agree",
+    group: "easygov test pages",
+    title: "Stage 1: agree on what to do",
+    description: "Intake, pack proposal, confirm or reject. Calls a model.",
+    source: "easygov/case/workflow.ts",
+    element: <EasygovAgree />,
+  },
+  {
+    path: "/easygov-collect",
+    group: "easygov test pages",
+    title: "Stage 2: collect, build, review",
+    description: "Answers, files, the document, approval. No model calls.",
+    source: "easygov/case/workflow.ts",
+    element: <EasygovCollect />,
+  },
+  {
+    path: "/easygov-finish",
+    group: "easygov test pages",
+    title: "Stage 3: finish",
+    description: "Referral consent and delivery, on an already-approved case.",
+    source: "easygov/case/workflow.ts",
+    element: <EasygovFinish />,
+  },
+  {
+    path: "/easygov-pipeline",
+    group: "easygov test pages",
+    title: "The whole pipeline",
+    description: "Person and firm side by side, by hand or on autopilot.",
+    source: "easygov/README.md",
+    element: <EasygovPipeline />,
+  },
   {
     path: "/chat-basic",
     group: "Chat",

@@ -54,7 +54,11 @@ export async function mockModels() {
       };
     },
   });
-  return { languageModel, embeddingModel: undefined };
+  return {
+    languageModel,
+    researchModel: languageModel,
+    embeddingModel: undefined,
+  };
 }
 
 /** Call from `afterEach`. */

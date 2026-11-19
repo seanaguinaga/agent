@@ -10,6 +10,7 @@ import {
   type QueryCtx,
 } from "../../_generated/server";
 import { getAuthUserId } from "../../utils";
+import { sha256Hex } from "../hash";
 import { vCaseDoc } from "../schema";
 import { currentVersion } from "../packs/data";
 import {
@@ -20,7 +21,7 @@ import {
 } from "./data";
 import { EVENTS } from "./events";
 import { vCaseEvent, vWaitingFor, type CaseEvent } from "./schema";
-import { deadlineOf, waitingFor, type Case } from "./state";
+import { deadlineOf, suggestions, waitingFor, type Case } from "./state";
 import { nudgeCase, workflow } from "./workflow";
 
 /**
@@ -93,6 +94,8 @@ export const getCase = query({
       v.object({ label: v.string(), date: v.string() }),
       v.null(),
     ),
+    /** Answers found in what the person said, still waiting to be accepted. */
+    suggestions: v.record(v.string(), v.string()),
   }),
   handler: async (ctx, { caseId, guestKey }) => {
     const found = await authorizeCase(ctx, caseId, guestKey);
@@ -100,6 +103,7 @@ export const getCase = query({
       ...found,
       waitingFor: waitingFor(found),
       deadline: deadlineOf(found) ?? null,
+      suggestions: suggestions(found),
     };
   },
 });
@@ -141,7 +145,10 @@ export const withdrawReferral = mutation({
             )
             .first();
     if (referral?.status !== "open") return false;
-    await ctx.db.patch("referrals", referral._id, { status: "withdrawn" });
+    await ctx.db.replace("referrals", referral._id, {
+      ...referral,
+      status: "withdrawn",
+    });
     await logCaseEvent(ctx, caseId, "referral.withdrawn", kind);
     return true;
   },
@@ -300,7 +307,8 @@ async function caller(ctx: QueryCtx, guestKey?: string): Promise<string> {
   if (guestKey.length < MIN_GUEST_KEY) {
     throw new ConvexError("The guest key is too short.");
   }
-  return `guest:${guestKey}`;
+  // Only the key's hash is stored: reading the table doesn't give the key.
+  return `guest:${sha256Hex(guestKey)}`;
 }
 
 /** The case, if it belongs to the caller. */

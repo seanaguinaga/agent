@@ -2,16 +2,14 @@
 // taken only while the case waits for it (`waitingFor` in `state.ts`), and
 // its handler returns what to write. The workflow then looks again.
 import { ConvexError } from "convex/values";
-import { internal } from "../../_generated/api";
-import type { Id } from "../../_generated/dataModel";
 import type { MutationCtx } from "../../_generated/server";
 import { DEFAULT_PRICE_CENTS } from "../firms/schema";
 import { answerProblem, today } from "./answers";
-import { logCaseEvent, processPackDefinition } from "./data";
+import { draftDefinition, logCaseEvent } from "./data";
 import type { CaseEvent, WaitingFor } from "./schema";
 import {
   answerKind,
-  currentSelection,
+  currentChoice,
   deadlineOf,
   fingerprintOf,
   isGuest,
@@ -19,6 +17,7 @@ import {
   packReferral,
   pinnedPack,
   requiredInputs,
+  suggestions,
   type Case,
 } from "./state";
 
@@ -38,19 +37,16 @@ export const EVENTS: {
 } = {
   "intake.submit": {
     during: ["goal"],
-    handle: (_ctx, c, { goal }) => {
+    handle: async (ctx, c, { goal }) => {
       const text = goal.trim();
       if (!text) throw new ConvexError("Say what you want to get done.");
+      await logCaseEvent(ctx, c._id, "goal.set", text);
       return { intake: newGoal(c, text) };
     },
   },
   "processPack.confirm": {
     during: ["pack"],
-    handle: (ctx, c, { reviewedPackIds }) => confirm(ctx, c, reviewedPackIds),
-  },
-  "processPack.useExisting": {
-    during: ["pack"],
-    handle: (ctx, c, { packId }) => useExisting(ctx, c, packId),
+    handle: (_ctx, c) => confirm(c),
   },
   "processPack.reject": {
     during: ["pack"],
@@ -68,6 +64,17 @@ export const EVENTS: {
       const problem = answerProblem(value, answerKind(c, key));
       if (problem) throw new ConvexError(problem);
       return { answers: { ...c.answers, [key]: value } };
+    },
+  },
+  // Takes what was found in the conversation, where nothing was answered.
+  "answers.accept": {
+    during: ["answers", "approval"],
+    handle: (_ctx, c) => {
+      const offered = suggestions(c);
+      if (!Object.keys(offered).length) {
+        throw new ConvexError("There's nothing suggested to accept.");
+      }
+      return { answers: { ...c.answers, ...offered } };
     },
   },
   // In review too, like an answer.
@@ -119,13 +126,15 @@ async function share(ctx: MutationCtx, c: Case): Promise<Partial<Case>> {
   }
   const { kind } = c.referral!;
   const pinned = pinnedPack(c);
-  const pack = pinned && (await ctx.db.get("processPacks", pinned.id));
+  const selection = currentChoice(c);
+  const pack = pinned?.id && (await ctx.db.get("processPacks", pinned.id));
   await ctx.db.insert("referrals", {
     caseId: c._id,
     userId: c.userId,
     kind,
     status: "open",
-    jurisdiction: pack?.jurisdiction ?? currentSelection(c)?.jurisdiction,
+    jurisdiction:
+      (pack || selection?.draft)?.jurisdiction ?? selection?.jurisdiction,
     priceCents: pinned?.referral?.priceCents ?? DEFAULT_PRICE_CENTS,
     source: c.source,
     goal: c.intake!.goal,
@@ -140,98 +149,21 @@ async function share(ctx: MutationCtx, c: Case): Promise<Partial<Case>> {
 }
 
 /**
- * Confirms what was proposed. A draft is saved first, unless saved packs look
- * like it: those come back for review, and confirming again with their ids in
- * `reviewedPackIds` says the draft is different. The case's `seq` makes sure
- * the person confirms the proposal they saw.
+ * Confirms what was proposed: a saved pack, a draft, or a legal referral.
+ * A draft isn't saved as a pack. The case runs on it as it is, and it stays
+ * on the case. The case's `seq` makes sure the person confirms the proposal
+ * they saw.
  */
-async function confirm(
-  ctx: MutationCtx,
-  c: Case,
-  reviewedPackIds?: Id<"processPacks">[],
-): Promise<Partial<Case>> {
-  const selection = currentSelection(c)!;
-  const { draft, definition, referral, jurisdiction, goalVersion } = selection;
-  if (!draft) {
-    if (reviewedPackIds) throw new ConvexError("There's no draft to save.");
-    return {
-      processPack: {
-        status: "confirmed",
-        goalVersion,
-        definition,
-        referral,
-        jurisdiction,
-      },
-      // Legal advice has no pack: the referral is all there is to agree to.
-      referral: referral ? { kind: "advice", status: "offered" } : undefined,
-    };
-  }
-
-  const review = selection.duplicateReview;
-  let reviewed = review?.reviewedPackIds ?? [];
-  if (reviewedPackIds) {
-    if (
-      !review ||
-      reviewedPackIds.length !== review.matches.length ||
-      review.matches.some(({ id }) => !reviewedPackIds.includes(id))
-    ) {
-      throw new ConvexError(
-        "Review the current possible matches before saving.",
-      );
-    }
-    reviewed = [...reviewed, ...reviewedPackIds];
-  }
-
-  // The save shares this mutation's transaction, so it lands with the case.
-  const saved = await ctx.runMutation(internal.easygov.packs.data.save, {
-    ownerId: c.userId,
-    ...draft,
-    reviewedPackIds: reviewed,
-  });
-  if (saved.kind === "reviewDuplicates") {
-    return {
-      processPack: {
-        ...selection,
-        duplicateReview: { matches: saved.packs, reviewedPackIds: reviewed },
-      },
-    };
-  }
-  const pack = await visiblePack(ctx, c, saved.id);
+function confirm(c: Case): Partial<Case> {
+  const selection = currentChoice(c)!;
+  const { draft, referral, goalVersion } = selection;
+  const definition = selection.definition ?? (draft && draftDefinition(draft));
   return {
-    processPack: {
-      status: "confirmed",
-      goalVersion,
-      definition: processPackDefinition(pack),
-    },
+    processPack: { ...selection, status: "confirmed", definition },
+    // A proposal follows a stated goal, so there's a conversation to read
+    // for answers before asking for them.
+    suggested: definition?.inputs.length ? { goalVersion } : undefined,
+    // Legal advice has no pack: the referral is all there is to agree to.
+    referral: referral ? { kind: "advice", status: "offered" } : undefined,
   };
-}
-
-/** Uses one of the saved packs shown for review instead of the draft. */
-async function useExisting(
-  ctx: MutationCtx,
-  c: Case,
-  id: Id<"processPacks">,
-): Promise<Partial<Case>> {
-  const selection = currentSelection(c)!;
-  if (!selection.duplicateReview?.matches.some((pack) => pack.id === id)) {
-    throw new ConvexError(
-      "Choose one of the process packs shown for this draft.",
-    );
-  }
-  const pack = await visiblePack(ctx, c, id);
-  return {
-    processPack: {
-      status: "confirmed",
-      goalVersion: selection.goalVersion,
-      definition: processPackDefinition(pack),
-    },
-  };
-}
-
-async function visiblePack(ctx: MutationCtx, c: Case, id: Id<"processPacks">) {
-  const pack = await ctx.db.get("processPacks", id);
-  if (!pack || (pack.ownerId !== undefined && pack.ownerId !== c.userId)) {
-    throw new ConvexError("Process pack not found.");
-  }
-  return pack;
 }

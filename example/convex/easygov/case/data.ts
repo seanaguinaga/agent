@@ -6,25 +6,34 @@ import {
   vWorkflowId,
   type WorkflowId,
 } from "@convex-dev/workflow";
-import { v } from "convex/values";
+import { listMessages } from "@convex-dev/agent";
+import { v, type Infer } from "convex/values";
+import { components } from "../../_generated/api";
 import type { Doc, Id } from "../../_generated/dataModel";
 import {
   internalMutation,
   internalQuery,
   type MutationCtx,
+  type QueryCtx,
 } from "../../_generated/server";
+import type { vProcessPackDefinition } from "../packs/schema";
 import { intakeAgent, proposalFields, selectionAgent } from "./agents";
 import { missingInputs, renderLetter } from "./answers";
+import { answerKind, readingConversation } from "./state";
 import {
+  currentChoice,
   currentSelection,
   fingerprintOf,
   missingDocuments,
   newGoal,
+  pinnedPack,
   requiredInputs,
   reviewOutcome,
   standingGoal,
   type Case,
 } from "./state";
+
+type Draft = Infer<typeof vProcessPackDefinition>;
 
 // --- Writing a case ---------------------------------------------------------
 
@@ -78,6 +87,22 @@ export function processPackDefinition(pack: Doc<"processPacks">) {
     deadline: pack.deadline,
     referral: pack.referral,
   };
+}
+
+/** What a case pins of a draft it confirmed: there's no saved row. */
+export function draftDefinition(draft: Draft) {
+  const { inputs, inputQuestions, documents, deadline, referral } = draft;
+  return { inputs, inputQuestions, documents, deadline, referral };
+}
+
+/** What the case runs on: the saved pack it pinned, or its confirmed draft. */
+async function packOf(
+  ctx: QueryCtx,
+  c: Case,
+): Promise<Doc<"processPacks"> | Draft | null> {
+  const selection = currentChoice(c);
+  const id = selection?.definition?.id;
+  return id ? await ctx.db.get("processPacks", id) : (selection?.draft ?? null);
 }
 
 // --- 1. Intake --------------------------------------------------------------
@@ -136,6 +161,7 @@ export const recordTurn = internalMutation({
     const goalText = goal?.trim();
     if (goalText) patch.intake = newGoal(found, goalText);
     await writeCase(ctx, caseId, patch);
+    if (goalText) await logCaseEvent(ctx, caseId, "goal.set", goalText);
     return null;
   },
 });
@@ -201,6 +227,7 @@ export const recordProposal = internalMutation({
       jurisdiction,
       origin,
       needsClarification,
+      research,
     },
   ) => {
     const found = await ctx.db.get("cases", caseId);
@@ -236,11 +263,18 @@ export const recordProposal = internalMutation({
             goalVersion,
             definition,
             draft,
+            research: draft ? research : undefined,
             referral,
             jurisdiction: referral ? jurisdiction : undefined,
           },
     });
-    await logCaseEvent(ctx, caseId, "pack.proposed", message);
+    // A question isn't a proposal: the history says which one this was.
+    await logCaseEvent(
+      ctx,
+      caseId,
+      needsClarification ? "pack.clarification" : "pack.proposed",
+      message,
+    );
     return true;
   },
 });
@@ -262,7 +296,101 @@ export const isReferral = internalQuery({
   returns: v.boolean(),
   handler: async (ctx, { caseId }) => {
     const found = await ctx.db.get("cases", caseId);
-    return !!(found && currentSelection(found)?.referral);
+    return !!(found && currentChoice(found)?.referral);
+  },
+});
+
+// --- Prefill ----------------------------------------------------------------
+
+/**
+ * What prefill reads: the confirmed pack's unanswered questions, and
+ * everything the person has said, in chat and as their goal.
+ */
+export const prefillInput = internalQuery({
+  args: { caseId: v.id("cases") },
+  returns: v.object({
+    goalVersion: v.number(),
+    threadId: v.string(),
+    questions: v.array(
+      v.object({
+        key: v.string(),
+        question: v.string(),
+        kind: v.optional(v.union(v.literal("date"), v.literal("number"))),
+      }),
+    ),
+    said: v.array(v.string()),
+  }),
+  handler: async (ctx, { caseId }) => {
+    const found = await ctx.db.get("cases", caseId);
+    if (!found?.intake) throw new Error("The case has no goal");
+    const pack = pinnedPack(found);
+    const asked = new Map(
+      (pack?.inputQuestions ?? []).map(({ key, question }) => [key, question]),
+    );
+    const questions = (pack?.inputs ?? [])
+      .filter((key) => !found.answers[key])
+      .map((key) => ({
+        key,
+        question: asked.get(key) ?? key,
+        kind: answerKind(found, key),
+      }));
+    const { page } = await listMessages(ctx, components.agent, {
+      threadId: found.threadId,
+      paginationOpts: { cursor: null, numItems: 50 },
+    });
+    const said = page
+      .reverse()
+      .filter((message) => message.message?.role === "user" && message.text)
+      .map((message) => message.text!);
+    // The goal is the person's too: a proposal only follows a stated one.
+    said.push(found.intake.goal);
+    return {
+      goalVersion: found.intake.version,
+      threadId: found.threadId,
+      questions,
+      said,
+    };
+  },
+});
+
+/** True while the conversation is still to be read for answers. */
+export const needsPrefill = internalQuery({
+  args: { caseId: v.id("cases") },
+  returns: v.boolean(),
+  handler: async (ctx, { caseId }) => {
+    const found = await ctx.db.get("cases", caseId);
+    return !!found && found.status === "active" && readingConversation(found);
+  },
+});
+
+/**
+ * Keeps what prefill found, as suggestions: the person still has to accept
+ * them. Recorded even when empty: that's what lets the case ask for answers.
+ */
+export const recordPrefill = internalMutation({
+  args: {
+    caseId: v.id("cases"),
+    goalVersion: v.number(),
+    answers: v.record(v.string(), v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, { caseId, goalVersion, answers }) => {
+    const found = await ctx.db.get("cases", caseId);
+    // Once, and only for the goal it was read for.
+    if (
+      !found ||
+      found.status !== "active" ||
+      found.intake?.version !== goalVersion ||
+      !readingConversation(found)
+    ) {
+      return null;
+    }
+    await writeCase(ctx, caseId, { suggested: { goalVersion, answers } });
+    const keys = Object.keys(answers);
+    if (keys.length) {
+      await logCaseEvent(ctx, caseId, "answers.suggested", keys.join(", "));
+    }
+    return null;
   },
 });
 
@@ -293,8 +421,7 @@ export const fill = internalMutation({
   handler: async (ctx, { caseId }) => {
     const found = await ctx.db.get("cases", caseId);
     if (!found) return null;
-    const packId = currentSelection(found)?.definition?.id;
-    const pack = packId ? await ctx.db.get("processPacks", packId) : null;
+    const pack = await packOf(ctx, found);
     const summary = JSON.stringify({
       process: pack?.title,
       answers: found.answers,
@@ -348,10 +475,7 @@ export const finish = internalMutation({
   handler: async (ctx, { caseId }) => {
     const found = await ctx.db.get("cases", caseId);
     if (!found || found.status !== "active") return null;
-    const selection = currentSelection(found);
-    const pack = selection?.definition
-      ? await ctx.db.get("processPacks", selection.definition.id)
-      : null;
+    const pack = await packOf(ctx, found);
     if (pack?.delivery) {
       await writeCase(ctx, caseId, {
         delivery: { status: "prepared", channel: pack.delivery },

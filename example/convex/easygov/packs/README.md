@@ -47,29 +47,37 @@ aliases, a `jurisdiction` path, an optional `authority`, any official `forms`,
 the inputs, and optionally a `referral` (with a `when` on one answer) and a
 `delivery` channel.
 
-- Leave out `ownerId` to save a shared pack every case can find. A person's own
-  packs are saved when they confirm a draft.
-- `save` searches for similar current packs first. If it returns
-  `reviewDuplicates`, reuse one of them, or list their ids in `reviewedPackIds`
-  and save again to say this one is different.
+- Leave out `ownerId` to save a shared pack every case can find. With one, only
+  that person's cases find it.
+- `save` searches for similar current packs first: ones that name the same form,
+  or share at least two telling words. If it returns `reviewDuplicates`, reuse
+  one of them, or list their ids in `reviewedPackIds` and save again to say this
+  one is different.
 - A saved row never changes, and cases keep the id they pinned. To fix or update
   one, save the next version with `supersedes: <id>`. The old version stops
   being found, and cases already running on it keep it.
 
-## Confirming a newly drafted pack
+## When no saved pack fits: a draft
 
-1. After intake, read `getCase.processPack.draft` to review the proposed title,
-   questions and checklist.
+Selection first reads the authority's own website (a search-backed model,
+`researchModel` in `modelsForDemo.ts`), then drafts a process from what it
+found: a checklist, and a letter if the process calls for one. The pages it read
+are kept in `output.sources`. If the search fails, the checklist only says what
+to verify, and has no sources. A draft is one model's unreviewed guess, so it is
+**never saved as a pack**. It runs on the case that asked for it and stays there
+(`processPack.draft`), where it also records what people asked for that no pack
+covers. A person turns a good one into a shared pack with `save`.
+
+1. After intake, read `getCase.processPack.draft` to review the checklist and
+   the questions.
 2. Send `{ "type": "processPack.confirm" }` with the case's current
-   `expectedSeq`, which makes sure you confirm the proposal you read. The
-   mutation checks for similar packs, saves the draft for this owner, and pins
-   it to the case in a single transaction.
-3. If `processPack.duplicateReview` appears, pick a listed pack with
-   `{ "type": "processPack.useExisting", "packId": "..." }`, or, if they're
-   different processes, resend `processPack.confirm` with the listed ids in
-   `reviewedPackIds` and the latest `expectedSeq`.
-4. After confirmation the case collects its answers, builds the checklist, and
-   waits for review. A later case can find and pin the saved pack.
+   `expectedSeq`, which makes sure you confirm the proposal you read. The case
+   pins the draft's inputs; there is no pack id.
+3. The case collects the answers, builds the checklist and letter, and waits for
+   review. A draft with no letter asks nothing and goes straight to review.
+
+A draft's questions are exactly its letter's `{{placeholders}}`. Whatever else
+the model asks is dropped: anything to look up belongs in the checklist.
 
 ## What a pack can ask for
 
@@ -85,7 +93,9 @@ the inputs, and optionally a `referral` (with a `when` on one answer) and a
   whether to share the case. Without `when` they're always asked.
 
 `save` refuses a pack whose deadline, referral or letter names an input the pack
-doesn't have.
+doesn't have. It also refuses an input nothing reads: each one must appear in
+the letter, the deadline or the referral check, unless the pack names the
+`forms` it fills in.
 
 ## The parts that are hard to follow
 

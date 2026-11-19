@@ -46,14 +46,16 @@ function match(pack: Doc<"processPacks">): PackMatch {
 /**
  * Current packs in `places` that may fit. Shared packs and the owner's own
  * are both searched, narrowest place first. `skip` are packs already
- * reviewed; the search reads past them so they can't hide new ones.
+ * reviewed; the search reads past them so they can't hide new ones. `keep`
+ * drops hits that aren't worth showing.
  */
-async function candidates(
+export async function candidates(
   ctx: QueryCtx,
   places: string[],
   ownerId: string | undefined,
   text: string,
   skip: Id<"processPacks">[] = [],
+  keep: (pack: Doc<"processPacks">) => boolean = () => true,
 ): Promise<PackMatch[]> {
   const words = searchWords(text)
     .filter((word) => !FILLER.has(word))
@@ -77,7 +79,7 @@ async function candidates(
   );
   const found = (await Promise.all(searches)).flat();
   return found
-    .filter((pack) => !skip.includes(pack._id))
+    .filter((pack) => !skip.includes(pack._id) && keep(pack))
     .slice(0, MAX_CANDIDATES)
     .map(match);
 }
@@ -159,6 +161,21 @@ function checkDefinition(raw: Definition): Definition {
       `The letter uses "${unknown}", which isn't an input.`,
     );
   }
+  // A question exists because something reads its answer: the letter, the
+  // deadline, the referral check, or the form the pack fills in.
+  const read = new Set([
+    ...placeholders(output?.letter ?? ""),
+    deadline?.fromInput,
+    referral?.when?.input,
+  ]);
+  const unread = forms.length
+    ? undefined
+    : inputs.find((key) => !read.has(key));
+  if (unread) {
+    throw new ConvexError(
+      `Nothing reads "${unread}". Use it in the letter, the deadline or the referral check, or name the form it fills in.`,
+    );
+  }
   const authority = raw.authority?.trim() || undefined;
   return { ...raw, jurisdiction, authority, forms };
 }
@@ -167,6 +184,29 @@ function searchTextOf(definition: Definition): string {
   const { title, description, aliases, authority, forms } = definition;
   const text = [title, description, ...aliases, authority ?? "", ...forms];
   return searchWords(text.join(" ")).join(" ");
+}
+
+/** The words that say what a pack is about: no filler, no lone letters. */
+function tellingWords(searchText: string): Set<string> {
+  return new Set(
+    searchText
+      .split(" ")
+      .filter((word) => word.length > 1 && !FILLER.has(word)),
+  );
+}
+
+/**
+ * Whether a saved pack is worth a person's review before `definition` is
+ * saved beside it: they name the same form, or share two telling words.
+ * Search matches on any one word, and one ("form", "request") says nothing.
+ */
+function looksAlike(definition: Definition, pack: Doc<"processPacks">) {
+  if (definition.forms.some((form) => pack.forms.includes(form))) return true;
+  const words = tellingWords(searchTextOf(definition));
+  const shared = [...tellingWords(pack.searchText)].filter((word) =>
+    words.has(word),
+  );
+  return shared.length >= 2;
 }
 
 /** How many versions `currentVersion` follows before giving up. */
@@ -212,7 +252,7 @@ export const findMatch = internalQuery({
   },
 });
 
-const vSaveResult = v.union(
+export const vSaveResult = v.union(
   v.object({ kind: v.literal("created"), id: v.id("processPacks") }),
   v.object({ kind: v.literal("reviewDuplicates"), packs: v.array(vPackMatch) }),
 );
@@ -276,6 +316,7 @@ export const save = internalMutation({
       ownerId,
       text,
       skip,
+      (pack) => looksAlike(definition, pack),
     );
     if (duplicates.length)
       return { kind: "reviewDuplicates", packs: duplicates };

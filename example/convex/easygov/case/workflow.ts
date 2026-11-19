@@ -77,6 +77,17 @@ export const run = workflow.define({
       if (decision === "confirmed") break;
     }
 
+    // What the person already said may answer some of the pack's questions:
+    // those are offered back for them to accept, so they aren't asked twice.
+    if (await step.runQuery(data.needsPrefill, { caseId })) {
+      const found = await step.runAction(
+        agents.prefill,
+        { caseId },
+        { retry: true },
+      );
+      await step.runMutation(data.recordPrefill, { caseId, ...found });
+    }
+
     // 2. Answers, the document, and review. Legal advice has no pack, so
     // there's nothing to collect.
     if (

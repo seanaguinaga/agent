@@ -26,21 +26,10 @@ export const firmFields = {
  * approved, as it was when they said yes. It never changes after that,
  * except for who took it.
  */
-export const referralFields = {
+const referralShared = {
   caseId: v.id("cases"),
   userId: v.string(),
   kind: v.string(),
-  /**
-   * `open` until one firm accepts it, or the person withdraws it. Only the
-   * accepting firm ever sees the answers and files.
-   */
-  status: v.union(
-    v.literal("open"),
-    v.literal("accepted"),
-    v.literal("withdrawn"),
-  ),
-  /** The firm that accepted it. */
-  firmId: v.optional(v.id("firms")),
   /** Where it applies. Without one, no firm's coverage matches it. */
   jurisdiction: v.optional(v.string()),
   /** What the accepting firm owes: fixed when shared, whatever comes of it. */
@@ -56,9 +45,26 @@ export const referralFields = {
   fingerprint: v.string(),
 };
 
+/**
+ * A referral, by `status`: `open` until one firm accepts it or the person
+ * withdraws it. Only an accepted one has a firm, and only that firm ever
+ * sees the answers and files.
+ */
+export const vReferral = v.union(
+  v.object({ ...referralShared, status: v.literal("open") }),
+  v.object({
+    ...referralShared,
+    status: v.literal("accepted"),
+    /** The firm that accepted it. */
+    firmId: v.id("firms"),
+  }),
+  v.object({ ...referralShared, status: v.literal("withdrawn") }),
+);
+export type Referral = Infer<typeof vReferral>;
+
 export default {
   firms: defineTable(firmFields).index("by_userId", ["userId"]),
-  referrals: defineTable(referralFields)
+  referrals: defineTable(vReferral)
     .index("by_caseId_and_kind", ["caseId", "kind"])
     .index("by_status_and_kind_and_jurisdiction", [
       "status",

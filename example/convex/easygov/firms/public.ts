@@ -119,7 +119,11 @@ export const accept = mutation({
     if (referral.status !== "open") {
       throw new ConvexError("This referral is no longer available.");
     }
-    await ctx.db.patch("referrals", referralId, { status: "accepted", firmId });
+    await ctx.db.replace("referrals", referralId, {
+      ...referral,
+      status: "accepted",
+      firmId,
+    });
     await ctx.db.insert("referralCharges", {
       firmId,
       referralId,
@@ -196,7 +200,7 @@ export const packet = query({
   handler: async (ctx, { firmId, referralId }) => {
     await authorizeFirm(ctx, firmId);
     const referral = await ctx.db.get("referrals", referralId);
-    if (!referral || referral.firmId !== firmId) {
+    if (referral?.status !== "accepted" || referral.firmId !== firmId) {
       throw new ConvexError("Referral not found.");
     }
     const pack = referral.packId

@@ -35,6 +35,9 @@ A case can also **start on a pack**, from a landing page: `startCase` with a
 | `packs/`           | The process pack library: search, save, versions (see its README)  |
 | `firms/`           | The law firms, and the cases shared with them (see its README)     |
 | `schema.ts`        | The tables                                                         |
+| `evals/`           | How often the models get each step right (see its README)          |
+| `dev.ts`           | Seeding and inspection for the test pages; not for production      |
+| `autopilot.ts`     | Pure: plays the person's part, for the test pages and the evals    |
 
 ## How it fits together
 
@@ -58,10 +61,17 @@ retried call can't leave a duplicate in the thread.
 
 - `intake.version` goes up each time a goal is set. A pack selection records the
   `goalVersion` it was made for; one for an earlier goal counts as none.
-- `artifact.fingerprint` is the answers and files the document was built from;
-  `approval.fingerprint` is the document the person approved.
+- `artifact.fingerprint` is a SHA-256 of the answers and files the document was
+  built from; `approval.fingerprint` is the one the person approved.
 - `seq` goes up on every write. `send` takes the `expectedSeq` the sender last
   saw, so an event sent from an out-of-date screen is refused.
+
+**The person isn't asked twice.** When a proposal is confirmed, the workflow
+reads what the person already said (their chat and their goal) for answers to
+the pack's questions. What it finds comes back as `getCase.suggestions`: not
+answers until the person sends `answers.accept` (or sets them one by one). Only
+what they plainly said is suggested; a guess would end up in their document. A
+case started on a landing page has said nothing, so it skips this.
 
 **Nothing is shared without a yes.** When a pack's referral applies, the case
 waits for `consent`. `referral.share` copies what the person approved into
@@ -78,8 +88,8 @@ again from the top) or `step.cancel` (stop). `case.cancel` works at any time.
 
 First seed a pack. Run `easygov/packs/data:save` with the `irs8822` definition
 from `packs/packs.testkit.ts` (it has no `ownerId`, so it's shared). The agent
-proposes it when the goal matches; without a seeded match it drafts a new pack
-for you to review instead.
+proposes it when the goal matches; without a seeded match it drafts a one-off
+process for you to review instead, which runs on that case and isn't saved.
 
 Run each function from the dashboard's Functions page. Every `send` needs the
 case's current `seq`, so read it with `getCase` first. `getCase` also says what

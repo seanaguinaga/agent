@@ -4,7 +4,7 @@
 // built from the schema, so they can't also be an input to it.
 import { vWorkflowId } from "@convex-dev/workflow";
 import { v, type Infer } from "convex/values";
-import { vLeft } from "../forms/schema";
+import { vFilledDocument } from "../forms/schema";
 import {
   vPackDeadline,
   vPackDocuments,
@@ -13,13 +13,6 @@ import {
   vProcessPackDefinition,
   vProcessPackQuestions,
 } from "../packs/schema";
-
-/** An official form, filled in for a case. */
-export const vFilledDocument = v.object({
-  storageId: v.id("_storage"),
-  omissions: v.array(v.object({ label: v.string(), reason: v.string() })),
-  toComplete: v.array(vLeft),
-});
 
 /**
  * What reading a file found, by `status`. `reading` until the model has

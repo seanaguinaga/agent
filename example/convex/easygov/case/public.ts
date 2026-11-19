@@ -21,7 +21,7 @@ import {
 } from "./data";
 import { currentFacts, scheduleSync, syncCase } from "../profile/data";
 import { FACT_KEYS, factOf } from "../profile/vocabulary";
-import { EVENTS } from "./events";
+import { take, type PersonEvent } from "./events";
 import { attachFollowUp, remove } from "./files";
 import { vCaseEvent, vPhase, vWaitingFor, type CaseEvent } from "./schema";
 import {
@@ -340,23 +340,9 @@ export const send = mutation({
 async function personEvent(
   ctx: MutationCtx,
   c: Case,
-  event: Exclude<
-    CaseEvent,
-    { type: "step.retry" | "step.cancel" | "case.cancel" }
-  >,
+  event: PersonEvent,
 ): Promise<null> {
-  const { during, handle } = EVENTS[event.type] as {
-    during: ReturnType<typeof waitingFor>[];
-    handle: (
-      ctx: MutationCtx,
-      c: Case,
-      event: CaseEvent,
-    ) => Partial<Case> | Promise<Partial<Case>>;
-  };
-  if (!during.includes(waitingFor(c))) {
-    throw new ConvexError(`"${event.type}" isn't expected right now.`);
-  }
-  await writeCase(ctx, c._id, await handle(ctx, c, event));
+  await writeCase(ctx, c._id, await take(ctx, c, event));
   // What this case reads from the profile may have changed. An answer may
   // also have gone to the profile, which the person's other open cases read:
   // those pick it up in their own transactions.

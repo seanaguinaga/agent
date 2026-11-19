@@ -10,6 +10,7 @@
 // The vocabulary grows by adding entries here. Nothing is ever renamed: a
 // saved pack keeps the keys it was written with.
 import { v, type Infer } from "convex/values";
+import { isDate } from "../dates";
 
 // --- Values -----------------------------------------------------------------
 
@@ -95,10 +96,6 @@ const US_STATES = new Set(
     "WV WI WY AS GU MP PR VI AA AE AP"
   ).split(" "),
 );
-
-const isDate = (text: string) =>
-  /^\d{4}-\d{2}-\d{2}$/.test(text) &&
-  new Date(`${text}T00:00:00Z`).toISOString().slice(0, 10) === text;
 
 function isObject(
   value: FactValue,

@@ -16,7 +16,7 @@ import { browserService, downloadViaBrowser } from "./browser";
 import { resolveMapping } from "./mapping";
 import { openForFilling, UnusablePdf } from "./open";
 import { fillPdf, inspectPdf, verifyPdf } from "./pdf";
-import { vLeft } from "./schema";
+import { vFilledDocument, vLeft } from "./schema";
 import { namesForm, obtain } from "./sources";
 
 /**
@@ -141,14 +141,7 @@ export const fetchForm = action({
   },
 });
 
-const vFilled = v.object({
-  storageId: v.id("_storage"),
-  /** Values that weren't written, each with why. Never cut short to fit. */
-  omissions: v.array(v.object({ label: v.string(), reason: v.string() })),
-  /** What's left for the person, and why. */
-  toComplete: v.array(vLeft),
-});
-type Filled = typeof vFilled.type;
+type Filled = typeof vFilledDocument.type;
 
 /** Fills an edition with answers, checks the result, and stores it. */
 async function fill(
@@ -200,7 +193,7 @@ async function fill(
 export const fillForCase = internalAction({
   args: { caseId: v.id("cases") },
   returns: v.union(
-    v.object({ ...vFilled.fields, fingerprint: v.string() }),
+    v.object({ ...vFilledDocument.fields, fingerprint: v.string() }),
     v.null(),
   ),
   handler: async (

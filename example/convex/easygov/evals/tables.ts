@@ -1,5 +1,6 @@
 // Where easygov eval results live. Cases live in code (`cases.ts`), except
 // the drafts someone saved from a real case to replay.
+import { literals } from "convex-helpers/validators";
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
 
@@ -18,20 +19,7 @@ export const SLICES = [
   "pipeline",
 ] as const;
 export type Slice = (typeof SLICES)[number];
-export const vSlice = v.union(
-  v.literal("intake"),
-  v.literal("request"),
-  v.literal("choose"),
-  v.literal("research"),
-  v.literal("draft"),
-  v.literal("prefill"),
-  v.literal("tailor"),
-  v.literal("address"),
-  v.literal("mapping"),
-  v.literal("search"),
-  v.literal("outcome"),
-  v.literal("pipeline"),
-);
+export const vSlice = literals(...SLICES);
 
 /** Which trial of a run this is. */
 const trialKey = { slice: vSlice, caseId: v.string(), trial: v.number() };

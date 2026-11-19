@@ -7,7 +7,8 @@ import { DEFAULT_PRICE_CENTS } from "../firms/schema";
 import { checkChoice } from "../forms/mapping";
 import { currentFacts, keepAnswer } from "../profile/data";
 import { factOf, READINGS, type FactKey } from "../profile/vocabulary";
-import { answerProblem, today } from "./answers";
+import { today } from "../dates";
+import { answerProblem } from "./answers";
 import { draftDefinition, logCaseEvent } from "./data";
 import { attach, label, remove } from "./files";
 import {
@@ -29,10 +30,11 @@ import {
   pinnedPack,
   requiredInputs,
   suggestions,
+  waitingFor,
   type Case,
 } from "./state";
 
-type PersonEvent = Exclude<
+export type PersonEvent = Exclude<
   CaseEvent,
   { type: "step.retry" | "step.cancel" | "case.cancel" }
 >;
@@ -43,7 +45,7 @@ type Handler<T extends PersonEvent["type"]> = (
 ) => Partial<Case> | Promise<Partial<Case>>;
 
 /** When each event is taken, and what it writes. */
-export const EVENTS: {
+const EVENTS: {
   [T in PersonEvent["type"]]: { during: WaitingFor[]; handle: Handler<T> };
 } = {
   "intake.submit": {
@@ -169,6 +171,26 @@ export const EVENTS: {
     }),
   },
 };
+
+/**
+ * What a person's event writes to the case. Refused unless the case waits
+ * for it. A lookup in the table loses which handler goes with which event,
+ * so the one cast that restores it is here.
+ */
+export async function take(
+  ctx: MutationCtx,
+  c: Case,
+  event: PersonEvent,
+): Promise<Partial<Case>> {
+  const { during, handle } = EVENTS[event.type] as {
+    during: WaitingFor[];
+    handle: Handler<PersonEvent["type"]>;
+  };
+  if (!during.includes(waitingFor(c))) {
+    throw new ConvexError(`"${event.type}" isn't expected right now.`);
+  }
+  return await handle(ctx, c, event);
+}
 
 /**
  * Shares the case with a lawyer: copies what the person approved into

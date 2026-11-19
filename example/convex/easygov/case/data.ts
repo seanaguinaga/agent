@@ -20,15 +20,14 @@ import type { vProcessPackDefinition } from "../packs/schema";
 import {
   definitionOf,
   draftOf,
-  vFilledDocument,
   type CaseFile,
   type HistoryKind,
 } from "./schema";
+import { vFilledDocument } from "../forms/schema";
 import { intakeAgent, proposalFields, selectionAgent } from "./agents";
 import { missingInputs, renderLetter } from "./answers";
 import { rememberedElsewhere } from "../profile/data";
-import { isReading, READINGS } from "../profile/vocabulary";
-import { answerKind, readingConversation } from "./state";
+import { answerKind, questionOf, readingConversation } from "./state";
 import {
   caseFiles,
   currentChoice,
@@ -376,16 +375,11 @@ export const prefillInput = internalQuery({
 
 /** The confirmed pack's questions the case has no answer to yet. */
 export function openQuestions(c: Case) {
-  const pack = pinnedPack(c);
-  const asked = new Map(
-    (pack?.inputQuestions ?? []).map(({ key, question }) => [key, question]),
-  );
-  return (pack?.inputs ?? [])
+  return (pinnedPack(c)?.inputs ?? [])
     .filter((key) => c.answers[key] === undefined)
     .map((key) => ({
       key,
-      // A profile reading is asked for by what it is.
-      question: asked.get(key) ?? (isReading(key) ? READINGS[key].label : key),
+      question: questionOf(c, key),
       kind: answerKind(c, key),
     }));
 }
@@ -457,16 +451,10 @@ export const answersComplete = internalQuery({
 
 /** The answers to the questions the pack's checklist is tailored by. */
 function situationOf(c: Case, pack: Awaited<ReturnType<typeof packOf>>) {
-  const asked = new Map(
-    (pinnedPack(c)?.inputQuestions ?? []).map(({ key, question }) => [
-      key,
-      question,
-    ]),
-  );
   return (pack?.output?.tailorBy ?? [])
     .filter((key) => c.answers[key])
     .map((key) => ({
-      question: asked.get(key) ?? key,
+      question: questionOf(c, key),
       answer: c.answers[key],
     }));
 }

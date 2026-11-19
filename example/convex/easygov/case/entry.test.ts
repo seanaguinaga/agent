@@ -5,7 +5,8 @@ import { api, internal } from "../../_generated/api";
 import type { Id } from "../../_generated/dataModel";
 import { initConvexTest } from "../../setup.test";
 import { irs8822, wageClaim } from "../packs/packs.testkit";
-import { addDays, passes, renderLetter } from "./answers";
+import { addDays } from "../dates";
+import { passes, renderLetter } from "./answers";
 import { definitionOf } from "./schema";
 import { answer, model, read, resetCases, send, type T } from "./cases.testkit";
 

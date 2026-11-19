@@ -13,6 +13,8 @@ import { internalAction, type ActionCtx } from "../../_generated/server";
 import { defaultConfig } from "../../agents/config";
 import { researchModel } from "../../modelsForDemo";
 import {
+  INPUT_KEY,
+  isInputKey,
   normalizeFormId,
   parseJurisdiction,
   vProcessPackDefinition,
@@ -137,8 +139,6 @@ const zRequest = z.object({
     .optional()
     .describe("Process terms and synonyms only, without personal details."),
 });
-
-const INPUT_KEY = /^[a-z][a-zA-Z0-9]{0,47}$/;
 
 /** The readings a drafted letter is most likely to want, as it's told them. */
 const PROFILE_PLACEHOLDERS = [
@@ -398,8 +398,6 @@ export async function draftProcess(
   // A question exists because something reads its answer. The letter reads
   // its placeholders, and tailoring reads the situation questions. Anything
   // else the model asked is dropped.
-  const usable = (key: string) =>
-    INPUT_KEY.test(key) && !Object.hasOwn(Object.prototype, key);
   const { situationQuestions = [], ...rest } = recipe;
   // With no research there's no knowing what the authority wants written,
   // or which steps are whose: a checklist of what to verify, and no more.
@@ -412,11 +410,11 @@ export async function draftProcess(
   );
   const letterKeys = [
     ...new Set(placeholders(rest.output.letter ?? "")),
-  ].filter(usable);
+  ].filter(isInputKey);
   // Without research there's nothing solid to leave steps out by.
   const tailorBy = notes
     ? [...new Set(situationQuestions.map(({ key }) => key))]
-        .filter((key) => usable(key) && !letterKeys.includes(key))
+        .filter((key) => isInputKey(key) && !letterKeys.includes(key))
         .slice(0, MAX_SITUATION)
     : [];
   const inputs = [...letterKeys, ...tailorBy];

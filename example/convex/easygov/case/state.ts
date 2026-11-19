@@ -2,7 +2,9 @@
 // with plain values. The workflow waits on them, and `send` checks them, so
 // both always agree on where the case is.
 import type { Doc } from "../../_generated/dataModel";
-import { addDays, fingerprint, missingInputs, passes } from "./answers";
+import { addDays } from "../dates";
+import { isReading, READINGS } from "../profile/vocabulary";
+import { fingerprint, missingInputs, passes } from "./answers";
 import {
   chosen,
   definitionOf,
@@ -56,6 +58,15 @@ export function pinnedPack(c: Case) {
   return selection?.status === "confirmed"
     ? definitionOf(selection)
     : undefined;
+}
+
+/**
+ * How the pack asks for `key`, in its own words. Without a question, a
+ * profile reading is asked for by what it is, and anything else by its key.
+ */
+export function questionOf(c: Case, key: string): string {
+  const asked = pinnedPack(c)?.inputQuestions?.find((q) => q.key === key);
+  return asked?.question ?? (isReading(key) ? READINGS[key].label : key);
 }
 
 /** What was read from the conversation for the current goal, if started. */

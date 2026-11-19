@@ -13,6 +13,7 @@ import {
 import { placeholders } from "../case/answers";
 import { isFactKey, isReading } from "../profile/vocabulary";
 import {
+  isInputKey,
   jurisdictionChain,
   normalizeFormId,
   packDefinition,
@@ -101,11 +102,10 @@ function checkDefinition(raw: Definition): Definition {
     throw new ConvexError("List up to 10 official form numbers.");
   }
   const { inputs, inputQuestions, referral } = raw;
-  if (
-    new Set(inputs).size !== inputs.length ||
-    inputs.some((key) => !key.trim() || Object.hasOwn(Object.prototype, key))
-  ) {
-    throw new ConvexError("Input keys must be nonempty and unique.");
+  if (new Set(inputs).size !== inputs.length || !inputs.every(isInputKey)) {
+    throw new ConvexError(
+      "Input keys are unique, and made of letters and digits starting with a lowercase letter.",
+    );
   }
   if (
     inputQuestions &&

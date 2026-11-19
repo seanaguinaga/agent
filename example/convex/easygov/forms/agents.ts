@@ -8,6 +8,7 @@ import { api } from "../../_generated/api";
 import { action } from "../../_generated/server";
 import { languageModel } from "../../modelsForDemo";
 import { READINGS, isReading } from "../profile/vocabulary";
+import { isInputKey } from "../packs/schema";
 import type { Mapping } from "./schema";
 
 /** What the model is shown of a target: where it is doesn't matter here. */
@@ -19,7 +20,6 @@ export type TargetBrief = {
   group?: string;
 };
 
-const INPUT_KEY = /^[a-z][a-zA-Z0-9]{0,47}$/;
 const OPTION = /^[a-z][a-zA-Z0-9]{0,31}$/;
 
 /**
@@ -105,7 +105,7 @@ export async function proposeMapping(
       continue;
     }
     let key = entry.input.trim();
-    if (!isReading(key) && !INPUT_KEY.test(key)) continue;
+    if (!isReading(key) && !isInputKey(key)) continue;
     const question =
       !isReading(key) && entry.question.trim()
         ? entry.question.trim().slice(0, 240)

@@ -3,6 +3,7 @@
 // answers are made up from the pinned pack, so it drives any pack, including
 // one a model drafted.
 import type { Infer } from "convex/values";
+import { DAY_MS } from "./dates";
 import {
   definitionOf,
   type CaseEvent,
@@ -48,8 +49,6 @@ const ANSWER_BOOK: Record<string, string> = {
   employer: "Analytical Engines Ltd",
   reasonForAppeal: "The decision overlooked my medical records.",
 };
-
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The date `days` after a YYYY-MM-DD date. */
 export function shiftDate(date: string, days: number): string {

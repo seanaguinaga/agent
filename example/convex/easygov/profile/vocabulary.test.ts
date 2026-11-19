@@ -110,6 +110,9 @@ describe("an address", () => {
 
 test("simple facts are checked by their kind", () => {
   expect(checkFact("birthDate", "1990-02-31")).toHaveProperty("problem");
+  // A month or day that can't be is a problem to report, not a crash.
+  expect(checkFact("birthDate", "1990-13-01")).toHaveProperty("problem");
+  expect(checkFact("birthDate", "1990-01-32")).toHaveProperty("problem");
   expect(checkFact("birthDate", " 1990-04-23 ")).toEqual({
     value: "1990-04-23",
   });

@@ -13,7 +13,13 @@ import {
   type QueryCtx,
 } from "../../_generated/server";
 import { writeCase } from "../case/data";
-import { pinnedPack, reviewOutcome, type Case } from "../case/state";
+import { DAY_MS } from "../dates";
+import {
+  pinnedPack,
+  questionOf,
+  reviewOutcome,
+  type Case,
+} from "../case/state";
 import { nudgeIfMoved } from "../case/workflow";
 import { ConvexError, v } from "convex/values";
 import {
@@ -28,8 +34,6 @@ import {
   type Facts,
   type FactValue,
 } from "./vocabulary";
-
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** A person's facts as they stand, and when each was last confirmed. */
 export async function currentFacts(
@@ -230,13 +234,11 @@ export async function keepAnswer(
     return true;
   }
   const pack = pinnedPack(c);
-  const question =
-    pack?.inputQuestions?.find((asked) => asked.key === key)?.question ?? key;
   await ctx.db.insert("rememberedAnswers", {
     userId: c.userId,
     packId: pack?.id,
     key,
-    question,
+    question: questionOf(c, key),
     value,
     caseId: c._id,
   });

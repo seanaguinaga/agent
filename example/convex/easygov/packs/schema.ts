@@ -153,6 +153,14 @@ export const vPackMatch = v.object({
   forms: v.array(v.string()),
 });
 
+/** What an input key looks like: `fullName`, `lastWorkDate`. */
+export const INPUT_KEY = /^[a-z][a-zA-Z0-9]{0,47}$/;
+
+/** A key that is safe to index answers by. */
+export function isInputKey(key: string): boolean {
+  return INPUT_KEY.test(key) && !Object.hasOwn(Object.prototype, key);
+}
+
 const MAX_JURISDICTION_DEPTH = 4;
 const SEGMENT = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 

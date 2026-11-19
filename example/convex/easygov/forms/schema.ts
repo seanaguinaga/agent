@@ -45,6 +45,15 @@ export const vLeft = v.object({
  * - `leave`: left for the person to complete, and why.
  * A target with no entry is left blank and not mentioned.
  */
+/** An official form, filled in. */
+export const vFilledDocument = v.object({
+  storageId: v.id("_storage"),
+  /** Values that weren't written, each with why. Never cut short to fit. */
+  omissions: v.array(v.object({ label: v.string(), reason: v.string() })),
+  /** What's left for the person, and why. */
+  toComplete: v.array(vLeft),
+});
+
 export const vMappingEntry = v.object({
   target: v.string(),
   input: v.optional(v.string()),

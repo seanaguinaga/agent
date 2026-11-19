@@ -48,6 +48,7 @@ async function recorded(t: T, bytes = original) {
         via: "request",
         url: "https://www.irs.gov/pub/irs-pdf/f8822.pdf",
       },
+      opened: false,
     },
   })) as Id<"formEditions">;
   const at = (pattern: RegExp) =>

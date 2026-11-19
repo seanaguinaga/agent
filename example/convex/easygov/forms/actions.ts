@@ -14,6 +14,7 @@ import {
 } from "../../_generated/server";
 import { browserService, downloadViaBrowser } from "./browser";
 import { resolveMapping } from "./mapping";
+import { openForFilling, UnusablePdf } from "./open";
 import { fillPdf, inspectPdf, verifyPdf } from "./pdf";
 import { vLeft } from "./schema";
 import { namesForm, obtain } from "./sources";
@@ -78,15 +79,33 @@ export const fetchForm = action({
       await record(true);
       return { editionId: known, fresh: false };
     }
+    // Many forms are protected without a password. Where the file allows
+    // its forms to be filled, it's opened; otherwise the fetch stops here,
+    // having still found the file.
+    const refuse = async (note: string, say: string) => {
+      await record(false, [...got.attempts, { via, url, ok: false, note }]);
+      return new ConvexError(say);
+    };
+    let ready: Uint8Array;
+    let opened: boolean;
+    try {
+      ({ bytes: ready, opened } = await openForFilling(bytes));
+    } catch (error) {
+      const why =
+        error instanceof UnusablePdf ? error.message : "It can't be read.";
+      throw await refuse(
+        why,
+        `The form was fetched, but can't be used. ${why}`,
+      );
+    }
     const { pages, edition, fillable, targets, opening } =
-      await inspectPdf(bytes);
+      await inspectPdf(ready);
     // Whatever way it came, it has to be the form it's meant to be.
     if (!namesForm(form.code, opening)) {
-      await record(false, [
-        ...got.attempts,
-        { via, url, ok: false, note: `The file doesn't name ${form.code}.` },
-      ]);
-      throw new ConvexError(`What came back isn't ${form.code}.`);
+      throw await refuse(
+        `The file doesn't name ${form.code}.`,
+        `What came back isn't ${form.code}.`,
+      );
     }
     await record(true);
     if (known) {
@@ -97,7 +116,9 @@ export const fetchForm = action({
       return { editionId: known, fresh: false };
     }
     const storageId = await ctx.storage.store(
-      new Blob([bytes.slice().buffer], { type: "application/pdf" }),
+      // What's kept is the form ready to fill. Its identity is still the
+      // hash of the bytes as the authority published them.
+      new Blob([ready.slice().buffer], { type: "application/pdf" }),
     );
     const editionId: Id<"formEditions"> | null = await ctx.runMutation(
       internal.easygov.forms.data.recordFetch,
@@ -111,6 +132,7 @@ export const fetchForm = action({
           fillable,
           targets,
           obtained: { via, url },
+          opened,
         },
       },
     );

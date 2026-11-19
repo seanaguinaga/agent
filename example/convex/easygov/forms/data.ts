@@ -85,6 +85,8 @@ const vEditionSummary = v.object({
   currency: v.string(),
   /** How its bytes were got: a plain request, or a real browser. */
   via: v.optional(vVia),
+  /** Its passwordless protection was removed, as the file allows. */
+  opened: v.boolean(),
 });
 
 /** The registry, each form with its editions, newest first. */
@@ -140,6 +142,7 @@ export const list = query({
           mappingStatus: e.mappingStatus,
           currency: e.currency.status,
           via: e.obtained?.via,
+          opened: e.opened ?? false,
         })),
       });
     }
@@ -384,6 +387,7 @@ export const recordFetch = internalMutation({
         fillable: v.boolean(),
         targets: v.array(vTarget),
         obtained: v.object({ via: vVia, url: v.string() }),
+        opened: v.boolean(),
       }),
     ),
   },

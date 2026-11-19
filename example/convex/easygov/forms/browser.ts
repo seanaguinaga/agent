@@ -7,9 +7,8 @@
 // address, and collect the download. That's all a browser is needed for
 // here, so there's no automation library and no model.
 //
-// It is a real browser and nothing more. Captcha solving, proxies and
-// fingerprint masking are left off on purpose: if a site turns the browser
-// away, the form is reported as unreachable. We don't try to get past it.
+// Matches EasyGov's source browser: managed proxies, CAPTCHA solving and
+// ad blocking. A site that still refuses access is reported as unreachable.
 
 const API = "https://api.browserbase.com/v1";
 
@@ -51,7 +50,7 @@ export async function downloadViaBrowser(
   url: string,
   service: BrowserService,
 ): Promise<Uint8Array> {
-  const { apiKey, projectId, timeoutMs = 45_000, pollMs = 2_000 } = service;
+  const { apiKey, projectId, timeoutMs = 60_000, pollMs = 2_000 } = service;
   const request = service.fetch ?? fetch;
   const Socket = service.WebSocket ?? WebSocket;
   const headers = {
@@ -64,9 +63,9 @@ export async function downloadViaBrowser(
     headers,
     body: JSON.stringify({
       ...(projectId && { projectId }),
-      // A plain browser: see the note at the top of this file.
-      browserSettings: { solveCaptchas: false },
-      timeout: 120,
+      browserSettings: { blockAds: true, solveCaptchas: true },
+      proxies: true,
+      timeout: 90,
     }),
   });
   if (!created.ok) {

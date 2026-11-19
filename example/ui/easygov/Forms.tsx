@@ -144,6 +144,7 @@ function Registry({
               <code>{edition.sha256.slice(0, 12)}</code>
               <span>{edition.edition ?? "no edition printed"}</span>
               <Chip>{edition.fillable ? "fillable" : "flat"}</Chip>
+              {edition.opened && <Chip tone="blue">protection removed</Chip>}
               {edition.via && (
                 <Chip tone={edition.via === "browser" ? "blue" : undefined}>
                   got by {edition.via}

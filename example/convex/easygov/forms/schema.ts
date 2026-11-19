@@ -102,6 +102,12 @@ export default {
     checkedAt: v.number(),
     /** How these bytes were first got: a plain request, or a real browser. */
     obtained: v.optional(v.object({ via: vVia, url: v.string() })),
+    /**
+     * True when the published file was protected without a password and
+     * allowed its forms to be filled, and that protection was removed. The
+     * stored file is the opened one; `sha256` is of the file as published.
+     */
+    opened: v.optional(v.boolean()),
     /** The revision printed on it, e.g. "Rev. February 2021". */
     edition: v.optional(v.string()),
     pages: v.number(),

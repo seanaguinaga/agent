@@ -148,18 +148,18 @@ describe("a hosted browser", () => {
     };
   }
 
-  test("opens the address, collects the download, and lets the browser go", async () => {
+  test("uses EasyGov's proxy and CAPTCHA settings, collects the download, and releases the session", async () => {
     const { calls, sent, options } = service(1);
     const bytes = await downloadViaBrowser("https://a.gov/f.pdf", options);
     expect(new TextDecoder().decode(bytes)).toBe("%PDF-1.7 a form");
-    // A plain browser: nothing that gets past a site's checks is turned on.
     expect(calls[0]).toEqual({
       method: "POST",
       url: "https://api.browserbase.com/v1/sessions",
       body: {
         projectId: "p1",
-        browserSettings: { solveCaptchas: false },
-        timeout: 120,
+        browserSettings: { blockAds: true, solveCaptchas: true },
+        proxies: true,
+        timeout: 90,
       },
     });
     expect(sent).toEqual([

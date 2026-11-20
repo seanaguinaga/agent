@@ -43,7 +43,8 @@ describe("the case API", () => {
       text: "Hi",
       messageKey: "a",
     });
-    expect((await read(t, caseId)).seq).toBe(seq + 1);
+    // The message, and the work it started.
+    expect((await read(t, caseId)).seq).toBe(seq + 2);
   });
 
   test("the same chat message sent twice is saved and answered once", async () => {
@@ -73,6 +74,14 @@ describe("the case API", () => {
 
   test("canceling stops the case and its workflows", async () => {
     const { t, caseId } = await start();
+    // Nothing runs until there's something to do.
+    expect((await read(t, caseId)).run).toBeUndefined();
+    // A goal starts the proposal. Cancel while it's still running.
+    await t.mutation(api.easygov.case.public.sendEvent, {
+      caseId,
+      event: { type: "goal.set", goal: "I moved" },
+      expectedSeq: (await read(t, caseId)).seq,
+    });
     const { run } = await read(t, caseId);
     const found = await send(t, caseId, { type: "case.cancel" });
     expect(found).toMatchObject({
@@ -81,12 +90,13 @@ describe("the case API", () => {
     });
     // The case's workflow was canceled with it.
     expect(found.run).toBeUndefined();
-    const status = await t.run((ctx) => workflow.status(ctx, run!.workflowId));
+    if (run?.state !== "running") throw new Error("Expected running work");
+    const status = await t.run((ctx) => workflow.status(ctx, run.workflowId));
     expect(status.type).toBe("canceled");
     await expect(
       t.mutation(api.easygov.case.public.sendEvent, {
         caseId,
-        event: { type: "goal.set", goal: "I moved" },
+        event: { type: "goal.set", goal: "I moved again" },
         expectedSeq: found.seq,
       }),
     ).rejects.toThrow(/canceled/);

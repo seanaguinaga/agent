@@ -16,7 +16,13 @@ export const vProcessPackQuestions = v.array(
     multiple: v.optional(v.boolean()),
   }),
 );
+export const vLetterRoute = v.object({
+  key: v.string(),
+  equals: v.string(),
+  inputs: v.array(v.string()),
+});
 const vProcessPackOutput = v.object({
+  filingOrder: v.optional(v.array(v.string())),
   title: v.string(),
   checklist: v.array(v.string()),
   /**
@@ -35,8 +41,17 @@ const vProcessPackOutput = v.object({
 });
 
 /** A file the person attaches, e.g. the denial letter they received. */
+export const vRouteCondition = v.object({
+  key: v.string(),
+  equals: v.string(),
+});
 export const vPackEvidence = v.array(
-  v.object({ key: v.string(), label: v.string(), required: v.boolean() }),
+  v.object({
+    key: v.string(),
+    label: v.string(),
+    required: v.boolean(),
+    when: v.optional(vRouteCondition),
+  }),
 );
 
 /**
@@ -63,13 +78,19 @@ export type Signal = Infer<typeof vSignal>;
 
 /**
  * A legal referral to offer once the person accepts, e.g. representation
- * for an appeal. With `when`, only if that answer passes. The person is
+ * for an appeal. With `when` or `orWhen`, only if one of those answers passes. The person is
  * asked first: nothing is shared unless they say so. The price is fixed: it
  * doesn't depend on what comes of the case.
  */
 export const vPackReferral = v.object({
   kind: v.string(),
   when: v.optional(vSignal),
+  /**
+   * Other answers that make the case one a lawyer takes: any one passing
+   * is enough, as `when` passing is. A case is rarely worth a lawyer for one
+   * reason only: the amount, how close the deadline is, how far it has gone.
+   */
+  orWhen: v.optional(v.array(vSignal)),
   /** What the firm that accepts it pays, if not the usual price. */
   priceCents: v.optional(v.number()),
 });
@@ -87,7 +108,26 @@ export const vPackProfileLinks = v.array(
  * from a person or a model and varies ("courts" vs "state-court"), so labels
  * only feed search, and a model compares the candidates.
  */
+export const vPacketForm = v.object({
+  code: v.string(),
+  sourceUrl: v.string(),
+  when: v.optional(vRouteCondition),
+  blueprintId: v.optional(v.id("formBlueprints")),
+  inputs: v.array(v.string()),
+  openItem: v.optional(v.string()),
+});
+export const vEligibility = v.array(
+  v.object({
+    condition: v.string(),
+    sourceUrl: v.string(),
+    key: v.string(),
+    qualifiesWhen: v.string(),
+  }),
+);
 export const packDefinition = {
+  letterRoute: v.optional(vLetterRoute),
+  packetForms: v.optional(v.array(vPacketForm)),
+  eligibility: v.optional(vEligibility),
   title: v.string(),
   description: v.string(),
   aliases: v.array(v.string()),

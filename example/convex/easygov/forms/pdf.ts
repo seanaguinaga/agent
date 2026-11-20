@@ -52,7 +52,7 @@ export type Inspection = {
   /** False for a flat PDF: its targets were found on the page. */
   fillable: boolean;
   targets: Target[];
-  /** The start of the first page's words: enough to tell which form it is. */
+  /** The start and end of the first page's words: enough to tell which form it is. */
   opening: string;
 };
 
@@ -426,10 +426,13 @@ export async function inspectPdf(bytes: Uint8Array): Promise<Inspection> {
       }
     });
   }
-  const opening = (marks[0]?.text ?? [])
-    .map((t) => t.str)
-    .join(" ")
-    .slice(0, 2000);
+  // A form prints its code at the top of page one or in its footer, so
+  // both ends are kept: "DL 410 FO (REV. 7/2024)" is the page's last line.
+  const first = (marks[0]?.text ?? []).map((t) => t.str).join(" ");
+  const opening =
+    first.length <= 2500
+      ? first
+      : `${first.slice(0, 2000)} … ${first.slice(-500)}`;
   return { pages: pages.length, edition, fillable, targets, opening };
 }
 

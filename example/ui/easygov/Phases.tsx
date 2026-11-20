@@ -103,8 +103,15 @@ const END_KINDS: HistoryKind[] = [
 type Entry = { at: number; kind: HistoryKind; detail?: string };
 
 /** One line of what the case is doing now: for a heading or a list row. */
-export function phaseLine(c: Pick<CaseView, "phase" | "endReason">): string {
+export function phaseLine(
+  c: Pick<CaseView, "phase" | "endReason"> & { run?: CaseView["run"] },
+): string {
   const step = TRACK.find((s) => s.phase === c.phase);
+  // Held back by a rate limit: say when its turn comes.
+  if (step && c.run?.state === "delayed") {
+    const at = new Date(c.run.until).toLocaleTimeString();
+    return `${step.doing} (waiting its turn until ${at})`;
+  }
   if (step) return step.doing;
   return c.endReason ?? ENDS[c.phase]?.label ?? c.phase;
 }
@@ -140,8 +147,11 @@ function Events({ events }: { events: Entry[] }) {
   );
 }
 
-export function Phases({ c }: { c: CaseView }) {
-  const history = useQuery(api.easygov.dev.history, { caseId: c._id });
+export function Phases({ c, guestKey }: { c: CaseView; guestKey?: string }) {
+  const history = useQuery(api.easygov.case.public.listHistory, {
+    caseId: c._id,
+    guestKey,
+  });
   const at = TRACK.findIndex((step) => step.phase === c.phase);
   const end = ENDS[c.phase];
   const eventsOf = (kinds: HistoryKind[]) =>

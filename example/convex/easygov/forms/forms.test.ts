@@ -340,3 +340,194 @@ test("a group of boxes is asked as one question, and typing isn't refused for a 
     );
   expect(ticked).toHaveLength(2);
 });
+
+test.each([
+  ["IRS-8822", "f8822", "Change my IRS address", /^3a Your name/],
+  ["W-9", "fw9", "Give a payer my taxpayer certification", /name/i],
+] as const)(
+  "compiles an unseen %s from research and reads the result from the shared PDF",
+  async (code, filename, goal, label) => {
+    vi.useFakeTimers();
+    const t = initConvexTest();
+    const sourceUrl = `https://www.irs.gov/pub/irs-pdf/${filename}.pdf`;
+    const blocked = "https://www.irs.gov/forms/blocked.pdf";
+    const firstSource = code === "W-9" ? blocked : sourceUrl;
+    const attempts: string[] = [];
+    const bytes = new Uint8Array(
+      readFileSync(new URL(`./fixtures/${filename}.pdf`, import.meta.url)),
+    );
+    const target = (await inspectPdf(bytes)).targets.find(
+      (t) => t.kind === "text" && label.test(t.label),
+    )!;
+    expect(target).toBeDefined();
+    const originalFetch = globalThis.fetch;
+    const mock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input, init) => {
+        attempts.push(String(input));
+        if (String(input) === blocked)
+          return new Response(null, { status: 403 });
+        if (String(input) === sourceUrl)
+          return new Response(bytes.slice().buffer, {
+            headers: { "Content-Type": "application/pdf" },
+          });
+        return originalFetch(input, init);
+      });
+    try {
+      const { model } = await import("../case/cases.testkit");
+      const { request } = await import("../packs/packs.testkit");
+      const caseId = await t.mutation(api.easygov.case.public.createCase, {});
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      model.replies.push(
+        request({
+          jurisdiction: "us",
+          authority: "IRS",
+          forms: [code],
+          searchTerms: goal,
+        }),
+        JSON.stringify({
+          findings: `Use ${code}.`,
+          methods: [],
+          forms: [{ code, pdfUrl: firstSource, requiredBy: "" }],
+          sources: [],
+        }),
+        JSON.stringify({
+          title: goal,
+          description: goal,
+          aliases: [],
+          inputQuestions: [],
+          ...(code === "W-9" && {
+            officialForms: [{ code, sourceUrl: firstSource }],
+          }),
+          referralKind: "tax",
+          output: {
+            title: goal,
+            checklist: ["Sign the form."],
+            letter: "Identification: {{taxpayerId}}",
+          },
+        }),
+        ...(code === "W-9" ? [sourceUrl] : []),
+        JSON.stringify({
+          entries: [
+            {
+              target: target.id,
+              use: "input",
+              input: "fullName",
+              question: "",
+              tick: "",
+              option: "",
+              note: "",
+            },
+          ],
+        }),
+      );
+      const proposed = await send(t, caseId, { type: "goal.set", goal });
+      expect(proposed.selection).toMatchObject({
+        kind: "draft",
+        draft: {
+          output: { letter: "Identification: [complete by hand]" },
+          packetForms: [{ code, blueprintId: expect.any(String) }],
+        },
+      });
+      if (code === "W-9") {
+        expect(
+          attempts.filter((url) => url === blocked || url === sourceUrl),
+        ).toEqual([blocked, sourceUrl]);
+      }
+      model.replies.push(JSON.stringify({ answers: [] }));
+      await send(t, caseId, { type: "pack.accept" });
+      const notice = await t.run((ctx) =>
+        ctx.storage.store(
+          new Blob(
+            [
+              "Applicant: Ada Lovelace. Reference AB-12. Decision date 2026-01-02.",
+            ],
+            { type: "text/plain" },
+          ),
+        ),
+      );
+      model.replies.push(
+        JSON.stringify({
+          stated: [],
+          what: "The notice names Ada Lovelace, reference AB-12, decision dated 2026-01-02.",
+          answers: [{ key: "fullName", value: "Ada Lovelace" }],
+          facts: [{ fact: "name", text: "Ada Lovelace" }],
+        }),
+      );
+      const evidence = await send(t, caseId, {
+        type: "evidence.add",
+        storageId: notice,
+        name: "Notice.txt",
+      });
+      expect(evidence.suggestions.fullName).toBe("Ada Lovelace");
+      expect(
+        (await t.query(api.easygov.profile.public.getProfile, {})).proposals,
+      ).toContainEqual(
+        expect.objectContaining({
+          fact: "name",
+          text: "Ada Lovelace",
+          source: "Notice.txt",
+        }),
+      );
+      model.replies.push(
+        JSON.stringify({ openItems: ["Sign the printed form."] }),
+      );
+      const review = await send(t, caseId, { type: "answers.accept" });
+      const document = review.artifact?.documents?.[0];
+      expect(review).toMatchObject({
+        phase: "review",
+        artifact: { revision: 1, openItems: ["Sign the printed form."] },
+      });
+      expect(
+        await t.action(internal.easygov.forms.actions.readFilled, {
+          storageId: document!.storageId,
+        }),
+      ).toMatchObject({ texts: ["Ada Lovelace"] });
+      await send(t, caseId, { type: "artifact.accept" });
+      await send(t, caseId, { type: "referral.share" });
+      const firmId = await t.mutation(internal.easygov.firms.data.createFirm, {
+        userId: "test user",
+        name: "Tax Counsel",
+        coverage: [{ kind: "tax", jurisdiction: "us" }],
+      });
+      const [preview] = await t.query(api.easygov.firms.public.listPreviews, {
+        firmId,
+      });
+      const referralId = preview.id;
+      await t.mutation(api.easygov.firms.public.acceptReferral, {
+        firmId,
+        referralId,
+      });
+      await t.mutation(api.easygov.firms.public.requestInformation, {
+        firmId,
+        referralId,
+        question: "Have you signed the form?",
+      });
+      const handoff = await t.query(api.easygov.case.public.handoff, {
+        caseId,
+      });
+      await t.mutation(api.easygov.case.public.answerLawyer, {
+        caseId,
+        questionId: handoff!.questions[0].id,
+        answer: "Yes.",
+      });
+      model.replies.push(JSON.stringify({ openItems: ["Keep a copy."] }));
+      const revised = await send(t, caseId, { type: "artifact.reassess" });
+      expect(revised.artifact?.revision).toBe(2);
+      const handed = await t.query(api.easygov.firms.public.getPacket, {
+        firmId,
+        referralId,
+      });
+      expect(handed).toMatchObject({
+        artifact: {
+          revision: 1,
+          documents: [{ storageId: document!.storageId }],
+        },
+        questions: [{ answer: "Yes." }],
+      });
+      expect(handed.documentUrls?.[document!.storageId]).toBeTruthy();
+    } finally {
+      mock.mockRestore();
+    }
+  },
+);

@@ -1,3 +1,4 @@
+import { vArtifact } from "../case/schema";
 // What a law firm does: see the referrals it could take, without the
 // person's details; accept one or pass on it; and read the one it accepted.
 //
@@ -8,8 +9,10 @@ import type { Doc, Id } from "../../_generated/dataModel";
 import { mutation, query, type QueryCtx } from "../../_generated/server";
 import { getAuthUserId } from "../../utils";
 import { logCaseEvent } from "../case/data";
-import { covers } from "./schema";
+import { today } from "../dates";
+import { covers, vCoverage, vStage } from "./schema";
 
+const DAY_MS = 24 * 60 * 60 * 1000;
 /** At most this many previews: enough to choose from, and a bounded read. */
 const MAX_PREVIEWS = 50;
 /** How far one kind's open referrals are read to find that many. */
@@ -32,6 +35,12 @@ const vPreview = v.object({
   /** How many files there are in all, with any other evidence. */
   evidence: v.number(),
   priceCents: v.number(),
+  /** How far the case had got when it was shared. */
+  stage: vStage,
+  /** The amount at stake, in a band: never the figure. */
+  amountBand: v.optional(v.string()),
+  /** Days until the date to act by; negative once it has passed. */
+  daysLeft: v.optional(v.number()),
 });
 
 /** The firm, if the signed-in account acts for it. */
@@ -58,6 +67,27 @@ async function rejected(
     )
     .first();
 }
+
+/** The firms the signed-in account acts for. */
+export const listFirms = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      id: v.id("firms"),
+      name: v.string(),
+      coverage: v.array(vCoverage),
+    }),
+  ),
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new ConvexError("Sign in first.");
+    const rows = await ctx.db
+      .query("firms")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .take(MAX_PREVIEWS);
+    return rows.map(({ _id, name, coverage }) => ({ id: _id, name, coverage }));
+  },
+});
 
 /** The open referrals the firm covers and hasn't passed on, oldest first. */
 export const listPreviews = query({
@@ -92,6 +122,7 @@ export const listPreviews = query({
     const open = [...found.values()]
       .sort((a, b) => a._creationTime - b._creationTime)
       .slice(0, MAX_PREVIEWS);
+    const now = today(Date.now());
     const previews = [];
     for (const referral of open) {
       const pack = referral.packId
@@ -111,6 +142,14 @@ export const listPreviews = query({
         ].sort(),
         evidence: referral.evidence.length,
         priceCents: referral.priceCents,
+        stage: referral.stage ?? "accepted",
+        amountBand: referral.amountBand,
+        daysLeft:
+          referral.deadline === undefined
+            ? undefined
+            : Math.round(
+                (Date.parse(referral.deadline) - Date.parse(now)) / DAY_MS,
+              ),
       });
     }
     return previews;
@@ -183,8 +222,14 @@ export const listAccepted = query({
     v.object({
       id: v.id("referrals"),
       kind: v.string(),
+      /** What the person wants done, and the process they completed. */
+      goal: v.string(),
+      process: v.optional(v.string()),
+      jurisdiction: v.optional(v.string()),
       deadline: v.optional(v.string()),
       priceCents: v.number(),
+      /** Questions the firm asked that the person hasn't answered yet. */
+      unanswered: v.number(),
     }),
   ),
   handler: async (ctx, { firmId }) => {
@@ -194,12 +239,28 @@ export const listAccepted = query({
       .withIndex("by_firmId", (q) => q.eq("firmId", firmId))
       .order("desc")
       .take(MAX_PREVIEWS);
-    return rows.map(({ _id, kind, deadline, priceCents }) => ({
-      id: _id,
-      kind,
-      deadline,
-      priceCents,
-    }));
+    const accepted = [];
+    for (const row of rows) {
+      const pack =
+        row.process === undefined && row.packId
+          ? await ctx.db.get("processPacks", row.packId)
+          : null;
+      const asked = await ctx.db
+        .query("referralQuestions")
+        .withIndex("by_referralId", (q) => q.eq("referralId", row._id))
+        .take(MAX_PREVIEWS);
+      accepted.push({
+        id: row._id,
+        kind: row.kind,
+        goal: row.goal,
+        process: row.process ?? pack?.title,
+        jurisdiction: row.jurisdiction,
+        deadline: row.deadline,
+        priceCents: row.priceCents,
+        unanswered: asked.filter(({ answer }) => answer === undefined).length,
+      });
+    }
+    return accepted;
   },
 });
 
@@ -210,6 +271,13 @@ export const listAccepted = query({
 export const getPacket = query({
   args: { firmId: v.id("firms"), referralId: v.id("referrals") },
   returns: v.object({
+    questions: v.optional(
+      v.array(
+        v.object({ question: v.string(), answer: v.optional(v.string()) }),
+      ),
+    ),
+    artifact: v.optional(vArtifact),
+    documentUrls: v.optional(v.record(v.string(), v.string())),
     kind: v.string(),
     userId: v.string(),
     goal: v.string(),
@@ -243,16 +311,97 @@ export const getPacket = query({
       const url = await ctx.storage.getUrl(storageId);
       if (url) evidence.push({ ...file, url });
     }
+    const rows = await ctx.db
+      .query("referralQuestions")
+      .withIndex("by_referralId", (q) => q.eq("referralId", referralId))
+      .order("desc")
+      .take(50);
+    const questions = rows.map(({ question, answer }) => ({
+      question,
+      answer,
+    }));
+    const artifact = referral.artifact;
+    const documentUrls: Record<string, string> = {};
+    for (const doc of [
+      ...(artifact?.documents ?? []),
+      ...(artifact?.document ? [artifact.document] : []),
+    ]) {
+      const url = await ctx.storage.getUrl(doc.storageId);
+      if (url) documentUrls[doc.storageId] = url;
+    }
     const { kind, userId, goal, jurisdiction, deadline, answers } = referral;
     return {
       kind,
       userId,
       goal,
-      process: pack?.title,
+      ...(artifact && { artifact, documentUrls }),
+      ...(questions.length > 0 && { questions }),
+      process: referral.process ?? pack?.title,
       jurisdiction,
       deadline,
       answers,
       evidence,
     };
+  },
+});
+
+/**
+ * What the firm owes: one charge for each referral it accepted, newest
+ * first. A statement only: no payment is taken here.
+ */
+export const listCharges = query({
+  args: { firmId: v.id("firms") },
+  returns: v.object({
+    owedCents: v.number(),
+    charges: v.array(
+      v.object({
+        referralId: v.id("referrals"),
+        at: v.number(),
+        amountCents: v.number(),
+        status: v.literal("owed"),
+      }),
+    ),
+  }),
+  handler: async (ctx, { firmId }) => {
+    await authorizeFirm(ctx, firmId);
+    const rows = await ctx.db
+      .query("referralCharges")
+      .withIndex("by_firmId", (q) => q.eq("firmId", firmId))
+      .order("desc")
+      .take(200);
+    return {
+      owedCents: rows.reduce((sum, row) => sum + row.amountCents, 0),
+      charges: rows.map(
+        ({ referralId, _creationTime, amountCents, status }) => ({
+          referralId,
+          at: _creationTime,
+          amountCents,
+          status,
+        }),
+      ),
+    };
+  },
+});
+
+export const requestInformation = mutation({
+  args: {
+    firmId: v.id("firms"),
+    referralId: v.id("referrals"),
+    question: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, { firmId, referralId, question }) => {
+    await authorizeFirm(ctx, firmId);
+    const referral = await ctx.db.get("referrals", referralId);
+    if (referral?.status !== "accepted" || referral.firmId !== firmId)
+      throw new ConvexError("Referral not found.");
+    if (!question.trim() || question.length > 3000)
+      throw new ConvexError("Enter a question of up to 3,000 characters.");
+    await ctx.db.insert("referralQuestions", {
+      referralId,
+      caseId: referral.caseId,
+      question: question.trim(),
+    });
+    return null;
   },
 });

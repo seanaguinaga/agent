@@ -166,6 +166,7 @@ export const streamOverHttp = httpAction(async (ctx, request) => {
     threadId?: string;
     prompt: string;
   };
+  if (body.threadId) await authorizeThreadAccess(ctx, body.threadId);
   const threadId = body.threadId ?? (await createThread(ctx, components.agent));
   const result = await storyAgent.streamText(ctx, { threadId }, body);
   const response = createTextStreamResponse({

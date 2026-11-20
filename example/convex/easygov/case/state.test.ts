@@ -194,3 +194,12 @@ describe("phase", () => {
     expect(phase(edited)).toBe("filling");
   });
 });
+
+test("a route change keeps common inputs and replaces route-specific form and letter inputs",async()=>{
+  const {requiredInputs,conflictingSuggestions,suggestions}=await import("./state");
+  const c=withPack({selection:{...pack,status:"accepted",definition:{inputs:["method"],packetForms:[{code:"X",sourceUrl:"",inputs:["caseNumber"],when:{key:"method",equals:"mail"}}],letterRoute:{key:"method",equals:"letter",inputs:["letterDate"]}}},answers:{method:"mail"},profileSuggestions:{caseNumber:"A"},chatSuggestions:{goalVersion:1,answers:{caseNumber:"B"}}});
+  expect(requiredInputs(c)).toEqual(["method","caseNumber"]);
+  expect(conflictingSuggestions(c)).toEqual({caseNumber:["A","B"]});
+  expect(suggestions(c)).toEqual({});
+  expect(requiredInputs({...c,answers:{method:"letter"}})).toEqual(["method","letterDate"]);
+});

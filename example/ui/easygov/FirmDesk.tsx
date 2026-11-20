@@ -4,7 +4,7 @@ import { useMutation, useQuery } from "convex/react";
 import { useState } from "react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
-import { Result } from "../components/Example";
+import { PacketContents } from "./Packet";
 import { useAct } from "./session";
 import { Chip, Refusal } from "./Workbench";
 
@@ -18,12 +18,73 @@ function Packet({
   firmId: Id<"firms">;
   referralId: Id<"referrals">;
 }) {
-  return <Result value={useQuery(firmApi.getPacket, { firmId, referralId })} />;
+  const packet = useQuery(firmApi.getPacket, { firmId, referralId });
+  const request = useMutation(firmApi.requestInformation);
+  const [question, setQuestion] = useState("");
+  const act = useAct();
+  if (!packet) return <p>Loading packet…</p>;
+  return (
+    <div className="space-y-3">
+      <h3>{packet.process ?? packet.kind}</h3>
+      <p>{packet.goal}</p>
+      {packet.deadline && <p>Deadline · {packet.deadline}</p>}
+      {packet.artifact && (
+        <PacketContents
+          artifact={packet.artifact}
+          urls={packet.documentUrls ?? {}}
+          evidence={packet.evidence}
+        />
+      )}
+      <dl>
+        {Object.entries(packet.answers).map(([key, value]) => (
+          <div key={key}>
+            <dt>{key}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {packet.evidence.map((file) => (
+        <p key={file.url}>
+          <a className="link-text" href={file.url}>
+            {file.name}
+          </a>{" "}
+          {file.summary}
+        </p>
+      ))}
+      {packet.questions?.map((item, i) => (
+        <p key={i}>
+          {item.question} · {item.answer ?? "Awaiting reply"}
+        </p>
+      ))}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void act.run(async () => {
+            await request({ firmId, referralId, question });
+            setQuestion("");
+          });
+        }}
+      >
+        <textarea
+          className="input-field"
+          required
+          aria-label="Question for the person"
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+        />
+        <button className="demo-button" disabled={act.pending}>
+          Request information
+        </button>
+      </form>
+      <Refusal error={act.error} />
+    </div>
+  );
 }
 
 function Desk({ firmId }: { firmId: Id<"firms"> }) {
   const previews = useQuery(firmApi.listPreviews, { firmId });
   const accepted = useQuery(firmApi.listAccepted, { firmId });
+  const statement = useQuery(firmApi.listCharges, { firmId });
   const accept = useMutation(firmApi.acceptReferral);
   const reject = useMutation(firmApi.rejectReferral);
   const [reading, setReading] = useState<Id<"referrals">>();
@@ -57,6 +118,19 @@ function Desk({ firmId }: { firmId: Id<"firms"> }) {
             {preview.attached.length > 0 && ` (${preview.attached.join(", ")})`}
             {preview.deadline && ` · Act by ${preview.deadline}`}
           </p>
+          <p className="flex flex-wrap gap-2">
+            <Chip tone="blue">shared at: {preview.stage}</Chip>
+            {preview.amountBand && (
+              <Chip tone="green">at stake: {preview.amountBand}</Chip>
+            )}
+            {preview.daysLeft !== undefined && (
+              <Chip tone={preview.daysLeft < 30 ? "blue" : "green"}>
+                {preview.daysLeft < 0
+                  ? "deadline passed"
+                  : `${preview.daysLeft} days left`}
+              </Chip>
+            )}
+          </p>
           <div className="flex gap-2">
             <button
               className="demo-button"
@@ -82,6 +156,7 @@ function Desk({ firmId }: { firmId: Id<"firms"> }) {
       <Refusal error={act.error} />
       <h3 className="text-sm font-semibold">
         Accepted ({accepted?.length ?? "…"})
+        {statement && ` · owes ${dollars(statement.owedCents)} in all`}
       </h3>
       {accepted?.map((row) => (
         <div key={row.id} className="rounded-lg border p-3 text-sm">
@@ -90,7 +165,11 @@ function Desk({ firmId }: { firmId: Id<"firms"> }) {
             onClick={() => setReading(reading === row.id ? undefined : row.id)}
           >
             <Chip tone="green">{row.kind}</Chip>
+            <span>{row.process ?? row.goal}</span>
             {row.deadline && <span>Act by {row.deadline}</span>}
+            {row.unanswered > 0 && (
+              <Chip tone="blue">{row.unanswered} awaiting reply</Chip>
+            )}
             <span className="ml-auto">owes {dollars(row.priceCents)}</span>
             <span className="link-text">
               {reading === row.id ? "Hide" : "Read the packet"}
@@ -104,7 +183,7 @@ function Desk({ firmId }: { firmId: Id<"firms"> }) {
 }
 
 export function FirmDesk() {
-  const firms = useQuery(api.easygov.dev.firms, {});
+  const firms = useQuery(firmApi.listFirms, {});
   const [picked, setPicked] = useState<Id<"firms">>();
   const firm = firms?.find((row) => row.id === picked) ?? firms?.[0];
   return (

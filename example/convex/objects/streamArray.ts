@@ -12,6 +12,7 @@ import { getAuthUserId } from "../utils.js";
 export const streamArray = action({
   args: { threadId: v.string() },
   handler: async (ctx, { threadId }) => {
+    await authorizeThreadAccess(ctx, threadId);
     const response = streamObject({
       model: defaultConfig.languageModel,
       prompt: "Make a list of items needed to host a birthday party",

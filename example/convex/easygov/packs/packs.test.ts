@@ -74,9 +74,14 @@ const sources = [
   "https://www.courts.ca.gov/garnishment",
   "https://www.courts.ca.gov/forms/wg-006",
 ];
-const notes =
-  `File a claim of exemption (${sources[0]}). ` +
-  `Use form WG-006: \`${sources[1]}\`. See also ${sources[0]}.`;
+const notes = JSON.stringify({
+  findings:
+    `File a claim of exemption (${sources[0]}). ` +
+    `Use form WG-006: \`${sources[1]}\`. See also ${sources[0]}.`,
+  methods: [],
+  forms: [],
+  sources,
+});
 
 async function owner(t: T, caseId: Parameters<typeof read>[1]) {
   return (await read(t, caseId)).userId;

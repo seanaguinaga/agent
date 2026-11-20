@@ -9,11 +9,14 @@ test("seeding twice leaves one of each fixture pack and one firm", async () => {
   const second = await t.mutation(api.easygov.dev.seed, {});
   expect(second).toEqual(first);
   expect(Object.keys(first.packs).sort()).toEqual([
+    "eeocCharge",
     "irs8822",
     "ssaAppeal",
+    "uiAppealCa",
+    "vaDecisionReview",
     "wageClaim",
   ]);
-  expect(await t.query(api.easygov.dev.packs, {})).toHaveLength(3);
+  expect(await t.query(api.easygov.dev.packs, {})).toHaveLength(6);
   expect(await t.query(api.easygov.dev.firms, {})).toHaveLength(1);
   const found = await t.query(api.easygov.dev.searchPacks, {
     jurisdiction: "us/ca/alameda",

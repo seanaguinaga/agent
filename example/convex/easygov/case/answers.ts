@@ -55,6 +55,17 @@ export function passes(signal: Signal, answers: Answers, on: string): boolean {
   return daysAgo >= 0 && daysAgo <= signal.withinDays;
 }
 
+/** A pack's referral check: `when` and each of `orWhen`. */
+export function signalsOf(referral: {
+  when?: Signal;
+  orWhen?: Signal[];
+}): Signal[] {
+  return [
+    ...(referral.when ? [referral.when] : []),
+    ...(referral.orWhen ?? []),
+  ];
+}
+
 /** What an answer to `key` must look like, for the checks that read it. */
 export function answerProblem(
   value: string,

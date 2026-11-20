@@ -1,14 +1,25 @@
 // The one judgment call a form needs a model for: what each place on it is
 // asking, in terms of the profile's readings and the case's own questions.
 // It's a draft. A person reviews it before it fills anything.
+import { requireOperator } from "../operators";
 import { generateText, Output } from "ai";
 import { ConvexError, v } from "convex/values";
 import { z } from "zod/v4";
-import { api } from "../../_generated/api";
-import { action } from "../../_generated/server";
+import type { Id } from "../../_generated/dataModel";
+import { mappingQuestions, type FormQuestion } from "./mapping";
+import { vProcessPackQuestions } from "../packs/schema";
+import { api, internal } from "../../_generated/api";
+import {
+  action,
+  internalAction,
+  type ActionCtx,
+} from "../../_generated/server";
+import { getAuthUserId } from "../../utils";
+import { admitCall, chargeUsage } from "../limits";
 import { languageModel } from "../../modelsForDemo";
 import { READINGS, isReading } from "../profile/vocabulary";
 import { isInputKey } from "../packs/schema";
+import { clip } from "../text";
 import type { Mapping } from "./schema";
 
 /** What the model is shown of a target: where it is doesn't matter here. */
@@ -28,11 +39,14 @@ const OPTION = /^[a-z][a-zA-Z0-9]{0,31}$/;
  * key. A target the model leaves out stays blank.
  */
 export async function proposeMapping(
+  ctx: ActionCtx,
+  /** Who the call is charged to, besides everyone. */
+  userId: string | undefined,
   title: string,
   targets: TargetBrief[],
 ): Promise<Mapping> {
   if (!targets.length) return [];
-  const { output } = await generateText({
+  const { output, usage } = await generateText({
     model: languageModel,
     output: Output.object({
       schema: z.object({
@@ -89,6 +103,7 @@ export async function proposeMapping(
       "</places>",
     ].join("\n"),
   });
+  await chargeUsage(ctx, userId, usage.totalTokens);
   const briefs = new Map(targets.map((target) => [target.id, target]));
   const seen = new Set<string>();
   // Boxes the PDF groups are one question, whatever the model called them.
@@ -100,7 +115,7 @@ export async function proposeMapping(
     if (!brief || seen.has(target) || use === "blank") continue;
     seen.add(target);
     if (use === "signature" || use === "confidential") {
-      const note = entry.note.trim().slice(0, 160);
+      const note = clip(entry.note, 160);
       if (note) mapping.push({ target, leave: { why: use, note } });
       continue;
     }
@@ -108,7 +123,7 @@ export async function proposeMapping(
     if (!isReading(key) && !isInputKey(key)) continue;
     const question =
       !isReading(key) && entry.question.trim()
-        ? entry.question.trim().slice(0, 240)
+        ? clip(entry.question, 240)
         : undefined;
     if (brief.kind !== "check") {
       mapping.push({ target, input: key, question });
@@ -146,11 +161,16 @@ export const draftMapping = action({
   args: { editionId: v.id("formEditions") },
   returns: v.number(),
   handler: async (ctx, { editionId }): Promise<number> => {
+    await requireOperator(ctx);
     const found = await ctx.runQuery(api.easygov.forms.data.getEdition, {
       editionId,
     });
     if (!found) throw new ConvexError("Edition not found.");
+    const userId = await getAuthUserId(ctx);
+    await admitCall(ctx, userId);
     const mapping = await proposeMapping(
+      ctx,
+      userId,
       `${found.code} ${found.title}`,
       found.targets.map(({ id, kind, label, field, option }) => ({
         id,
@@ -166,5 +186,84 @@ export const draftMapping = action({
       reviewed: false,
     });
     return mapping.length;
+  },
+});
+
+/** Pin this case's interpretation of the official bytes without changing the reviewed library mapping. */
+export const compileSource = internalAction({
+  args: { code: v.string(), sourceUrl: v.string(), jurisdiction: v.string() },
+  returns: v.object({
+    blueprintId: v.id("formBlueprints"),
+    questions: vProcessPackQuestions,
+  }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    blueprintId: Id<"formBlueprints">;
+    questions: FormQuestion[];
+  }> => {
+    const formId = await ctx.runMutation(
+      internal.easygov.forms.data.registerSource,
+      args,
+    );
+    const { editionId } = await ctx.runAction(
+      internal.easygov.forms.actions.fetchSource,
+      { formId },
+    );
+    const edition = await ctx.runQuery(
+      internal.easygov.forms.data.readEdition,
+      {
+        editionId,
+      },
+    );
+    if (!edition?.targets.length)
+      throw new Error("No writable places were found on the form.");
+    const { targets } = edition;
+    const latest = await ctx.runQuery(
+      internal.easygov.forms.data.latestBlueprint,
+      { editionId },
+    );
+    const cached =
+      latest &&
+      JSON.stringify(latest.targets) === JSON.stringify(targets) &&
+      (edition.mappingStatus !== "reviewed" ||
+        JSON.stringify(latest.mapping) === JSON.stringify(edition.mapping))
+        ? latest
+        : undefined;
+    const mapping =
+      cached?.mapping ??
+      (edition.mappingStatus === "reviewed"
+        ? edition.mapping
+        : await proposeMapping(
+            ctx,
+            // Part of a case's work: admitted there, charged to everyone.
+            undefined,
+            args.code,
+            targets.map(({ id, kind, label, field, option }) => ({
+              id,
+              kind,
+              label,
+              group: option !== undefined ? field : undefined,
+            })),
+          ));
+    if (!mapping.length) throw new Error("The form needs manual completion.");
+    const blueprintId =
+      cached?.id ??
+      (await ctx.runMutation(internal.easygov.forms.data.saveBlueprint, {
+        editionId,
+        targets,
+        mapping,
+      }));
+    const labels = new Map(targets.map((t) => [t.id, t.label]));
+    return {
+      blueprintId,
+      questions: mappingQuestions(
+        mapping,
+        Object.fromEntries(targets.map((t) => [t.id, t.kind])),
+        (id) => labels.get(id) ?? id,
+        (key) => (isReading(key) ? READINGS[key].label : undefined),
+      ),
+    };
   },
 });

@@ -81,3 +81,30 @@ export async function obtain(
   }
   return { attempts };
 }
+
+const LANGUAGE = /[-_](?:SP|SPA|SPAN|SPANISH|ES|ESP)(?=[-_.])/i;
+
+/**
+ * The addresses to try for a form, likeliest first. An authority often links
+ * only a translation of a form, and publishes the English one beside it
+ * under the same name without the language marker: "FORM-10-SP.pdf" beside
+ * "FORM-10.pdf", or "/es/forms/" beside "/en/forms/". So an address that
+ * carries a marker is tried without it first, then as it was given.
+ */
+export function leadsFrom(url: string): string[] {
+  const cut = url.search(/[?#]/);
+  const [path, rest] =
+    cut < 0 ? [url, ""] : [url.slice(0, cut), url.slice(cut)];
+  const slash = path.lastIndexOf("/") + 1;
+  const [folder, file] = [path.slice(0, slash), path.slice(slash)];
+  const inSpanish = /\/es\//i;
+  const variants = [
+    ...(LANGUAGE.test(file) ? [folder + file.replace(LANGUAGE, "")] : []),
+    ...(inSpanish.test(folder)
+      ? [folder.replace(inSpanish, "/en/"), folder.replace(inSpanish, "/")].map(
+          (english) => english + file,
+        )
+      : []),
+  ].map((variant) => variant + rest);
+  return [...new Set([...variants, url])];
+}

@@ -3,7 +3,9 @@
 import { generateText, Output } from "ai";
 import { v } from "convex/values";
 import { z } from "zod/v4";
-import { action } from "../../_generated/server";
+import { action, type ActionCtx } from "../../_generated/server";
+import { getAuthUserId } from "../../utils";
+import { admitCall, chargeUsage } from "../limits";
 import { languageModel } from "../../modelsForDemo";
 import { checkFact, vAddress, type Address } from "./vocabulary";
 
@@ -12,9 +14,14 @@ import { checkFact, vAddress, type Address } from "./vocabulary";
  * is filled in that the text doesn't say: a missing ZIP stays missing, and
  * the person completes it. Code then checks the state code and ZIP's shape.
  */
-export async function addressFromText(text: string): Promise<Address | null> {
+export async function addressFromText(
+  ctx: ActionCtx,
+  /** Who the call is charged to, besides everyone. */
+  userId: string | undefined,
+  text: string,
+): Promise<Address | null> {
   if (!text.trim()) return null;
-  const { output } = await generateText({
+  const { output, usage } = await generateText({
     model: languageModel,
     output: Output.object({
       schema: z.object({
@@ -36,6 +43,7 @@ export async function addressFromText(text: string): Promise<Address | null> {
       `<address>${text.slice(0, 500)}</address>`,
     ].join("\n"),
   });
+  await chargeUsage(ctx, userId, usage.totalTokens);
   if (!output.isAddress) return null;
   const { isAddress: _, ...parts } = output;
   const address: Address = {
@@ -57,6 +65,9 @@ export async function addressFromText(text: string): Promise<Address | null> {
 export const parseAddress = action({
   args: { text: v.string() },
   returns: v.union(vAddress, v.null()),
-  handler: async (_ctx, { text }): Promise<Address | null> =>
-    await addressFromText(text),
+  handler: async (ctx, { text }): Promise<Address | null> => {
+    const userId = await getAuthUserId(ctx);
+    await admitCall(ctx, userId);
+    return await addressFromText(ctx, userId, text);
+  },
 });

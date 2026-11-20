@@ -9,6 +9,7 @@
 //
 // Like `dev.ts`, these are public and check nothing: they're for the test
 // pages. Don't ship this file.
+import { requireOperator } from "../operators";
 import { createThread, saveMessage } from "@convex-dev/agent";
 import { generateText, Output } from "ai";
 import { ConvexError, v, type Infer } from "convex/values";
@@ -38,6 +39,8 @@ import {
   research,
   tailorChecklist,
 } from "../case/agents";
+import { bareResearch, notesOf } from "../case/research";
+import { chargeUsage } from "../limits";
 import { proposeMapping } from "../forms/agents";
 import { normalizeFormId, parseJurisdiction } from "../packs/schema";
 import { addressFromText } from "../profile/agents";
@@ -92,6 +95,7 @@ export const start = mutation({
     ctx,
     { note, slices = [...SLICES], trials = DEFAULT_TRIALS },
   ) => {
+    await requireOperator(ctx);
     if (!Number.isInteger(trials) || trials < 1 || trials > 10) {
       throw new ConvexError("trials must be a whole number from 1 to 10");
     }
@@ -248,7 +252,7 @@ const run: Record<
 
   async research(ctx, caseId, threadId) {
     const { subject, domain, facts } = find(cases.research, caseId);
-    const notes = await research(ctx, threadId, subject);
+    const notes = notesOf(await research(ctx, threadId, subject));
     return { ...gradeResearch({ domain, facts }, notes), output: notes };
   },
 
@@ -264,12 +268,18 @@ const run: Record<
           notes: saved.notes,
         }
       : find(cases.draft, caseId);
-    const draft = await draftProcess(ctx, threadId, subject, notes);
+    // A frozen case is only its notes: no ways of filing or forms as data.
+    const draft = await draftProcess(
+      ctx,
+      threadId,
+      subject,
+      notes ? bareResearch(notes) : undefined,
+    );
     const graded = gradeDraft(draft, notes, expected);
     const questions = (draft.inputQuestions ?? []).map((q) => q.question);
     // The one check code can't make: do two questions ask the same thing?
     if (questions.length > 1) {
-      const judged = await judgeQuestions(subject.process, questions);
+      const judged = await judgeQuestions(ctx, subject.process, questions);
       graded.checks.distinctQuestions = judged.verdict === "pass";
       if (judged.verdict !== "pass") {
         graded.detail = [graded.detail, `judge: ${judged.reasoning}`]
@@ -292,15 +302,15 @@ const run: Record<
     return { ...gradeTailor(expected, kept), output: { kept } };
   },
 
-  async address(_ctx, caseId) {
+  async address(ctx, caseId) {
     const { text, ...expected } = find(cases.address, caseId);
-    const got = await addressFromText(text);
+    const got = await addressFromText(ctx, undefined, text);
     return { ...gradeAddress(expected, got), output: got };
   },
 
-  async mapping(_ctx, caseId) {
+  async mapping(ctx, caseId) {
     const { title, targets, expect } = find(cases.mapping, caseId);
-    const drafted = await proposeMapping(title, targets);
+    const drafted = await proposeMapping(ctx, undefined, title, targets);
     return { ...gradeMapping(expect, drafted), output: drafted };
   },
 
@@ -400,6 +410,8 @@ async function startCase(ctx: ActionCtx, slice: Slice, caseId: string) {
     api.easygov.case.public.createCase,
     { packId, source: `eval:${slice}` },
   );
+  // An eval is the operator's own spend: its case skips the rate limits.
+  await ctx.runMutation(internal.easygov.evals.runner.unmeter, { caseId: id });
   return id;
 }
 
@@ -549,6 +561,16 @@ export const caseStarted = internalMutation({
   },
 });
 
+/** Marks an eval's case as exempt from the rate limits. Internal only. */
+export const unmeter = internalMutation({
+  args: { caseId: v.id("cases") },
+  returns: v.null(),
+  handler: async (ctx, { caseId }) => {
+    await ctx.db.patch("cases", caseId, { unmetered: true });
+    return null;
+  },
+});
+
 export const goalSent = internalMutation({
   args: { trialId: v.id("easygovEvalTrials") },
   returns: v.null(),
@@ -567,10 +589,11 @@ export const goalSent = internalMutation({
 
 /** Asks a model whether a draft's questions are fair to put to the person. */
 async function judgeQuestions(
+  ctx: ActionCtx,
   process: string,
   questions: string[],
 ): Promise<{ verdict: "pass" | "fail"; reasoning: string }> {
-  const { output } = await generateText({
+  const { output, usage } = await generateText({
     model: languageModel,
     output: Output.object({
       schema: z.object({
@@ -589,6 +612,7 @@ async function judgeQuestions(
       `<questions>${JSON.stringify(questions)}</questions>`,
     ].join("\n"),
   });
+  await chargeUsage(ctx, undefined, usage.totalTokens);
   return output;
 }
 
@@ -601,8 +625,8 @@ export const checkJudge = internalAction({
     let judgeCheck;
     try {
       const [goodVerdict, badVerdict] = await Promise.all([
-        judgeQuestions(process, good),
-        judgeQuestions(process, bad),
+        judgeQuestions(ctx, process, good),
+        judgeQuestions(ctx, process, bad),
       ]);
       judgeCheck = {
         goodPassed: goodVerdict.verdict === "pass",
@@ -768,6 +792,7 @@ export const runs = query({
     }),
   ),
   handler: async (ctx, { limit = 10 }) => {
+    await requireOperator(ctx);
     const found = await ctx.db
       .query("easygovEvalRuns")
       .order("desc")
@@ -824,6 +849,7 @@ export const trials = query({
   args: { runId: v.id("easygovEvalRuns"), failedOnly: v.optional(v.boolean()) },
   returns: v.array(vTrialView),
   handler: async (ctx, { runId, failedOnly }) => {
+    await requireOperator(ctx);
     const found = await ctx.db
       .query("easygovEvalTrials")
       .withIndex("by_runId", (q) => q.eq("runId", runId))
@@ -851,6 +877,7 @@ export const saveDraftCase = mutation({
   args: { caseId: v.id("cases"), name: v.optional(v.string()) },
   returns: v.id("easygovEvalCases"),
   handler: async (ctx, { caseId, name }) => {
+    await requireOperator(ctx);
     const found = await ctx.db.get("cases", caseId);
     const selection = chosen(found?.selection);
     if (!found || selection?.kind !== "draft") {
@@ -879,6 +906,7 @@ export const savedCases = query({
     }),
   ),
   handler: async (ctx) => {
+    await requireOperator(ctx);
     const rows = await ctx.db.query("easygovEvalCases").order("desc").take(100);
     return rows.map(({ _id, name, jurisdiction, notes }) => ({
       id: _id,
@@ -893,6 +921,7 @@ export const removeSavedCase = mutation({
   args: { id: v.id("easygovEvalCases") },
   returns: v.null(),
   handler: async (ctx, { id }) => {
+    await requireOperator(ctx);
     await ctx.db.delete("easygovEvalCases", id);
     return null;
   },

@@ -7,7 +7,7 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "../../_generated/server";
 import { caller } from "../case/public";
-import { pinnedPack } from "../case/state";
+import { pinnedPack, requiredInputs } from "../case/state";
 import { currentFacts, isStale, saveFact } from "./data";
 import {
   FACT_KEYS,
@@ -50,6 +50,7 @@ export const getProfile = query({
         fact: vFactKey,
         label: v.string(),
         text: v.string(),
+        source: v.optional(v.string()),
       }),
     ),
   }),
@@ -87,6 +88,7 @@ export const getProfile = query({
                 fact: row.fact,
                 label: FACTS[row.fact].label,
                 text: row.text,
+                source: row.source,
               },
             ]
           : [],
@@ -141,7 +143,7 @@ export const askAhead = query({
     const found = caseId ? await ctx.db.get("cases", caseId) : null;
     const pack = found?.userId === userId ? pinnedPack(found) : undefined;
     if (pack) {
-      return factsRead(pack.inputs)
+      return factsRead(requiredInputs(found!) ?? [])
         .filter(unknown)
         .map((fact) => ({
           fact,

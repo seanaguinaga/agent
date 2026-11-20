@@ -4,6 +4,7 @@ import { getAuthUserId } from "../utils";
 import { query, QueryCtx } from "../_generated/server";
 import { fetchContextMessages } from "@convex-dev/agent";
 import { components } from "../_generated/api";
+import { authorizeThreadAccess } from "../threads";
 import { rateLimiter } from "./rateLimiting";
 import { DataModel } from "../_generated/dataModel";
 
@@ -18,6 +19,7 @@ export const { getRateLimit, getServerTime } = rateLimiter.hookAPI<DataModel>(
 export const getPreviousUsage = query({
   args: { threadId: v.optional(v.string()) },
   handler: async (ctx, args) => {
+    if (args.threadId) await authorizeThreadAccess(ctx, args.threadId);
     // Get usage not accounting for the new question. Do that client-side.
     return estimateTokens(ctx, args.threadId, "");
   },

@@ -1,8 +1,9 @@
 // What a person can send to a case, besides chat messages. Each event is
 // taken only while the case waits for it (`waitingFor` in `state.ts`), and
-// its handler returns what to write. The workflow then looks again.
+// its handler returns what to write. `advance` then starts what comes next.
 import { ConvexError } from "convex/values";
 import type { MutationCtx } from "../../_generated/server";
+import { searchTextOf } from "../packs/data";
 import { DEFAULT_PRICE_CENTS } from "../firms/schema";
 import { checkChoice } from "../forms/mapping";
 import { currentFacts, keepAnswer } from "../profile/data";
@@ -19,6 +20,7 @@ import {
   type WaitingFor,
 } from "./schema";
 import {
+  amountBandOf,
   answerKind,
   caseEvidence,
   currentChoice,
@@ -27,8 +29,11 @@ import {
   isGuest,
   newGoal,
   packReferral,
+  lawyerDoor,
   pinnedPack,
+  referralKind,
   requiredInputs,
+  stageOf,
   suggestions,
   waitingFor,
   type Case,
@@ -59,7 +64,18 @@ const EVENTS: {
   },
   "pack.accept": {
     during: ["pack"],
-    handle: (_ctx, c) => accept(c),
+    handle: async (ctx, c) => {
+      const draft = draftOf(currentChoice(c));
+      if (draft?.packetForms?.some((form) => form.blueprintId)) {
+        await ctx.db.insert("processPacks", {
+          ...draft,
+          ownerId: c.userId,
+          status: "current",
+          searchText: searchTextOf(draft),
+        });
+      }
+      return accept(c);
+    },
   },
   "pack.reject": {
     during: ["pack"],
@@ -150,19 +166,35 @@ const EVENTS: {
   },
   // Accepting also settles whether a referral is offered: the pack's check
   // is read once, today, so the offer doesn't come and go with the date.
+  "artifact.prepare": {
+    during: ["answers"],
+    handle: (_ctx, c) => ({ partialFingerprint: fingerprintOf(c) }),
+  },
+  "artifact.reassess": {
+    during: ["review"],
+    handle: () => ({ reassess: true }),
+  },
   "artifact.accept": {
     during: ["review"],
     handle: (_ctx, c) => {
       const kind = packReferral(c, today(Date.now()));
       return {
         accepted: { fingerprint: fingerprintOf(c) },
-        referral: kind ? { kind, status: "offered" } : undefined,
+        builds: undefined,
+        referral:
+          settled(c) ?? (kind ? { kind, status: "offered" } : undefined),
       };
     },
   },
   "referral.share": {
     during: ["consent"],
-    handle: (ctx, c) => share(ctx, c),
+    handle: (ctx, c) => share(ctx, c, c.referral!.kind),
+  },
+  // Asking is the yes: the case goes as far as it has got, and the person
+  // carries on with it. A firm sees how far that is before it accepts.
+  "referral.request": {
+    during: ["pack", "answers", "review"],
+    handle: (ctx, c) => request(ctx, c),
   },
   "referral.reject": {
     during: ["consent"],
@@ -198,19 +230,27 @@ export async function take(
  * case's `seq` makes sure they agree to the case they saw. A guest has no account for a lawyer to reach, so they
  * claim the case first.
  */
-async function share(ctx: MutationCtx, c: Case): Promise<Partial<Case>> {
+async function share(
+  ctx: MutationCtx,
+  c: Case,
+  kind: string,
+): Promise<Partial<Case>> {
   if (isGuest(c)) {
     throw new ConvexError("Create an account before sharing your case.");
   }
-  const { kind } = c.referral!;
-  const pinned = pinnedPack(c);
   const selection = currentChoice(c);
+  // Accepted, or still only proposed: an early request has no pinned pack.
+  const pinned = pinnedPack(c) ?? definitionOf(selection);
+  // Asked for once the case is done, what came back goes too: it's why.
+  const files = c.status === "done" ? c.evidence : caseEvidence(c);
   const pack = pinned?.id && (await ctx.db.get("processPacks", pinned.id));
   await ctx.db.insert("referrals", {
     caseId: c._id,
     userId: c.userId,
     kind,
     status: "open",
+    stage: stageOf(c),
+    amountBand: amountBandOf(c),
     jurisdiction:
       (pack || draftOf(selection))?.jurisdiction ??
       (selection?.kind === "referral" ? selection.jurisdiction : undefined),
@@ -218,8 +258,10 @@ async function share(ctx: MutationCtx, c: Case): Promise<Partial<Case>> {
     source: c.source,
     goal: c.goal!.text,
     packId: pinned?.id,
+    process: pack?.title ?? draftOf(selection)?.title,
+    artifact: c.artifact,
     answers: c.answers,
-    evidence: caseEvidence(c).map(({ read, ...file }) => ({
+    evidence: files.map(({ read, followUp: _followUp, ...file }) => ({
       ...file,
       ...(read.status === "read" && { summary: read.summary }),
     })),
@@ -228,6 +270,27 @@ async function share(ctx: MutationCtx, c: Case): Promise<Partial<Case>> {
   });
   await logCaseEvent(ctx, c._id, "referral.shared", kind);
   return { referral: { kind, status: "shared" } };
+}
+
+/**
+ * A referral that outlasts a new proposal or a rebuilt document: one that
+ * was shared, or that the person took back.
+ */
+function settled(c: Case): Case["referral"] {
+  const status = c.referral?.status;
+  return status === "shared" || status === "withdrawn" ? c.referral : undefined;
+}
+
+/** Shares the case with a lawyer because the person asked, wherever it is. */
+export async function request(
+  ctx: MutationCtx,
+  c: Case,
+): Promise<Partial<Case>> {
+  if (!lawyerDoor(c).available) {
+    throw new ConvexError("This case is already with a lawyer, or offered.");
+  }
+  if (!c.goal) throw new ConvexError("Say what you want to get done first.");
+  return await share(ctx, c, referralKind(c));
 }
 
 /**
@@ -255,10 +318,15 @@ function accept(c: Case): Partial<Case> {
     pendingMessageId: undefined,
     // A proposal follows a stated goal, so there's a conversation to read
     // for answers before asking for them.
-    chatSuggestions: definitionOf(selection)?.inputs.length
-      ? { goalVersion }
-      : undefined,
+    chatSuggestions:
+      definitionOf(selection)?.inputs.length ||
+      definitionOf(selection)?.packetForms?.length
+        ? { goalVersion }
+        : undefined,
     // Legal advice has no pack: the referral is all there is to agree to.
-    referral: referral ? { kind: "advice", status: "offered" } : undefined,
+    // One already shared from the proposal stays shared.
+    referral:
+      settled(c) ??
+      (referral ? { kind: "advice", status: "offered" } : undefined),
   };
 }

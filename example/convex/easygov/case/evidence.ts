@@ -13,10 +13,12 @@ import {
   type MutationCtx,
 } from "../../_generated/server";
 import { readableAs, readDocument, type Question } from "./agents";
+import { offerFact } from "../profile/data";
+import { vFoundFacts } from "./schema";
 import { attachedLine, logCaseEvent, openQuestions, writeCase } from "./data";
 import { vEvidenceRead, type Evidence } from "./schema";
 import { pinnedPack, waitingFor, type Case } from "./state";
-import { nudgeIfMoved } from "./workflow";
+import { advance } from "./workflow";
 
 /** Enough for a thick case, and a bounded case row. */
 export const MAX_EVIDENCE = 30;
@@ -223,20 +225,24 @@ export const read = internalAction({
     if (!input) return null;
     const { threadId, name, mediaType, questions } = input;
     let found: Infer<typeof vEvidenceRead>;
+    let facts: Infer<typeof vFoundFacts> | undefined;
     try {
       const blob = await ctx.storage.get(storageId);
       if (!blob) throw new Error("The file is gone");
       const bytes = await blob.arrayBuffer();
-      const { summary, answers } = await readDocument(
+      const parsed = await readDocument(
         ctx,
         threadId,
         { name, mediaType, bytes },
         questions,
       );
+      const { summary, answers, adverse } = parsed;
+      facts = parsed.facts;
       found = {
         status: "read",
         summary,
         ...(Object.keys(answers).length > 0 && { answers }),
+        ...(adverse && { adverse }),
       };
     } catch (error) {
       console.error("easygov file read failed", error);
@@ -246,6 +252,7 @@ export const read = internalAction({
       caseId,
       storageId,
       read: found,
+      facts,
     });
     return null;
   },
@@ -261,13 +268,16 @@ export const recordRead = internalMutation({
     caseId: v.id("cases"),
     storageId: v.id("_storage"),
     read: vEvidenceRead,
+    facts: v.optional(vFoundFacts),
   },
   returns: v.null(),
-  handler: async (ctx, { caseId, storageId, read }) => {
+  handler: async (ctx, { caseId, storageId, read, facts }) => {
     const found = await ctx.db.get("cases", caseId);
     const file = found?.evidence.find((file) => file.storageId === storageId);
     // Removed meanwhile, or already read: nothing to keep.
     if (!found || file?.read.status !== "reading") return null;
+    for (const entry of facts ?? [])
+      await offerFact(ctx, found, entry.fact, entry.text, file.name);
     const now = { ...file, read };
     const patch: Partial<Case> = {
       evidence: found.evidence.map((other) => (other === file ? now : other)),
@@ -282,7 +292,7 @@ export const recordRead = internalMutation({
       patch.pendingMessageId = messageId;
     }
     await writeCase(ctx, caseId, patch);
-    await nudgeIfMoved(ctx, found);
+    await advance(ctx, caseId);
     return null;
   },
 });

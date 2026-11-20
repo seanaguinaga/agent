@@ -1,11 +1,8 @@
-// What the case workflow reads and writes, and how a run reports back. Each
-// query here reads the case and says whether a phase is done; the case in the
-// table is the truth, so a restarted workflow picks up where the case is.
-import {
-  vResultValidator,
-  vWorkflowId,
-  type WorkflowId,
-} from "@convex-dev/workflow";
+import { vPacketForm } from "../packs/schema";
+// What the case's workflows read and write. Each query here reads the case
+// and says whether a phase is done; the case in the table is the truth, so
+// work started again picks up where the case is.
+import { vWorkflowId, type WorkflowId } from "@convex-dev/workflow";
 import { listMessages } from "@convex-dev/agent";
 import { v, type Infer } from "convex/values";
 import { components } from "../../_generated/api";
@@ -16,33 +13,30 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "../../_generated/server";
-import type { vProcessPackDefinition } from "../packs/schema";
+import { vProcessPackDefinition } from "../packs/schema";
 import {
   definitionOf,
+  vFoundFacts,
   draftOf,
   type Evidence,
   type HistoryKind,
 } from "./schema";
-import { vFilledDocument } from "../forms/schema";
+import { vPacketPdf, vFilledDocument } from "../forms/schema";
 import { intakeAgent, proposalFields, selectionAgent } from "./agents";
-import { missingInputs, renderLetter } from "./answers";
-import { rememberedElsewhere } from "../profile/data";
-import {
-  answerKind,
-  questionOf,
-  isSuggesting,
-  reviewOutcome as outcomeOf,
-} from "./state";
+import { renderLetter } from "./answers";
+import { offerFact, syncCase, rememberedElsewhere } from "../profile/data";
+import { answerKind, questionOf, isSuggesting, needsRevisit } from "./state";
 import {
   caseEvidence,
   currentChoice,
   currentSelection,
   fingerprintOf,
+  missing,
   missingEvidence,
   newGoal,
   pinnedPack,
-  requiredInputs,
-  standingGoal,
+  activeForms,
+  routeApplies,
   type Case,
 } from "./state";
 
@@ -100,6 +94,9 @@ export function processPackDefinition(pack: Doc<"processPacks">) {
     referral: pack.referral,
     profile: pack.profile,
     form: pack.form,
+    letterRoute: pack.letterRoute,
+    packetForms: pack.packetForms,
+    eligibility: pack.eligibility,
   };
 }
 
@@ -107,8 +104,17 @@ export function processPackDefinition(pack: Doc<"processPacks">) {
 export function draftDefinition(draft: Draft) {
   const { inputs, inputQuestions, evidence, deadline, referral, profile } =
     draft;
-  // A draft never fills a form: a form's mapping is reviewed by a person.
-  return { inputs, inputQuestions, evidence, deadline, referral, profile };
+  return {
+    inputs,
+    inputQuestions,
+    evidence,
+    deadline,
+    referral,
+    profile,
+    letterRoute: draft.letterRoute,
+    packetForms: draft.packetForms,
+    eligibility: draft.eligibility,
+  };
 }
 
 /** What the case runs on: the saved pack it pinned, or its accepted draft. */
@@ -124,24 +130,6 @@ async function packOf(
 }
 
 // --- 1. Intake --------------------------------------------------------------
-
-/** Done once there's a goal; otherwise the message to answer, or null to wait. */
-export const intakeNext = internalQuery({
-  args: { caseId: v.id("cases") },
-  returns: v.union(
-    v.object({ kind: v.literal("done") }),
-    v.object({ kind: v.literal("message"), promptMessageId: v.string() }),
-    v.null(),
-  ),
-  handler: async (ctx, { caseId }) => {
-    const found = await ctx.db.get("cases", caseId);
-    if (!found || standingGoal(found)) return { kind: "done" as const };
-    const promptMessageId = found.pendingMessageId;
-    return promptMessageId
-      ? { kind: "message" as const, promptMessageId }
-      : null;
-  },
-});
 
 export const threadOf = internalQuery({
   args: { caseId: v.id("cases") },
@@ -160,11 +148,14 @@ export const recordTurn = internalMutation({
     promptMessageId: v.string(),
     reply: v.string(),
     goal: v.union(v.string(), v.null()),
+    facts: v.optional(vFoundFacts),
   },
   returns: v.null(),
-  handler: async (ctx, { caseId, promptMessageId, reply, goal }) => {
+  handler: async (ctx, { caseId, promptMessageId, reply, goal, facts }) => {
     const found = await ctx.db.get("cases", caseId);
     if (!found || found.status !== "active") return null;
+    for (const entry of facts ?? [])
+      await offerFact(ctx, found, entry.fact, entry.text, "Your conversation");
     await intakeAgent.saveMessage(ctx, {
       threadId: found.threadId,
       promptMessageId,
@@ -213,16 +204,6 @@ export const goalOf = internalQuery({
       threadId: found.threadId,
       workflowId: found.run.workflowId,
     };
-  },
-});
-
-/** True until a pack has been proposed or chosen for the current goal. */
-export const needsProposal = internalQuery({
-  args: { caseId: v.id("cases") },
-  returns: v.boolean(),
-  handler: async (ctx, { caseId }) => {
-    const found = await ctx.db.get("cases", caseId);
-    return !!found && !currentSelection(found);
   },
 });
 
@@ -300,27 +281,6 @@ export const recordProposal = internalMutation({
   },
 });
 
-/** "accepted" or "rejected" once the person decides; null to wait. */
-export const packDecision = internalQuery({
-  args: { caseId: v.id("cases") },
-  returns: v.union(v.literal("accepted"), v.literal("rejected"), v.null()),
-  handler: async (ctx, { caseId }) => {
-    const found = await ctx.db.get("cases", caseId);
-    const status = found && currentSelection(found)?.status;
-    return status === "accepted" || status === "rejected" ? status : null;
-  },
-});
-
-/** True when the person accepted a legal referral rather than a pack. */
-export const isAdviceRequest = internalQuery({
-  args: { caseId: v.id("cases") },
-  returns: v.boolean(),
-  handler: async (ctx, { caseId }) => {
-    const found = await ctx.db.get("cases", caseId);
-    return !!found && currentChoice(found)?.kind === "referral";
-  },
-});
-
 // --- Suggest ----------------------------------------------------------------
 
 /**
@@ -379,7 +339,13 @@ export const suggestInput = internalQuery({
 
 /** The accepted pack's questions the case has no answer to yet. */
 export function openQuestions(c: Case) {
-  return (pinnedPack(c)?.inputs ?? [])
+  return [
+    ...new Set([
+      ...(pinnedPack(c)?.inputs ?? []),
+      ...(pinnedPack(c)?.letterRoute?.inputs ?? []),
+      ...(pinnedPack(c)?.packetForms ?? []).flatMap((form) => form.inputs),
+    ]),
+  ]
     .filter((key) => c.answers[key] === undefined)
     .map((key) => ({
       key,
@@ -394,16 +360,6 @@ export function attachedLine(file: Evidence): string | undefined {
     ? `I attached "${file.name}". It says: ${file.read.summary}`
     : undefined;
 }
-
-/** True while the conversation is still to be read for answers. */
-export const needsSuggestions = internalQuery({
-  args: { caseId: v.id("cases") },
-  returns: v.boolean(),
-  handler: async (ctx, { caseId }) => {
-    const found = await ctx.db.get("cases", caseId);
-    return !!found && found.status === "active" && isSuggesting(found);
-  },
-});
 
 /**
  * Keeps what was found, as suggestions: the person still has to accept
@@ -437,21 +393,6 @@ export const recordSuggestions = internalMutation({
 });
 
 // --- 3. Answers, the document, and review -----------------------------------
-
-/** True once every answer and required file the pack asks for is in. */
-export const answersComplete = internalQuery({
-  args: { caseId: v.id("cases") },
-  returns: v.union(v.literal(true), v.null()),
-  handler: async (ctx, { caseId }) => {
-    const found = await ctx.db.get("cases", caseId);
-    const inputs = found && requiredInputs(found);
-    if (!found || !inputs) throw new Error("The case has no accepted pack");
-    const missing =
-      missingInputs(inputs, found.answers, found.following).length +
-      missingEvidence(found).length;
-    return missing === 0 ? true : null;
-  },
-});
 
 /** The answers to the questions the pack's checklist is tailored by. */
 function situationOf(c: Case, pack: Awaited<ReturnType<typeof packOf>>) {
@@ -506,11 +447,39 @@ export const tailorInput = internalQuery({
  * With `tailored`, the checklist is cut to the steps that apply to the
  * person. It was chosen for the answers as they stood (`fingerprint`), and
  * so was the filled form: if they've changed since, the document is out of
- * date on its own, and the workflow goes around again.
+ * date on its own, and the case builds again.
  */
+export const packetInput = internalQuery({
+  args: { caseId: v.id("cases") },
+  returns: v.object({
+    forms: v.array(vPacketForm),
+    answers: v.record(v.string(), v.string()),
+    fingerprint: v.string(),
+  }),
+  handler: async (ctx, { caseId }) => {
+    const c = await ctx.db.get("cases", caseId);
+    if (!c) throw new Error("Case not found");
+    return {
+      forms: activeForms(c),
+      answers: c.answers,
+      fingerprint: fingerprintOf(c),
+    };
+  },
+});
+
 export const recordArtifact = internalMutation({
   args: {
     caseId: v.id("cases"),
+    assessment: v.optional(
+      v.object({ fingerprint: v.string(), openItems: v.array(v.string()) }),
+    ),
+    packet: v.optional(
+      v.object({
+        fingerprint: v.string(),
+        documents: v.array(vPacketPdf),
+        openItems: v.array(v.string()),
+      }),
+    ),
     tailored: v.optional(
       v.object({ fingerprint: v.string(), keep: v.array(v.number()) }),
     ),
@@ -523,17 +492,23 @@ export const recordArtifact = internalMutation({
     ),
   },
   returns: v.null(),
-  handler: async (ctx, { caseId, tailored, document: filled }) => {
+  handler: async (
+    ctx,
+    { caseId, tailored, packet, assessment, document: filled },
+  ) => {
     const found = await ctx.db.get("cases", caseId);
     if (!found) return null;
     const current = fingerprintOf(found);
     // Each part was made from the answers as they stood then. If any part
     // is behind them now (a profile save reaches a case at any time), so is
-    // the artifact: it takes that part's fingerprint, and the workflow goes
-    // around again.
-    const behind = [tailored?.fingerprint, filled?.fingerprint].find(
-      (made) => made !== undefined && made !== current,
-    );
+    // the artifact: it takes that part's fingerprint, and the case builds
+    // again.
+    const behind = [
+      tailored?.fingerprint,
+      filled?.fingerprint,
+      packet?.fingerprint,
+      assessment?.fingerprint,
+    ].find((made) => made !== undefined && made !== current);
     let document: Infer<typeof vFilledDocument> | undefined;
     if (filled) {
       const { fingerprint: _madeFrom, ...rest } = filled;
@@ -544,16 +519,55 @@ export const recordArtifact = internalMutation({
     // Only the pack's own steps, in its order.
     const checklist = tailored
       ? steps.filter((_, i) => tailored.keep.includes(i + 1))
-      : undefined;
+      : steps.length
+        ? steps
+        : undefined;
     const summary = JSON.stringify({
       process: pack?.title,
       answers: found.answers,
       output: pack?.output,
       checklist,
     });
-    const letter = pack?.output?.letter;
+    const letter = routeApplies(found, pack?.letterRoute)
+      ? pack?.output?.letter
+      : undefined;
+    const openItems = [
+      ...missing(found).map((key) => `Answer: ${questionOf(found, key)}`),
+      ...missingEvidence(found).map(
+        (key) =>
+          `Attach: ${pack?.evidence?.find((file) => file.key === key)?.label ?? key}`,
+      ),
+      ...(packet?.openItems ?? []),
+      ...(assessment?.openItems ?? []),
+    ];
+    if (found.artifact)
+      await ctx.db.insert("packetRevisions", {
+        caseId,
+        artifact: found.artifact,
+      });
     await writeCase(ctx, caseId, {
+      reassess: undefined,
+      revised: undefined,
+      // Counted on the case, until a document is accepted.
+      builds: (found.builds ?? 0) + 1,
       artifact: {
+        filingOrder: pack?.output?.filingOrder,
+        sources: pack?.output?.sources,
+        revision: (found.artifact?.revision ?? 0) + 1,
+        documents: packet?.documents,
+        openItems: openItems.length ? [...new Set(openItems)] : undefined,
+        eligibility: pack?.eligibility?.map((rule) => ({
+          condition: rule.condition,
+          sourceUrl: rule.sourceUrl,
+          outcome:
+            !found.answers[rule.key] ||
+            found.answers[rule.key].trim().toLowerCase() === "unknown"
+              ? "Unknown"
+              : found.answers[rule.key].trim().toLowerCase() ===
+                  rule.qualifiesWhen.toLowerCase()
+                ? "Appears satisfied"
+                : "Needs review",
+        })),
         summary,
         letter: letter ? renderLetter(letter, found.answers) : undefined,
         checklist,
@@ -573,66 +587,31 @@ export const recordArtifact = internalMutation({
   },
 });
 
-/** "accepted", or "changed" when an answer was edited in review; null to wait. */
-export const reviewOutcome = internalQuery({
-  args: { caseId: v.id("cases") },
-  returns: v.union(v.literal("accepted"), v.literal("changed"), v.null()),
-  handler: async (ctx, { caseId }) => {
-    const found = await ctx.db.get("cases", caseId);
-    return found ? outcomeOf(found) : "changed";
-  },
-});
-
 // --- 4. The end -------------------------------------------------------------
-
-/**
- * True once no referral is waiting on the person: none was offered, or they
- * shared the case or rejected the offer.
- */
-export const referralSettled = internalQuery({
-  args: { caseId: v.id("cases") },
-  returns: v.union(v.literal(true), v.null()),
-  handler: async (ctx, { caseId }) => {
-    const found = await ctx.db.get("cases", caseId);
-    return found?.referral?.status === "offered" ? null : true;
-  },
-});
 
 /**
  * Finishes the case: prepares delivery if the pack has a channel, and marks
  * it done. Safe to run twice.
  */
-export const finish = internalMutation({
-  args: { caseId: v.id("cases") },
-  returns: v.null(),
-  handler: async (ctx, { caseId }) => {
-    const found = await ctx.db.get("cases", caseId);
-    if (!found || found.status !== "active") return null;
-    const pack = await packOf(ctx, found);
-    if (pack?.delivery) {
-      await writeCase(ctx, caseId, {
-        delivery: { status: "prepared", channel: pack.delivery },
-      });
-    }
-    // What the case changed about the person is offered to their profile,
-    // for them to confirm: the new address becomes the home address.
-    for (const { input, updates } of pinnedPack(found)?.profile ?? []) {
-      const text = updates && found.answers[input];
-      if (!text) continue;
-      await ctx.db.insert("profileProposals", {
-        userId: found.userId,
-        fact: updates,
-        text,
-        caseId,
-        status: "open",
-      });
-    }
-    await endCase(ctx, found, "done");
-    return null;
-  },
-});
+export async function finishCase(ctx: MutationCtx, found: Case): Promise<void> {
+  if (found.status !== "active") return;
+  const pack = await packOf(ctx, found);
+  if (pack?.delivery) {
+    await writeCase(ctx, found._id, {
+      delivery: { status: "prepared", channel: pack.delivery },
+    });
+  }
+  // What the case changed about the person is offered to their profile,
+  // for them to confirm: the new address becomes the home address.
+  for (const { input, updates } of pinnedPack(found)?.profile ?? []) {
+    const text = updates && found.answers[input];
+    if (!text) continue;
+    await offerFact(ctx, found, updates!, text);
+  }
+  await endCase(ctx, found, "done");
+}
 
-/** Stops the case with a reason, e.g. when a loop ran out of tries. */
+/** Stops the case with a reason, e.g. when no supported process fits. */
 export const stop = internalMutation({
   args: { caseId: v.id("cases"), reason: v.string() },
   returns: v.null(),
@@ -644,32 +623,107 @@ export const stop = internalMutation({
   },
 });
 
+export const assessmentInput = internalQuery({
+  args: { caseId: v.id("cases") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      threadId: v.string(),
+      fingerprint: v.string(),
+      instructions: v.array(v.string()),
+      evidence: v.array(v.string()),
+      answers: v.record(v.string(), v.string()),
+    }),
+  ),
+  handler: async (ctx, { caseId }) => {
+    const c = await ctx.db.get("cases", caseId);
+    if (
+      !c ||
+      (!c.reassess &&
+        !(
+          pinnedPack(c)?.packetForms?.length || pinnedPack(c)?.evidence?.length
+        ))
+    )
+      return null;
+    const pack = await packOf(ctx, c);
+    return {
+      threadId: c.threadId,
+      fingerprint: fingerprintOf(c),
+      answers: c.answers,
+      instructions: [
+        ...(pack?.output?.checklist ?? []),
+        ...(pack?.evidence ?? [])
+          .filter((item) => routeApplies(c, item.when))
+          .map((item) => item.label),
+      ],
+      evidence: caseEvidence(c).map(
+        (file) =>
+          attachedLine(file) ??
+          `Attached ${file.name}. Its contents have not been established.`,
+      ),
+    };
+  },
+});
+
+export const draftToRevisit = internalQuery({
+  args: { caseId: v.id("cases") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      threadId: v.string(),
+      draft: vProcessPackDefinition,
+      notes: v.string(),
+    }),
+  ),
+  handler: async (ctx, { caseId }) => {
+    const c = await ctx.db.get("cases", caseId);
+    const choice = c && currentChoice(c);
+    if (!c || !needsRevisit(c) || choice?.kind !== "draft") return null;
+    return {
+      threadId: c.threadId,
+      draft: choice.draft,
+      notes: choice.research ?? "",
+    };
+  },
+});
+
 /**
- * The workflow's `onComplete`, after every run. A failure parks the case: it
- * keeps the workflow id for a retry, and clears `workflowId` so nothing
- * nudges or cancels a workflow that isn't running. A finished run has already
- * ended the case, and a canceled one was canceled by ending it.
+ * Keeps the revisited draft, if revisiting found one, and marks the case
+ * revisited either way: it's done once per reassessment.
  */
-export const workflowDone = internalMutation({
+export const reviseDraft = internalMutation({
   args: {
-    workflowId: vWorkflowId,
-    result: vResultValidator,
-    context: v.object({ caseId: v.id("cases") }),
+    caseId: v.id("cases"),
+    revision: v.union(
+      v.null(),
+      v.object({ draft: vProcessPackDefinition, notes: v.string() }),
+    ),
   },
   returns: v.null(),
-  handler: async (ctx, { workflowId, result, context }) => {
-    const found = await ctx.db.get("cases", context.caseId);
-    if (found?.run?.state !== "running" || found.run.workflowId !== workflowId)
+  handler: async (ctx, { caseId, revision }) => {
+    const c = await ctx.db.get("cases", caseId);
+    if (c?.status !== "active") return null;
+    const choice = currentChoice(c);
+    if (
+      !revision ||
+      !c.reassess ||
+      choice?.kind !== "draft" ||
+      choice.status !== "accepted"
+    ) {
+      await writeCase(ctx, caseId, { revised: true });
       return null;
-    if (result.kind === "failed") {
-      await writeCase(ctx, found._id, {
-        run: { state: "failed", workflowId, error: result.error },
-      });
-      await logCaseEvent(ctx, found._id, "case.failed", result.error);
-    } else if (found.status === "active") {
-      // A run that ended without ending its case is a bug: say so.
-      await endCase(ctx, found, "stopped", "The workflow ended early");
     }
+    const { draft, notes } = revision;
+    await writeCase(ctx, caseId, {
+      revised: true,
+      selection: {
+        ...choice,
+        draft,
+        research: notes,
+        definition: draftDefinition(draft),
+      },
+    });
+    await syncCase(ctx, caseId);
     return null;
   },
 });

@@ -45,11 +45,14 @@ export default {
     userId: v.string(),
     fact: v.string(),
     text: v.string(),
+    source: v.optional(v.string()),
     caseId: v.id("cases"),
     status: v.union(
       v.literal("open"),
       v.literal("accepted"),
       v.literal("dismissed"),
     ),
-  }).index("by_userId_and_status", ["userId", "status"]),
+  })
+    .index("by_userId_and_status", ["userId", "status"])
+    .index("by_caseId_and_fact_and_text", ["caseId", "fact", "text"]),
 };

@@ -10,7 +10,7 @@ import {
   internalQuery,
   type QueryCtx,
 } from "../../_generated/server";
-import { placeholders } from "../case/answers";
+import { placeholders, signalsOf } from "../case/answers";
 import { isFactKey, isReading } from "../profile/vocabulary";
 import {
   isInputKey,
@@ -125,9 +125,12 @@ function checkDefinition(raw: Definition): Definition {
   if (price !== undefined && (!Number.isInteger(price) || price < 0)) {
     throw new ConvexError("The referral's price is a whole number of cents.");
   }
-  if (referral?.when && !inputs.includes(referral.when.input)) {
+  const strayCheck = signalsOf(referral ?? {}).find(
+    ({ input }) => !inputs.includes(input),
+  );
+  if (strayCheck) {
     throw new ConvexError(
-      `The referral depends on "${referral.when.input}", which isn't an input.`,
+      `The referral depends on "${strayCheck.input}", which isn't an input.`,
     );
   }
   const { evidence = [], deadline, output } = raw;
@@ -176,7 +179,7 @@ function checkDefinition(raw: Definition): Definition {
     ...placeholders(output?.letter ?? ""),
     ...tailorBy,
     deadline?.fromInput,
-    referral?.when?.input,
+    ...signalsOf(referral ?? {}).map(({ input }) => input),
   ]);
   const unread = forms.length
     ? undefined
@@ -203,7 +206,7 @@ function checkDefinition(raw: Definition): Definition {
   return { ...raw, jurisdiction, authority, forms };
 }
 
-function searchTextOf(definition: Definition): string {
+export function searchTextOf(definition: Definition): string {
   const { title, description, aliases, authority, forms } = definition;
   const text = [title, description, ...aliases, authority ?? "", ...forms];
   return searchWords(text.join(" ")).join(" ");

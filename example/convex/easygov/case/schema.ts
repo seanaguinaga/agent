@@ -4,9 +4,12 @@
 // built from the schema, so they can't also be an input to it.
 import { vWorkflowId } from "@convex-dev/workflow";
 import { v, type Infer } from "convex/values";
-import { vFilledDocument } from "../forms/schema";
+import { vFilledDocument, vPacketPdf } from "../forms/schema";
 import {
   vPackDeadline,
+  vLetterRoute,
+  vPacketForm,
+  vEligibility,
   vPackEvidence,
   vPackProfileLinks,
   vPackReferral,
@@ -26,6 +29,11 @@ export const vEvidenceRead = v.union(
     status: v.literal("read"),
     summary: v.string(),
     answers: v.optional(v.record(v.string(), v.string())),
+    /**
+     * The file is a decision against the person: a denial, a rejection, a
+     * demand. That's when a lawyer is worth offering.
+     */
+    adverse: v.optional(v.literal(true)),
   }),
   v.object({ status: v.literal("unread"), reason: v.string() }),
 );
@@ -56,6 +64,9 @@ export type Evidence = Infer<typeof vEvidence>;
  * goal counts as none. A rejected one for the current goal sends the case
  * back to intake for a new goal.
  */
+export const vFoundFacts = v.array(
+  v.object({ fact: v.string(), text: v.string() }),
+);
 const goalVersion = v.number();
 
 /**
@@ -63,6 +74,9 @@ const goalVersion = v.number();
  * once it's accepted. Only a saved pack has an `id`.
  */
 const vPinned = v.object({
+  letterRoute: v.optional(vLetterRoute),
+  packetForms: v.optional(v.array(vPacketForm)),
+  eligibility: v.optional(vEligibility),
   id: v.optional(v.id("processPacks")),
   inputs: v.array(v.string()),
   inputQuestions: v.optional(vProcessPackQuestions),
@@ -138,6 +152,39 @@ export function draftOf(selection: Selection | undefined) {
   return choice?.kind === "draft" ? choice.draft : undefined;
 }
 
+export const vArtifact = v.object({
+  filingOrder: v.optional(v.array(v.string())),
+  sources: v.optional(v.array(v.string())),
+  revision: v.optional(v.number()),
+  documents: v.optional(v.array(vPacketPdf)),
+  openItems: v.optional(v.array(v.string())),
+  eligibility: v.optional(
+    v.array(
+      v.object({
+        condition: v.string(),
+        sourceUrl: v.string(),
+        outcome: v.string(),
+      }),
+    ),
+  ),
+  summary: v.string(),
+  letter: v.optional(v.string()),
+  /**
+   * The checklist steps that apply to this person, when the pack tailors
+   * them by their answers. Always some of the pack's own steps, in the
+   * pack's order: tailoring leaves steps out, it never writes any.
+   */
+  checklist: v.optional(v.array(v.string())),
+  /**
+   * The official form, filled in, when the pack fills one. `omissions`
+   * are values that weren't written and why. `toComplete` is what's
+   * left for the person: their signature, or something confidential
+   * we don't hold.
+   */
+  document: v.optional(vFilledDocument),
+  fingerprint: v.string(),
+});
+
 export const caseFields = {
   /** The account, or `guest:<SHA-256 of the key>` for a case started without one. */
   userId: v.string(),
@@ -155,15 +202,19 @@ export const caseFields = {
   /** Bumped by every write to the case, so a stale `sendEvent` is refused. */
   seq: v.number(),
   /**
-   * The case's workflow, by `state`: `running`, or `failed` while it waits
-   * for a retry or a give-up. Unset once the case has ended.
+   * The work in hand, by `state`: a workflow `running`; `delayed` until a
+   * rate limit allows it to start; or `failed` while it waits for a retry or
+   * a give-up (with no workflow when the case was parked as a runaway).
+   * Unset while the case waits for the person with nothing to do, and once
+   * it has ended.
    */
   run: v.optional(
     v.union(
       v.object({ state: v.literal("running"), workflowId: vWorkflowId }),
+      v.object({ state: v.literal("delayed"), until: v.number() }),
       v.object({
         state: v.literal("failed"),
-        workflowId: vWorkflowId,
+        workflowId: v.optional(vWorkflowId),
         error: v.string(),
       }),
     ),
@@ -229,32 +280,25 @@ export const caseFields = {
    * The filled-in document, and the fingerprint of the answers and files it
    * used. `letter` is set when the pack writes one.
    */
-  artifact: v.optional(
-    v.object({
-      summary: v.string(),
-      letter: v.optional(v.string()),
-      /**
-       * The checklist steps that apply to this person, when the pack tailors
-       * them by their answers. Always some of the pack's own steps, in the
-       * pack's order: tailoring leaves steps out, it never writes any.
-       */
-      checklist: v.optional(v.array(v.string())),
-      /**
-       * The official form, filled in, when the pack fills one. `omissions`
-       * are values that weren't written and why. `toComplete` is what's
-       * left for the person: their signature, or something confidential
-       * we don't hold.
-       */
-      document: v.optional(vFilledDocument),
-      fingerprint: v.string(),
-    }),
-  ),
+  artifact: v.optional(vArtifact),
   /** The fingerprint of the artifact the person accepted. */
+  partialFingerprint: v.optional(v.string()),
+  reassess: v.optional(v.boolean()),
+  /**
+   * The case skips the rate limits in `limits.ts`. Only the evals set it,
+   * from an internal mutation: nothing a client sends can.
+   */
+  unmetered: v.optional(v.boolean()),
+  /** The drafted process was revisited for this reassessment: once is enough. */
+  revised: v.optional(v.boolean()),
+  /** Documents built since one was last accepted. Too many stop the case. */
+  builds: v.optional(v.number()),
   accepted: v.optional(v.object({ fingerprint: v.string() })),
   /**
    * A legal referral offered to the person, and what they said. Nothing is
    * shared while it's only `offered`. `withdrawn` is a shared one the person
-   * took back before a firm accepted it.
+   * took back before a firm accepted it; `expired` is one no firm took in
+   * time. After either, the person can ask again.
    */
   referral: v.optional(
     v.object({
@@ -264,6 +308,7 @@ export const caseFields = {
         v.literal("shared"),
         v.literal("rejected"),
         v.literal("withdrawn"),
+        v.literal("expired"),
       ),
     }),
   ),
@@ -367,6 +412,7 @@ export const vHistoryKind = v.union(
   v.literal("referral.shared"),
   v.literal("referral.accepted"),
   v.literal("referral.withdrawn"),
+  v.literal("referral.expired"),
 );
 export type HistoryKind = Infer<typeof vHistoryKind>;
 
@@ -407,9 +453,14 @@ export const vCaseEvent = v.union(
   v.object({ type: v.literal("evidence.remove"), storageId: v.id("_storage") }),
   // In review.
   v.object({ type: v.literal("artifact.accept") }),
+  v.object({ type: v.literal("artifact.reassess") }),
+  v.object({ type: v.literal("artifact.prepare") }),
   // When a referral is offered: share the case with a lawyer, or don't.
   v.object({ type: v.literal("referral.share") }),
   v.object({ type: v.literal("referral.reject") }),
+  // From the proposed process on, and once the case is done: share the case
+  // with a lawyer now, as far as it has got. Asking is the yes.
+  v.object({ type: v.literal("referral.request") }),
   // After a failure: run again, or stop.
   v.object({ type: v.literal("case.retry") }),
   v.object({ type: v.literal("case.stop") }),

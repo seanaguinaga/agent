@@ -75,7 +75,18 @@ export const vAttempt = v.object({
   note: v.string(),
 });
 
+export const vPacketPdf = v.object({
+  code: v.string(),
+  sourceUrl: v.string(),
+  ...vFilledDocument.fields,
+});
+
 export default {
+  formBlueprints: defineTable({
+    editionId: v.id("formEditions"),
+    targets: v.array(vTarget),
+    mapping: vMapping,
+  }).index("by_editionId", ["editionId"]),
   /** A form we know where to get: a small registry, added to by hand. */
   forms: defineTable({
     /** As people write it: "IRS-8822". */
@@ -97,7 +108,9 @@ export default {
         attempts: v.array(vAttempt),
       }),
     ),
-  }).index("by_code", ["code"]),
+  })
+    .index("by_code", ["code"])
+    .index("by_sourceUrl", ["sourceUrl"]),
 
   /**
    * The bytes of a form as fetched, known by their hash. A form that changes

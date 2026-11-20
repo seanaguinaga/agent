@@ -64,7 +64,8 @@ describe("starting on a pack", () => {
       goal: { text: wageClaim.title },
       selection: { status: "accepted" },
     });
-    expect((await read(t, caseId)).run?.state).toBe("running");
+    // Nothing runs while the case waits for the answers.
+    expect((await read(t, caseId)).run).toBeUndefined();
   });
 
   test("an old link starts the current version; a private pack starts nothing", async () => {
@@ -250,6 +251,71 @@ describe("a guest", () => {
     );
     const found = await send(t, caseId, { type: "referral.share" });
     expect(found).toMatchObject({ status: "done", userId: "test user" });
+  });
+});
+
+describe("what a page reads", () => {
+  afterEach(resetCases);
+  const guestKey = "a-secret-only-this-browser-knows-0002";
+  const { getCase, listCases, listHistory, listMessages } =
+    api.easygov.case.public;
+  const firstPage = { cursor: null, numItems: 10 };
+
+  test("getCase says what to ask and which files, ready to render", async () => {
+    const { t, caseId } = await startOn();
+    await answer(t, caseId, { employer: wages.employer });
+    const found = await read(t, caseId);
+    expect(found.asks.map(({ key }) => key)).toEqual(
+      expect.arrayContaining(Object.keys(wages)),
+    );
+    expect(found.asks.find(({ key }) => key === "employer")).toMatchObject({
+      answer: wages.employer,
+      following: false,
+    });
+    // The deadline is counted from this one, so it takes a date.
+    expect(found.asks.find(({ key }) => key === "lastWorkDate")).toMatchObject({
+      kind: "date",
+      question: expect.any(String),
+    });
+    expect(found.files).toContainEqual(
+      expect.objectContaining({ key: "payStub", attached: 0 }),
+    );
+    expect((await attach(t, caseId, "payStub")).files).toContainEqual(
+      expect.objectContaining({ key: "payStub", attached: 1 }),
+    );
+    expect(found).toMatchObject({ guest: false, replying: false });
+    expect(found).not.toHaveProperty("unmetered");
+    expect(found).not.toHaveProperty("lastMessageKey");
+  });
+
+  test("a case's list, history and conversation are its owner's alone", async () => {
+    const { t, caseId } = await startOn({}, { guestKey });
+    const { threadId } = await t.query(getCase, { caseId, guestKey });
+
+    const mine = await t.query(listCases, {
+      paginationOpts: firstPage,
+      guestKey,
+    });
+    expect(mine.page).toMatchObject([
+      { id: caseId, phase: "answers", waitingFor: "answers" },
+    ]);
+    // The signed-in account has none: the guest's case isn't theirs.
+    const theirs = await t.query(listCases, { paginationOpts: firstPage });
+    expect(theirs.page).toEqual([]);
+
+    const history = await t.query(listHistory, { caseId, guestKey });
+    expect(history.map(({ kind }) => kind)).toContain("case.started");
+    await expect(t.query(listHistory, { caseId })).rejects.toThrow(/not found/);
+
+    const messages = { caseId, threadId, paginationOpts: firstPage };
+    expect(
+      (await t.query(listMessages, { ...messages, guestKey })).page,
+    ).toEqual([]);
+    await expect(t.query(listMessages, messages)).rejects.toThrow(/not found/);
+    // The right key with someone else's thread is refused too.
+    await expect(
+      t.query(listMessages, { ...messages, guestKey, threadId: "another" }),
+    ).rejects.toThrow(/not found/);
   });
 });
 

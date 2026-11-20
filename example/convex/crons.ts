@@ -11,4 +11,12 @@ crons.interval(
   {},
 );
 
+// A case shared with a lawyer that no firm took is handed back to its person.
+crons.interval(
+  "expireEasygovReferrals",
+  { hours: 6 },
+  internal.easygov.firms.data.expireReferrals,
+  {},
+);
+
 export default crons;

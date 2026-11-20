@@ -15,6 +15,7 @@ import {
   type T,
 } from "./cases.testkit";
 import { MAX_EVIDENCE } from "./evidence";
+import { usableAnswers } from "./agents";
 
 vi.mock("../../modelsForDemo", async () =>
   (await import("./cases.testkit")).mockModels(),
@@ -64,7 +65,8 @@ async function attach(
 
 const reading = (summary: string, answers: Record<string, string> = {}) =>
   JSON.stringify({
-    summary,
+    what: summary,
+    stated: [],
     answers: Object.entries(answers).map(([key, value]) => ({ key, value })),
   });
 
@@ -247,4 +249,21 @@ describe("after filing", () => {
     await send(t, caseId, { type: "case.cancel" });
     await expect(attach(t, caseId)).rejects.toThrow(/canceled/);
   });
+});
+
+test("a suggested answer too long to keep is left out, never cut", () => {
+  const questions = [
+    { key: "reason", question: "Why are you appealing?" },
+    { key: "noticeDate", question: "Notice date?", kind: "date" as const },
+  ];
+  expect(
+    usableAnswers(questions, [
+      { key: "reason", value: "x".repeat(2001) },
+      { key: "noticeDate", value: " 2026-10-01 " },
+      { key: "unasked", value: "ignored" },
+    ]),
+  ).toEqual({ noticeDate: "2026-10-01" });
+  expect(
+    usableAnswers(questions, [{ key: "reason", value: "x".repeat(600) }]),
+  ).toEqual({ reason: "x".repeat(600) });
 });

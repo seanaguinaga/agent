@@ -204,7 +204,9 @@ export const research: {
       forms: [],
     },
     domain: "dmv.ca.gov",
-    facts: ["online", "mail", "in person|office"],
+    // DL 410 FO is the renew-by-mail form: the site doesn't link it from
+    // the renewal page, so a general search tends to miss it.
+    facts: ["online", "mail", "in person|office", "DL.?410"],
   },
   {
     id: "oakland parking ticket",

@@ -28,6 +28,10 @@ export const ticked = (answer: string | undefined) =>
  * What goes where, for these answers. An answer that isn't there leaves its
  * target blank: nothing is made up to fill a box.
  */
+function sameChoice(a: string | undefined, b: string) {
+  return a?.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
 export function resolveMapping(
   mapping: Mapping,
   kinds: Record<string, "text" | "check">,
@@ -49,9 +53,11 @@ export function resolveMapping(
       if (constant !== undefined) values[target] = true;
       else if (!input) continue;
       else if (includes !== undefined) {
-        values[target] = ticked(answers[input]).includes(includes);
+        values[target] = ticked(answers[input]).some((answer) =>
+          sameChoice(answer, includes),
+        );
       } else if (equals !== undefined) {
-        values[target] = answers[input] === equals;
+        values[target] = sameChoice(answers[input], equals);
       }
       continue;
     }
@@ -125,9 +131,14 @@ export function checkChoice(
   if (!choices) return { value };
   const allowed = choices.map((choice) => choice.value);
   const problem = `Choose ${multiple ? "any of" : "one of"}: ${allowed.join(", ")}.`;
-  if (!multiple) return allowed.includes(value) ? { value } : { problem };
-  const picked = ticked(value);
-  if (picked.some((part) => !allowed.includes(part))) return { problem };
+  const canonical = (input: string) =>
+    allowed.find((option) => sameChoice(option, input));
+  if (!multiple) {
+    const choice = canonical(value);
+    return choice !== undefined ? { value: choice } : { problem };
+  }
+  const picked = ticked(value).map(canonical);
+  if (picked.some((part) => part === undefined)) return { problem };
   return {
     value: allowed.filter((option) => picked.includes(option)).join(","),
   };

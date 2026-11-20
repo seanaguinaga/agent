@@ -16,11 +16,12 @@ import { writeCase } from "../case/data";
 import { DAY_MS } from "../dates";
 import {
   pinnedPack,
+  requiredInputs,
   questionOf,
   reviewOutcome,
   type Case,
 } from "../case/state";
-import { nudgeIfMoved } from "../case/workflow";
+import { advance } from "../case/workflow";
 import { ConvexError, v } from "convex/values";
 import {
   checkFact,
@@ -28,6 +29,7 @@ import {
   FACTS,
   READINGS,
   isReading,
+  isFactKey,
   nameFromText,
   type Fact,
   type FactKey,
@@ -149,7 +151,7 @@ export async function syncCase(
   const read = (key: string): string | undefined =>
     isReading(key) ? READINGS[key].read(facts) : undefined;
 
-  for (const key of pack.inputs) {
+  for (const key of requiredInputs(c) ?? []) {
     if (isReading(key)) {
       // An answer given on the case itself is the case's own.
       if (answers[key] !== undefined && !follows.has(key)) continue;
@@ -197,7 +199,7 @@ export async function syncCase(
     return;
   }
   await writeCase(ctx, caseId, { answers, following, profileSuggestions });
-  await nudgeIfMoved(ctx, c);
+  await advance(ctx, caseId);
 }
 
 /**
@@ -261,4 +263,31 @@ export async function rememberedElsewhere(
     .filter((row) => !seen.has(row.question) && seen.add(row.question))
     .slice(0, 20)
     .map(({ question, value }) => ({ question, answer: value }));
+}
+
+/** Chat, evidence, and completed cases propose facts through the same confirmation flow. */
+export async function offerFact(
+  ctx: MutationCtx,
+  c: Case,
+  fact: string,
+  raw: string,
+  source?: string,
+) {
+  const text = raw.trim().slice(0, 500);
+  if (!isFactKey(fact) || !text) return;
+  const previous = await ctx.db
+    .query("profileProposals")
+    .withIndex("by_caseId_and_fact_and_text", (q) =>
+      q.eq("caseId", c._id).eq("fact", fact).eq("text", text),
+    )
+    .first();
+  if (!previous)
+    await ctx.db.insert("profileProposals", {
+      caseId: c._id,
+      userId: c.userId,
+      fact,
+      text,
+      status: "open",
+      source,
+    });
 }

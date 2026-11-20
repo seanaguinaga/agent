@@ -2,6 +2,7 @@
 // accepts.
 import { defineTable } from "convex/server";
 import { v, type Infer } from "convex/values";
+import { vArtifact } from "../case/schema";
 import { jurisdictionChain } from "../packs/schema";
 
 /** What a firm pays for a referral whose pack doesn't set a price. */
@@ -23,7 +24,8 @@ export const firmFields = {
 
 /**
  * A file as it's shared: the case's own, and what reading it found.
- * Follow-ups aren't shared: they came after the person said yes.
+ * Follow-ups are shared only when the person asks for a lawyer once the case
+ * is done: the decision that came back is the reason they're asking.
  */
 export const vSharedEvidence = v.object({
   storageId: v.id("_storage"),
@@ -36,11 +38,45 @@ export const vSharedEvidence = v.object({
 });
 
 /**
- * A case the person agreed to share with a lawyer: a copy of what they
- * accepted, as it was when they said yes. It never changes after that,
+ * A case the person agreed to share with a lawyer: a copy of what it held
+ * when they said yes. It never changes after that,
  * except for who took it.
  */
+/**
+ * How far the case had got when it was shared: at the proposed `plan`, while
+ * giving `answers`, in `review`, once `accepted`, or after the authority's
+ * `decision` came back.
+ */
+export const vStage = v.union(
+  v.literal("plan"),
+  v.literal("answers"),
+  v.literal("review"),
+  v.literal("accepted"),
+  v.literal("decision"),
+);
+export type Stage = Infer<typeof vStage>;
+
+/** The amount at stake, as a firm sees it before accepting: never the figure. */
+export const AMOUNT_BANDS = [
+  { under: 1000, band: "under $1,000" },
+  { under: 5000, band: "$1,000 to $5,000" },
+  { under: 25000, band: "$5,000 to $25,000" },
+  { under: Infinity, band: "$25,000 or more" },
+];
+export function amountBand(amount: number): string | undefined {
+  if (!Number.isFinite(amount) || amount < 0) return undefined;
+  return AMOUNT_BANDS.find(({ under }) => amount < under)!.band;
+}
+
+/** How long a shared case waits for a firm before it's taken back. */
+export const OPEN_DAYS = 14;
+
 const referralShared = {
+  /** Unset on the referrals shared before stages were recorded: `accepted`. */
+  stage: v.optional(vStage),
+  amountBand: v.optional(v.string()),
+  artifact: v.optional(vArtifact),
+  process: v.optional(v.string()),
   caseId: v.id("cases"),
   userId: v.string(),
   kind: v.string(),
@@ -60,8 +96,8 @@ const referralShared = {
 };
 
 /**
- * A referral, by `status`: `open` until one firm accepts it or the person
- * withdraws it. Only an accepted one has a firm, and only that firm ever
+ * A referral, by `status`: `open` until one firm accepts it, the person
+ * withdraws it, or it expires. Only an accepted one has a firm, and only that firm ever
  * sees the answers and files.
  */
 export const vReferral = v.union(
@@ -73,10 +109,20 @@ export const vReferral = v.union(
     firmId: v.id("firms"),
   }),
   v.object({ ...referralShared, status: v.literal("withdrawn") }),
+  /** No firm took it within `OPEN_DAYS`. The person is told, and can ask again. */
+  v.object({ ...referralShared, status: v.literal("expired") }),
 );
 export type Referral = Infer<typeof vReferral>;
 
 export default {
+  referralQuestions: defineTable({
+    referralId: v.id("referrals"),
+    caseId: v.id("cases"),
+    question: v.string(),
+    answer: v.optional(v.string()),
+  })
+    .index("by_referralId", ["referralId"])
+    .index("by_caseId", ["caseId"]),
   firms: defineTable(firmFields).index("by_userId", ["userId"]),
   referrals: defineTable(vReferral)
     .index("by_caseId_and_kind", ["caseId", "kind"])
@@ -85,7 +131,11 @@ export default {
       "kind",
       "jurisdiction",
     ])
-    .index("by_firmId", ["firmId"]),
+    .index("by_firmId", ["firmId"])
+    // Oldest first within a status: how expiry finds what has waited longest.
+    // The index above sorts a status by kind, so it can't answer that.
+    // eslint-disable-next-line @convex-dev/no-duplicate-indexes
+    .index("by_status", ["status"]),
   /** A referral a firm passed on, so it isn't shown to that firm again. */
   referralRejections: defineTable({
     firmId: v.id("firms"),

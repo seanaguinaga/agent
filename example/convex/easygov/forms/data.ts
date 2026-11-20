@@ -1,6 +1,7 @@
 // The forms registry and its editions: what the test pages and the fill
 // action read and write. The PDF work itself is in `actions.ts`.
-import { ConvexError, v } from "convex/values";
+import { requireOperator } from "../operators";
+import { ConvexError, v, type Infer } from "convex/values";
 import { internal } from "../../_generated/api";
 import type { Id } from "../../_generated/dataModel";
 import {
@@ -20,9 +21,12 @@ import { vAttempt, vMapping, vTarget, vVia } from "./schema";
 /** Hosts a form may be fetched from: the authority's own. */
 export function isOfficialHost(url: string): boolean {
   try {
-    const { protocol, hostname } = new URL(url);
+    const { protocol, hostname, username, password, port } = new URL(url);
     return (
       protocol === "https:" &&
+      !username &&
+      !password &&
+      (!port || port === "443") &&
       /(?:^|\.)(?:gov|mil)$|\.(?:gov|us)$|(?:^|\.)ca\.gov$/.test(hostname)
     );
   } catch {
@@ -45,6 +49,7 @@ export const createForm = mutation({
     ctx,
     { code, title, jurisdiction, sourceUrl, alternateUrls },
   ) => {
+    await requireOperator(ctx);
     const place = parseJurisdiction(jurisdiction);
     if (!place) throw new ConvexError('Use a jurisdiction path such as "us".');
     if (!code.trim() || !title.trim()) {
@@ -114,6 +119,7 @@ export const listForms = query({
     }),
   ),
   handler: async (ctx) => {
+    await requireOperator(ctx);
     const forms = await ctx.db.query("forms").order("desc").take(50);
     const rows = [];
     for (const form of forms) {
@@ -151,42 +157,60 @@ export const listForms = query({
   },
 });
 
+const vEdition = v.union(
+  v.object({
+    id: v.id("formEditions"),
+    code: v.string(),
+    title: v.string(),
+    edition: v.optional(v.string()),
+    fillable: v.boolean(),
+    targets: v.array(vTarget),
+    mapping: vMapping,
+    mappingStatus: v.string(),
+    /** The input keys the mapping reads: what a pack on this form asks. */
+    inputs: v.array(v.string()),
+    url: v.union(v.string(), v.null()),
+  }),
+  v.null(),
+);
+
 /** One edition: its targets, its mapping, and a link to the blank PDF. */
+async function editionOf(
+  ctx: QueryCtx,
+  editionId: Id<"formEditions">,
+): Promise<Infer<typeof vEdition>> {
+  const found = await ctx.db.get("formEditions", editionId);
+  const form = found && (await ctx.db.get("forms", found.formId));
+  if (!found || !form) return null;
+  return {
+    id: found._id,
+    code: form.code,
+    title: form.title,
+    edition: found.edition,
+    fillable: found.fillable,
+    targets: found.targets,
+    mapping: found.mapping,
+    mappingStatus: found.mappingStatus,
+    inputs: mappingInputs(found.mapping),
+    url: await ctx.storage.getUrl(found.storageId),
+  };
+}
+
+/** `editionOf`, for an operator's page. */
 export const getEdition = query({
   args: { editionId: v.id("formEditions") },
-  returns: v.union(
-    v.object({
-      id: v.id("formEditions"),
-      code: v.string(),
-      title: v.string(),
-      edition: v.optional(v.string()),
-      fillable: v.boolean(),
-      targets: v.array(vTarget),
-      mapping: vMapping,
-      mappingStatus: v.string(),
-      /** The input keys the mapping reads: what a pack on this form asks. */
-      inputs: v.array(v.string()),
-      url: v.union(v.string(), v.null()),
-    }),
-    v.null(),
-  ),
+  returns: vEdition,
   handler: async (ctx, { editionId }) => {
-    const found = await ctx.db.get("formEditions", editionId);
-    const form = found && (await ctx.db.get("forms", found.formId));
-    if (!found || !form) return null;
-    return {
-      id: found._id,
-      code: form.code,
-      title: form.title,
-      edition: found.edition,
-      fillable: found.fillable,
-      targets: found.targets,
-      mapping: found.mapping,
-      mappingStatus: found.mappingStatus,
-      inputs: mappingInputs(found.mapping),
-      url: await ctx.storage.getUrl(found.storageId),
-    };
+    await requireOperator(ctx);
+    return await editionOf(ctx, editionId);
   },
+});
+
+/** `editionOf`, for a case's own work: no operator is signed in there. */
+export const readEdition = internalQuery({
+  args: { editionId: v.id("formEditions") },
+  returns: vEdition,
+  handler: async (ctx, { editionId }) => await editionOf(ctx, editionId),
 });
 
 /**
@@ -217,6 +241,7 @@ export const updateMapping = mutation({
   },
   returns: v.null(),
   handler: async (ctx, { editionId, mapping, reviewed }) => {
+    await requireOperator(ctx);
     const found = await ctx.db.get("formEditions", editionId);
     if (!found) throw new ConvexError("Edition not found.");
     const kinds = new Map(found.targets.map(({ id, kind }) => [id, kind]));
@@ -308,6 +333,7 @@ export const publishPack = mutation({
     ctx,
     { editionId, profile, delivery },
   ): Promise<Id<"processPacks">> => {
+    await requireOperator(ctx);
     const found = await ctx.db.get("formEditions", editionId);
     const form = found && (await ctx.db.get("forms", found.formId));
     if (!found || !form) throw new ConvexError("Edition not found.");
@@ -499,5 +525,86 @@ export const editionOfCase = internalQuery({
   handler: async (ctx, { caseId }) => {
     const found = await ctx.db.get("cases", caseId);
     return (found && pinnedPack(found)?.form?.editionId) ?? null;
+  },
+});
+
+/** Research may discover the same PDF on concurrent cases. Never rewrite a curated registry entry. */
+export const registerSource = internalMutation({
+  args: { sourceUrl: v.string(), code: v.string(), jurisdiction: v.string() },
+  returns: v.id("forms"),
+  handler: async (ctx, args) => {
+    if (!isOfficialHost(args.sourceUrl))
+      throw new ConvexError("Expected an official PDF address.");
+    const existing = await ctx.db
+      .query("forms")
+      .withIndex("by_sourceUrl", (q) => q.eq("sourceUrl", args.sourceUrl))
+      .first();
+    if (!existing) {
+      return await ctx.db.insert("forms", { ...args, title: args.code });
+    }
+    // An entry research made (its title is still its code) under a name the
+    // file turned out not to carry is a wrong guess, not a curated entry:
+    // the next name offered for the same address replaces it.
+    const guessed =
+      existing.title === existing.code && existing.lastFetch?.ok === false;
+    if (guessed && existing.code !== args.code) {
+      await ctx.db.patch("forms", existing._id, {
+        code: args.code,
+        title: args.code,
+      });
+    }
+    return existing._id;
+  },
+});
+
+export const saveBlueprint = internalMutation({
+  args: {
+    editionId: v.id("formEditions"),
+    targets: v.array(vTarget),
+    mapping: vMapping,
+  },
+  returns: v.id("formBlueprints"),
+  handler: async (ctx, args) => ctx.db.insert("formBlueprints", args),
+});
+
+export const blueprintForFill = internalQuery({
+  args: { id: v.id("formBlueprints") },
+  returns: v.object({
+    storageId: v.id("_storage"),
+    targets: v.array(vTarget),
+    mapping: vMapping,
+  }),
+  handler: async (ctx, { id }) => {
+    const blueprint = await ctx.db.get("formBlueprints", id);
+    const edition =
+      blueprint && (await ctx.db.get("formEditions", blueprint.editionId));
+    if (!blueprint || !edition) throw new Error("Form edition is unavailable.");
+    return {
+      storageId: edition.storageId,
+      targets: blueprint.targets,
+      mapping: blueprint.mapping,
+    };
+  },
+});
+
+export const latestBlueprint = internalQuery({
+  args: { editionId: v.id("formEditions") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      id: v.id("formBlueprints"),
+      mapping: vMapping,
+      targets: v.array(vTarget),
+    }),
+  ),
+  handler: async (ctx, { editionId }) => {
+    const found = await ctx.db
+      .query("formBlueprints")
+      .withIndex("by_editionId", (q) => q.eq("editionId", editionId))
+      .order("desc")
+      .first();
+    return found
+      ? { id: found._id, mapping: found.mapping, targets: found.targets }
+      : null;
   },
 });

@@ -1,3 +1,5 @@
+import { PacketContents } from "./Packet";
+import { requiredInputs, routeApplies } from "../../convex/easygov/case/state";
 // One case, as every easygov test page shows it: where it is, what a person
 // can do there, and everything underneath (the row, its history, any event).
 import { useMutation, useQuery } from "convex/react";
@@ -5,7 +7,7 @@ import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
-import Transcript from "../chat/Transcript";
+import CaseTranscript from "./CaseTranscript";
 import { Result } from "../components/Example";
 import type { CaseEvent, CaseView } from "../../convex/easygov/autopilot";
 import {
@@ -79,7 +81,7 @@ export function Chip({
   );
 }
 
-function Where({ c }: { c: CaseView }) {
+function Where({ c, guestKey }: { c: CaseView; guestKey?: string }) {
   return (
     <div className="demo-panel" aria-label="Where the case is">
       <p className="flex flex-wrap items-center gap-2 text-sm">
@@ -99,7 +101,7 @@ function Where({ c }: { c: CaseView }) {
         <span className="text-gray-500">
           seq {c.seq}
           {c.source && ` · from ${c.source}`}
-          {c.userId.startsWith("guest:") && " · guest"}
+          {c.guest && " · guest"}
         </span>
       </p>
       {c.deadline && (
@@ -107,7 +109,7 @@ function Where({ c }: { c: CaseView }) {
           <strong>{c.deadline.label}</strong> by {c.deadline.date}
         </p>
       )}
-      <Phases c={c} />
+      <Phases c={c} guestKey={guestKey} />
     </div>
   );
 }
@@ -122,7 +124,11 @@ function Goal({ session }: { session: CaseSession }) {
   return (
     <div className="demo-panel">
       <h2 className="font-semibold">Say what you want to get done</h2>
-      <Transcript threadId={c.threadId} />
+      <CaseTranscript
+        caseId={c._id}
+        threadId={c.threadId}
+        guestKey={session.guestKey}
+      />
       <form
         className="flex gap-2"
         onSubmit={(event) => {
@@ -391,6 +397,13 @@ function Answers({ session }: { session: CaseSession }) {
   return (
     <div className="demo-panel">
       <h2 className="font-semibold">Answers and files</h2>
+      {Object.entries(c.conflicts ?? {}).map(([key, values]) => (
+        <p key={key}>
+          Confirm{" "}
+          {pack.inputQuestions?.find((q) => q.key === key)?.question ?? key}.
+          Your sources give {values.join(" or ")}.
+        </p>
+      ))}
       {Object.keys(c.suggestions).length > 0 && (
         <div className="space-y-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm">
           <p className="font-medium">
@@ -433,7 +446,10 @@ function Answers({ session }: { session: CaseSession }) {
         />
       ))}
       {questions
-        .filter(({ key }) => !(key in c.profileInputs))
+        .filter(
+          ({ key }) =>
+            requiredInputs(c)?.includes(key) && !(key in c.profileInputs),
+        )
         .map(({ key, question }) => (
           // Remounts when a suggestion arrives or is taken, to refill the box.
           <AnswerRow
@@ -464,25 +480,27 @@ function Answers({ session }: { session: CaseSession }) {
             ))}
         </details>
       )}
-      {pack.evidence?.map((document) => (
-        <div key={document.key} className="space-y-1">
-          <AttachFiles
-            session={session}
-            id={`file-${document.key}`}
-            fileKey={document.key}
-            label={
-              <>
-                {document.label} <code>({document.key})</code>
-                {document.required ? "" : " — optional"}
-              </>
-            }
-          />
-          <FileList
-            session={session}
-            files={c.evidence.filter((file) => file.key === document.key)}
-          />
-        </div>
-      ))}
+      {pack.evidence
+        ?.filter((doc) => routeApplies(c, doc.when))
+        .map((document) => (
+          <div key={document.key} className="space-y-1">
+            <AttachFiles
+              session={session}
+              id={`file-${document.key}`}
+              fileKey={document.key}
+              label={
+                <>
+                  {document.label} <code>({document.key})</code>
+                  {document.required ? "" : " — optional"}
+                </>
+              }
+            />
+            <FileList
+              session={session}
+              files={c.evidence.filter((file) => file.key === document.key)}
+            />
+          </div>
+        ))}
       <AttachFiles
         session={session}
         id="file-evidence"
@@ -492,6 +510,19 @@ function Answers({ session }: { session: CaseSession }) {
         session={session}
         files={c.evidence.filter((file) => !file.key && !file.followUp)}
       />
+      {c.waitingFor === "answers" && (
+        <button
+          className="demo-secondary"
+          disabled={act.pending}
+          onClick={() =>
+            void act.run(() =>
+              session.send({ type: "artifact.prepare" }, c.seq),
+            )
+          }
+        >
+          Prepare with what I have
+        </button>
+      )}
       <Refusal error={act.error} />
     </div>
   );
@@ -594,7 +625,9 @@ function FileList({
             )}
           </p>
           {file.read.status === "read" && (
-            <p className="text-gray-600">{file.read.summary}</p>
+            <p className="whitespace-pre-line text-gray-600">
+              {file.read.summary}
+            </p>
           )}
           {file.read.status === "unread" && (
             <p className="text-gray-500">{file.read.reason}</p>
@@ -633,92 +666,34 @@ function FileList({
   );
 }
 
-/** The official form, filled in: a link to it, and what it leaves out. */
-function FilledForm({
-  session,
-  document,
-}: {
-  session: CaseSession;
-  document: NonNullable<NonNullable<CaseView["artifact"]>["document"]>;
-}) {
-  const url = useQuery(api.easygov.forms.data.getDocumentUrl, {
-    caseId: session.c!._id,
-    guestKey: session.guestKey,
-  });
-  return (
-    <div className="space-y-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm">
-      {url && (
-        <a
-          className="link-text font-medium"
-          href={url}
-          target="_blank"
-          rel="noreferrer"
-        >
-          Open the official form, filled in
-        </a>
-      )}
-      <p>
-        {document.omissions.length === 0
-          ? "Every value on it was read back from the PDF."
-          : "These weren't written. They're left out, not cut short:"}
-      </p>
-      {document.omissions.length > 0 && (
-        <ul className="list-disc pl-5">
-          {document.omissions.map((omission) => (
-            <li key={omission.label}>
-              {omission.label}: {omission.reason}
-            </li>
-          ))}
-        </ul>
-      )}
-      {document.toComplete.length > 0 && (
-        <>
-          <p className="font-medium">Left for you to complete:</p>
-          <ul className="list-disc pl-5">
-            {document.toComplete.map(({ why, note }) => (
-              <li key={note}>
-                {note}{" "}
-                <span className="text-gray-600">
-                  {why === "confidential"
-                    ? "(confidential: we don't hold this)"
-                    : "(your signature)"}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-    </div>
-  );
-}
-
 function Review({ session }: { session: CaseSession }) {
   const c = session.c!;
   const act = useAct();
   return (
     <div className="demo-panel">
       <h2 className="font-semibold">Review the document</h2>
-      {c.artifact?.letter && (
-        <pre className="whitespace-pre-wrap rounded-xl border bg-amber-50 p-4 text-sm">
-          {c.artifact.letter}
-        </pre>
+      {c.artifact && (
+        <PacketContents
+          artifact={c.artifact}
+          urls={c.documentUrls ?? {}}
+          evidence={c.evidence
+            .filter((f) => !f.followUp)
+            .map((f) => ({
+              key: f.key,
+              name: f.name,
+              url: c.evidenceUrls[f.storageId],
+            }))}
+        />
       )}
-      {c.artifact?.document && (
-        <FilledForm session={session} document={c.artifact.document} />
-      )}
-      {c.artifact?.checklist && (
-        <div className="space-y-1 text-sm">
-          <p className="font-medium">
-            The steps that apply to you ({c.artifact.checklist.length} of the
-            checklist's steps):
-          </p>
-          <ol className="list-decimal space-y-1 pl-5">
-            {c.artifact.checklist.map((step) => (
-              <li key={step}>{step}</li>
-            ))}
-          </ol>
-        </div>
-      )}
+      <button
+        className="demo-secondary"
+        disabled={act.pending}
+        onClick={() =>
+          void act.run(() => session.send({ type: "artifact.reassess" }, c.seq))
+        }
+      >
+        Reassess packet
+      </button>
       <Result value={c.artifact && JSON.parse(c.artifact.summary)} />
       <button
         className="demo-button"
@@ -744,7 +719,7 @@ function Consent({
   const c = session.c!;
   const claim = useMutation(cases.claimCase);
   const act = useAct();
-  const guest = c.userId.startsWith("guest:");
+  const guest = c.guest;
   const send = (event: CaseEvent) => act.run(() => session.send(event, c.seq));
   return (
     <div className="demo-panel">
@@ -752,7 +727,8 @@ function Consent({
         Share this case with a lawyer? ({c.referral?.kind})
       </h2>
       <p className="text-sm text-gray-600">
-        Nothing is copied to <code>referrals</code> unless the person says yes.
+        Sharing sends your goal, answers, attached evidence, and the prepared
+        packet to the firm that accepts this referral.
         {guest && " A guest has to claim the case before sharing it."}
       </p>
       <div className="flex flex-wrap gap-2">
@@ -858,7 +834,7 @@ function Failed({ session }: { session: CaseSession }) {
   const send = (event: CaseEvent) => act.run(() => session.send(event, c.seq));
   return (
     <div className="demo-panel border-red-200">
-      <h2 className="font-semibold">The workflow failed</h2>
+      <h2 className="font-semibold">The case is parked</h2>
       <Result value={c.run?.state === "failed" ? c.run.error : undefined} />
       <div className="flex gap-2">
         <button
@@ -876,6 +852,38 @@ function Failed({ session }: { session: CaseSession }) {
           Give up
         </button>
       </div>
+      <Refusal error={act.error} />
+    </div>
+  );
+}
+
+/** The way to a lawyer before the packet is done, and after a denial. */
+function Lawyer({ session }: { session: CaseSession }) {
+  const c = session.c!;
+  const act = useAct();
+  if (!c.lawyer?.available) return null;
+  const why =
+    c.lawyer.reason === "decision"
+      ? "A decision against you has come in. A lawyer can take it from here."
+      : c.lawyer.reason === "contested"
+        ? "Cases like this are ones lawyers take."
+        : "You can ask a lawyer to look at this at any point.";
+  return (
+    <div className="demo-panel">
+      <h2 className="font-semibold">Talk to a lawyer</h2>
+      <p className="text-sm text-gray-600">
+        {why} This shares your case as it stands now: your goal, answers and
+        files. {c.guest && "Create an account first."}
+      </p>
+      <button
+        className={c.lawyer.reason ? "demo-button" : "demo-secondary"}
+        disabled={act.pending}
+        onClick={() =>
+          void act.run(() => session.send({ type: "referral.request" }, c.seq))
+        }
+      >
+        Share my case with a lawyer
+      </button>
       <Refusal error={act.error} />
     </div>
   );
@@ -909,7 +917,7 @@ function Now({
       return (
         <>
           <Review session={session} />
-          {(definitionOf(c.selection)?.inputs.length ?? 0) > 0 && (
+          {(requiredInputs(c)?.length ?? 0) > 0 && (
             <details className="demo-panel">
               <summary className="cursor-pointer font-medium">
                 Change an answer (sends the case back around)
@@ -1018,7 +1026,10 @@ function AnyEvent({ session }: { session: CaseSession }) {
 }
 
 function History({ session }: { session: CaseSession }) {
-  const events = useQuery(api.easygov.dev.history, { caseId: session.c!._id });
+  const events = useQuery(cases.listHistory, {
+    caseId: session.c!._id,
+    guestKey: session.guestKey,
+  });
   return (
     <ol className="space-y-1 text-sm" aria-label="Case history">
       {events?.map((event, i) => (
@@ -1055,8 +1066,40 @@ export function CaseWorkbench({
   if (!c) return <p role="status">Loading the case…</p>;
   return (
     <div className="space-y-4">
-      <Where c={c} />
+      <Where c={c} guestKey={session.guestKey} />
+      {c.status === "active" && <Proposals guestKey={session.guestKey} />}
+      {c.referral && <CaseHandoff session={session} />}
+      {(c.phase === "consent" || c.status === "done") && c.artifact && (
+        <div className="demo-panel">
+          <h2>Prepared packet</h2>
+          {c.status === "done" && (
+            <button
+              className="demo-secondary"
+              disabled={act.pending}
+              onClick={() =>
+                void act.run(() =>
+                  session.send({ type: "artifact.reassess" }, c.seq),
+                )
+              }
+            >
+              Reassess packet
+            </button>
+          )}
+          <PacketContents
+            artifact={c.artifact}
+            urls={c.documentUrls ?? {}}
+            evidence={c.evidence
+              .filter((f) => !f.followUp)
+              .map((f) => ({
+                key: f.key,
+                name: f.name,
+                url: c.evidenceUrls[f.storageId],
+              }))}
+          />
+        </div>
+      )}
       <Now session={session} onClaimed={onClaimed} />
+      <Lawyer session={session} />
       <Drawer title="History (caseEvents), in order">
         <History session={session} />
       </Drawer>
@@ -1065,7 +1108,11 @@ export function CaseWorkbench({
       </Drawer>
       {c.waitingFor !== "goal" && (
         <Drawer title="Conversation">
-          <Transcript threadId={c.threadId} />
+          <CaseTranscript
+            caseId={c._id}
+            threadId={c.threadId}
+            guestKey={session.guestKey}
+          />
         </Drawer>
       )}
       {c.status === "active" && (
@@ -1087,6 +1134,56 @@ export function CaseWorkbench({
           <Refusal error={act.error} />
         </div>
       )}
+    </div>
+  );
+}
+
+function CaseHandoff({ session }: { session: CaseSession }) {
+  const caseId = session.c!._id;
+  const handoff = useQuery(cases.handoff, {
+    caseId,
+    guestKey: session.guestKey,
+  });
+  const answer = useMutation(cases.answerLawyer);
+  const act = useAct();
+  if (!handoff) return null;
+  return (
+    <div className="demo-panel">
+      <h2>Lawyer handoff</h2>
+      <p>
+        {handoff.firm ?? "Referral"} · {handoff.status}
+      </p>
+      {handoff.questions.map((request) => (
+        <div key={request.id}>
+          <p>{request.question}</p>
+          {request.answer ? (
+            <p>{request.answer}</p>
+          ) : (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const value = String(
+                  new FormData(e.currentTarget).get("answer") ?? "",
+                );
+                void act.run(() =>
+                  answer({ caseId, questionId: request.id, answer: value }),
+                );
+              }}
+            >
+              <textarea
+                required
+                className="input-field"
+                name="answer"
+                aria-label="Your reply to the lawyer"
+              />
+              <button className="demo-button" disabled={act.pending}>
+                Share reply with firm
+              </button>
+            </form>
+          )}
+        </div>
+      ))}
+      <Refusal error={act.error} />
     </div>
   );
 }

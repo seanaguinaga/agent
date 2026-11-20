@@ -2,8 +2,10 @@
 // packs and a firm, and reading what the product API keeps to itself (every
 // pack, a case's history, every referral).
 //
-// These are public and check nothing, which is fine while the example signs
-// everyone in as the same test user. Don't ship this file.
+// These are public, and open to operators only (`operators.ts`): while the
+// example signs everyone in as the same test user, that's everyone. Don't
+// ship this file.
+import { requireOperator } from "./operators";
 import { v } from "convex/values";
 import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
@@ -13,7 +15,14 @@ import { phase, waitingFor } from "./case/state";
 import { vHistoryKind, vPhase, vWaitingFor } from "./case/schema";
 import { vCoverage } from "./firms/schema";
 import { candidates, vSaveResult } from "./packs/data";
-import { irs8822, ssaAppeal, wageClaim } from "./packs/packs.testkit";
+import {
+  eeocCharge,
+  irs8822,
+  ssaAppeal,
+  uiAppealCa,
+  vaDecisionReview,
+  wageClaim,
+} from "./packs/packs.testkit";
 import {
   jurisdictionChain,
   packDefinition,
@@ -22,12 +31,22 @@ import {
   vProcessPackDefinition,
 } from "./packs/schema";
 
-const FIXTURES = { irs8822, ssaAppeal, wageClaim };
+const FIXTURES = {
+  irs8822,
+  ssaAppeal,
+  wageClaim,
+  eeocCharge,
+  vaDecisionReview,
+  uiAppealCa,
+};
 /** What the seeded firm takes: every referral the fixture packs can offer. */
 const SEED_COVERAGE = [
   { kind: "representation", jurisdiction: "us" },
   { kind: "employment", jurisdiction: "us/ca" },
   { kind: "advice", jurisdiction: "us" },
+  { kind: "discrimination", jurisdiction: "us" },
+  { kind: "veterans", jurisdiction: "us" },
+  { kind: "unemployment", jurisdiction: "us/ca" },
 ];
 
 /** The fixture packs, by name, for a page to show or edit before saving. */
@@ -48,6 +67,7 @@ export const seed = mutation({
     firmId: v.id("firms"),
   }),
   handler: async (ctx) => {
+    await requireOperator(ctx);
     const packs: Record<string, Id<"processPacks">> = {};
     for (const [name, definition] of Object.entries(FIXTURES)) {
       const shared = await ctx.db
@@ -110,6 +130,7 @@ export const packs = query({
     }),
   ),
   handler: async (ctx) => {
+    await requireOperator(ctx);
     const rows = await ctx.db.query("processPacks").order("desc").take(100);
     return rows.map((row) => {
       const { _id, _creationTime, ownerId, status, supersedes, ...rest } = row;
@@ -135,6 +156,7 @@ export const searchPacks = query({
   args: { jurisdiction: v.string(), terms: v.string(), mine: v.boolean() },
   returns: v.union(v.array(vPackMatch), v.null()),
   handler: async (ctx, { jurisdiction, terms, mine }) => {
+    await requireOperator(ctx);
     const place = parseJurisdiction(jurisdiction);
     if (!place) return null;
     const ownerId = mine ? await getAuthUserId(ctx) : undefined;
@@ -151,8 +173,10 @@ export const createPack = mutation({
     reviewedPackIds: v.optional(v.array(v.id("processPacks"))),
   },
   returns: vSaveResult,
-  handler: async (ctx, args): Promise<typeof vSaveResult.type> =>
-    await ctx.runMutation(internal.easygov.packs.data.createPack, args),
+  handler: async (ctx, args): Promise<typeof vSaveResult.type> => {
+    await requireOperator(ctx);
+    return await ctx.runMutation(internal.easygov.packs.data.createPack, args);
+  },
 });
 
 // --- Cases ------------------------------------------------------------------
@@ -173,6 +197,7 @@ export const cases = query({
     }),
   ),
   handler: async (ctx) => {
+    await requireOperator(ctx);
     const userId = await getAuthUserId(ctx);
     const rows = await ctx.db
       .query("cases")
@@ -203,6 +228,7 @@ export const history = query({
     }),
   ),
   handler: async (ctx, { caseId }) => {
+    await requireOperator(ctx);
     const rows = await ctx.db
       .query("caseEvents")
       .withIndex("by_caseId", (q) => q.eq("caseId", caseId))
@@ -228,6 +254,7 @@ export const firms = query({
     }),
   ),
   handler: async (ctx) => {
+    await requireOperator(ctx);
     const userId = await getAuthUserId(ctx);
     const rows = await ctx.db
       .query("firms")
@@ -247,7 +274,7 @@ export const createFirm = mutation({
   handler: async (ctx, args): Promise<Id<"firms">> =>
     await ctx.runMutation(internal.easygov.firms.data.createFirm, {
       ...args,
-      userId: await getAuthUserId(ctx),
+      userId: await requireOperator(ctx),
     }),
 });
 
@@ -271,6 +298,7 @@ export const referrals = query({
     }),
   ),
   handler: async (ctx) => {
+    await requireOperator(ctx);
     const rows = await ctx.db.query("referrals").order("desc").take(50);
     const result = [];
     for (const row of rows) {

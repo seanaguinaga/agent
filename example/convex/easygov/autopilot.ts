@@ -3,6 +3,7 @@
 // answers are made up from the pinned pack, so it drives any pack, including
 // one a model drafted.
 import type { Infer } from "convex/values";
+import { requiredInputs, routeApplies } from "./case/state";
 import { DAY_MS } from "./dates";
 import {
   definitionOf,
@@ -24,6 +25,12 @@ export type CaseView = Infer<typeof vCaseDoc> & {
   suggestions: Record<string, string>;
   profileInputs: Record<string, string>;
   evidenceUrls: Record<string, string>;
+  /** Started without an account. */
+  guest?: boolean;
+  /** Whether `referral.request` is taken now, and why to suggest it. */
+  lawyer?: { available: boolean; reason?: "decision" | "contested" };
+  conflicts?: Record<string, string[]>;
+  documentUrls?: Record<string, string>;
 };
 type Pack = NonNullable<ReturnType<typeof definitionOf>>;
 
@@ -110,14 +117,18 @@ export function pilot(
       if (offered.length && !offered.some((key) => steered.includes(key))) {
         return { event: { type: "answers.accept" } };
       }
-      const key = pack.inputs.find((input) => c.answers[input] === undefined);
+      const key = requiredInputs(c)?.find(
+        (input) => c.answers[input] === undefined,
+      );
       if (key) {
         const value = answerFor(pack, key, options.referral, today);
         return { event: { type: "answers.set", key, value } };
       }
       const file = pack.evidence?.find(
-        ({ key, required }) =>
-          required && !c.evidence.some((attached) => attached.key === key),
+        ({ key, required, when }) =>
+          routeApplies(c, when) &&
+          required &&
+          !c.evidence.some((attached) => attached.key === key),
       );
       return file ? { upload: file.key } : "wait";
     }

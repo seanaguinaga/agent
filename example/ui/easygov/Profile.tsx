@@ -12,6 +12,7 @@ import type {
   Name,
 } from "../../convex/easygov/profile/vocabulary";
 import { useAct } from "./session";
+import { nameFromText } from "../../convex/easygov/profile/vocabulary";
 import { Chip, Page, Refusal } from "./Workbench";
 
 const profile = api.easygov.profile.public;
@@ -310,7 +311,11 @@ export function FactEditor({
         (fact.kind === "name" ? (
           <NameEditor
             value={
-              typeof value === "object" && "family" in value ? value : undefined
+              startText
+                ? nameFromText(startText)
+                : typeof value === "object" && "family" in value
+                  ? value
+                  : undefined
             }
             onSave={onSave}
           />
@@ -326,7 +331,7 @@ export function FactEditor({
         ) : (
           <TextEditor
             fact={fact}
-            value={typeof value === "string" ? value : undefined}
+            value={startText ?? (typeof value === "string" ? value : undefined)}
             onSave={onSave}
           />
         ))}
@@ -379,7 +384,7 @@ export function Proposals({ guestKey }: { guestKey?: string }) {
       {data.proposals.map((proposal) => (
         <div key={proposal.id} className="space-y-2">
           <p className="text-sm">
-            A finished case gave a new{" "}
+            {proposal.source ?? "Your case"} suggests this{" "}
             <strong>{proposal.label.toLowerCase()}</strong>: {proposal.text}
           </p>
           <FactEditor

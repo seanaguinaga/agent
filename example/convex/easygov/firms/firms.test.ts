@@ -85,6 +85,10 @@ describe("previews", () => {
         attached: ["payStub"],
         evidence: 1,
         priceCents: 5000,
+        // How far it got, what's at stake and how long is left: never the figure.
+        stage: "accepted",
+        amountBand: "$5,000 to $25,000",
+        daysLeft: expect.any(Number),
       },
     ]);
     const text = JSON.stringify(found);
@@ -160,8 +164,29 @@ describe("accepting", () => {
       evidence: [{ key: "payStub", name: "payStub", url: expect.any(String) }],
     });
     expect(await t.query(firms.listAccepted, { firmId: first })).toMatchObject([
-      { id: referralId, priceCents: 12000 },
+      {
+        id: referralId,
+        priceCents: 12000,
+        goal: wageClaim.title,
+        process: wageClaim.title,
+        unanswered: 0,
+      },
     ]);
+    await t.mutation(firms.requestInformation, {
+      firmId: first,
+      referralId,
+      question: "Do you have the final pay stub?",
+    });
+    expect(await t.query(firms.listAccepted, { firmId: first })).toMatchObject([
+      { unanswered: 1 },
+    ]);
+    expect(await t.query(firms.listCharges, { firmId: first })).toMatchObject({
+      owedCents: 12000,
+      charges: [{ referralId, amountCents: 12000, status: "owed" }],
+    });
+    expect(await t.query(firms.listFirms, {})).toContainEqual(
+      expect.objectContaining({ id: first }),
+    );
     const charges = await t.run((ctx) =>
       ctx.db.query("referralCharges").collect(),
     );

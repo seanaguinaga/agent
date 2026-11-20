@@ -1,9 +1,10 @@
 "use node";
 // The PDF work: fetching a form from its authority, reading it, and filling
 // it. In Node because the PDF libraries need it.
+import { requireOperator } from "../operators";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import { PDFCheckBox, PDFDocument, PDFTextField } from "pdf-lib";
 import { internal } from "../../_generated/api";
 import type { Id } from "../../_generated/dataModel";
@@ -16,129 +17,169 @@ import { browserService, downloadViaBrowser } from "./browser";
 import { resolveMapping } from "./mapping";
 import { openForFilling, UnusablePdf } from "./open";
 import { fillPdf, inspectPdf, verifyPdf } from "./pdf";
-import { vFilledDocument, vLeft } from "./schema";
+import {
+  vFilledDocument,
+  vLeft,
+  vTarget,
+  vMapping,
+  vPacketPdf,
+} from "./schema";
+import { isOfficialHost } from "./data";
 import { namesForm, obtain } from "./sources";
+
+const fetchArgs = {
+  formId: v.id("forms"),
+  /** Read the targets again even if these bytes are known. */
+  reinspect: v.optional(v.boolean()),
+};
+const vFetched = v.object({
+  editionId: v.id("formEditions"),
+  fresh: v.boolean(),
+});
+type Fetched = Infer<typeof vFetched>;
 
 /**
  * Fetches a form from its source and records what came back. The same bytes
  * as before only refresh `checkedAt`; different bytes are a new edition,
  * read for its revision and targets. Returns the edition.
  */
-export const fetchForm = action({
-  args: {
-    formId: v.id("forms"),
-    /** Read the targets again even if these bytes are known. */
-    reinspect: v.optional(v.boolean()),
-  },
-  returns: v.object({ editionId: v.id("formEditions"), fresh: v.boolean() }),
-  handler: async (
-    ctx,
-    { formId, reinspect },
-  ): Promise<{ editionId: Id<"formEditions">; fresh: boolean }> => {
-    const form: { urls: string[]; code: string } | null = await ctx.runQuery(
-      internal.easygov.forms.data.formOf,
-      { formId },
-    );
-    if (!form) throw new ConvexError("Form not found.");
-    // A plain request first. Where that's refused, a real browser opens the
-    // same address, if one is set up.
-    const service = browserService();
-    const got = await obtain(form.urls, {
-      request: async (url) => {
-        const response = await fetch(url, {
+async function fetchEdition(
+  ctx: ActionCtx,
+  { formId, reinspect }: { formId: Id<"forms">; reinspect?: boolean },
+): Promise<Fetched> {
+  const form: { urls: string[]; code: string } | null = await ctx.runQuery(
+    internal.easygov.forms.data.formOf,
+    { formId },
+  );
+  if (!form) throw new ConvexError("Form not found.");
+  // A plain request first. Where that's refused, a real browser opens the
+  // same address, if one is set up.
+  const service = browserService();
+  const got = await obtain(form.urls, {
+    request: async (url) => {
+      let address = url;
+      for (let redirects = 0; redirects <= 5; redirects++) {
+        if (!isOfficialHost(address))
+          throw new Error(
+            "The form link left the authority’s permitted sites.",
+          );
+        const response = await fetch(address, {
+          redirect: "manual",
           headers: { "User-Agent": "Mozilla/5.0 (compatible; form-fetch)" },
         });
-        if (!response.ok) {
-          throw new Error(`The source answered ${response.status}.`);
+        if (
+          response.status >= 300 &&
+          response.status < 400 &&
+          response.headers.has("location")
+        ) {
+          address = new URL(response.headers.get("location")!, address).href;
+          continue;
         }
+        if (!response.ok)
+          throw new Error(`The source answered ${response.status}.`);
         return new Uint8Array(await response.arrayBuffer());
-      },
-      browser: service && ((url) => downloadViaBrowser(url, service)),
+      }
+      throw new Error("The form link redirected too many times.");
+    },
+    browser: service && ((url) => downloadViaBrowser(url, service)),
+  });
+  const record = (ok: boolean, attempts = got.attempts) =>
+    ctx.runMutation(internal.easygov.forms.data.recordAttempts, {
+      formId,
+      ok,
+      attempts,
     });
-    const record = (ok: boolean, attempts = got.attempts) =>
-      ctx.runMutation(internal.easygov.forms.data.recordAttempts, {
-        formId,
-        ok,
-        attempts,
-      });
-    if (!("bytes" in got)) {
-      await record(false);
-      const last = got.attempts.at(-1);
-      throw new ConvexError(
-        `The form couldn't be fetched. ${last?.note ?? ""}` +
-          (service ? "" : " No browser is set up to try next."),
-      );
-    }
-    const { bytes, via, url } = got;
-    const hash = bytesToHex(sha256(bytes));
-    const known: Id<"formEditions"> | null = await ctx.runMutation(
-      internal.easygov.forms.data.recordFetch,
-      { formId, sha256: hash },
+  if (!("bytes" in got)) {
+    await record(false);
+    const last = got.attempts.at(-1);
+    throw new ConvexError(
+      `The form couldn't be fetched. ${last?.note ?? ""}` +
+        (service ? "" : " No browser is set up to try next."),
     );
-    if (known && !reinspect) {
-      await record(true);
-      return { editionId: known, fresh: false };
-    }
-    // Many forms are protected without a password. Where the file allows
-    // its forms to be filled, it's opened; otherwise the fetch stops here,
-    // having still found the file.
-    const refuse = async (note: string, say: string) => {
-      await record(false, [...got.attempts, { via, url, ok: false, note }]);
-      return new ConvexError(say);
-    };
-    let ready: Uint8Array;
-    let opened: boolean;
-    try {
-      ({ bytes: ready, opened } = await openForFilling(bytes));
-    } catch (error) {
-      const why =
-        error instanceof UnusablePdf ? error.message : "It can't be read.";
-      throw await refuse(
-        why,
-        `The form was fetched, but can't be used. ${why}`,
-      );
-    }
-    const { pages, edition, fillable, targets, opening } =
-      await inspectPdf(ready);
-    // Whatever way it came, it has to be the form it's meant to be.
-    if (!namesForm(form.code, opening)) {
-      throw await refuse(
-        `The file doesn't name ${form.code}.`,
-        `What came back isn't ${form.code}.`,
-      );
-    }
+  }
+  const { bytes, via, url } = got;
+  const hash = bytesToHex(sha256(bytes));
+  const known: Id<"formEditions"> | null = await ctx.runMutation(
+    internal.easygov.forms.data.recordFetch,
+    { formId, sha256: hash },
+  );
+  if (known && !reinspect) {
     await record(true);
-    if (known) {
-      await ctx.runMutation(internal.easygov.forms.data.replaceTargets, {
-        editionId: known,
+    return { editionId: known, fresh: false };
+  }
+  // Many forms are protected without a password. Where the file allows
+  // its forms to be filled, it's opened; otherwise the fetch stops here,
+  // having still found the file.
+  const refuse = async (note: string, say: string) => {
+    await record(false, [...got.attempts, { via, url, ok: false, note }]);
+    return new ConvexError(say);
+  };
+  let ready: Uint8Array;
+  let opened: boolean;
+  try {
+    ({ bytes: ready, opened } = await openForFilling(bytes));
+  } catch (error) {
+    const why =
+      error instanceof UnusablePdf ? error.message : "It can't be read.";
+    throw await refuse(why, `The form was fetched, but can't be used. ${why}`);
+  }
+  const { pages, edition, fillable, targets, opening } =
+    await inspectPdf(ready);
+  // Whatever way it came, it has to be the form it's meant to be.
+  if (!namesForm(form.code, opening)) {
+    throw await refuse(
+      `The file doesn't name ${form.code}.`,
+      `What came back isn't ${form.code}.`,
+    );
+  }
+  await record(true);
+  if (known) {
+    await ctx.runMutation(internal.easygov.forms.data.replaceTargets, {
+      editionId: known,
+      targets,
+    });
+    return { editionId: known, fresh: false };
+  }
+  const storageId = await ctx.storage.store(
+    // What's kept is the form ready to fill. Its identity is still the
+    // hash of the bytes as the authority published them.
+    new Blob([ready.slice().buffer], { type: "application/pdf" }),
+  );
+  const editionId: Id<"formEditions"> | null = await ctx.runMutation(
+    internal.easygov.forms.data.recordFetch,
+    {
+      formId,
+      sha256: hash,
+      fresh: {
+        storageId,
+        edition,
+        pages,
+        fillable,
         targets,
-      });
-      return { editionId: known, fresh: false };
-    }
-    const storageId = await ctx.storage.store(
-      // What's kept is the form ready to fill. Its identity is still the
-      // hash of the bytes as the authority published them.
-      new Blob([ready.slice().buffer], { type: "application/pdf" }),
-    );
-    const editionId: Id<"formEditions"> | null = await ctx.runMutation(
-      internal.easygov.forms.data.recordFetch,
-      {
-        formId,
-        sha256: hash,
-        fresh: {
-          storageId,
-          edition,
-          pages,
-          fillable,
-          targets,
-          obtained: { via, url },
-          opened,
-        },
+        obtained: { via, url },
+        opened,
       },
-    );
-    if (!editionId) throw new Error("The edition wasn't recorded");
-    return { editionId, fresh: true };
+    },
+  );
+  if (!editionId) throw new Error("The edition wasn't recorded");
+  return { editionId, fresh: true };
+}
+
+/** `fetchEdition`, for an operator's page. */
+export const fetchForm = action({
+  args: fetchArgs,
+  returns: vFetched,
+  handler: async (ctx, args): Promise<Fetched> => {
+    await requireOperator(ctx);
+    return await fetchEdition(ctx, args);
   },
+});
+
+/** `fetchEdition`, for a case's own work: no operator is signed in there. */
+export const fetchSource = internalAction({
+  args: fetchArgs,
+  returns: vFetched,
+  handler: async (ctx, args): Promise<Fetched> => await fetchEdition(ctx, args),
 });
 
 type Filled = typeof vFilledDocument.type;
@@ -156,6 +197,17 @@ async function fill(
   if (needReviewed && !input.reviewed) {
     throw new ConvexError("This form's mapping hasn't been reviewed yet.");
   }
+  return writeDocument(ctx, input, answers);
+}
+async function writeDocument(
+  ctx: ActionCtx,
+  input: {
+    storageId: Id<"_storage">;
+    targets: Infer<typeof vTarget>[];
+    mapping: Infer<typeof vMapping>;
+  },
+  answers: Record<string, string>,
+): Promise<Filled> {
   const blank = await ctx.storage.get(input.storageId);
   if (!blank) throw new Error("The blank form is missing");
   const kinds = Object.fromEntries(
@@ -230,6 +282,7 @@ export const testFill = action({
     toComplete: v.array(vLeft),
   }),
   handler: async (ctx, { editionId, answers }) => {
+    await requireOperator(ctx);
     const { storageId, omissions, toComplete } = await fill(
       ctx,
       editionId,
@@ -262,5 +315,52 @@ export const readFilled = internalAction({
       }
     }
     return { texts, ticked };
+  },
+});
+
+export const fillPacket = internalAction({
+  args: { caseId: v.id("cases") },
+  returns: v.object({
+    fingerprint: v.string(),
+    documents: v.array(vPacketPdf),
+    openItems: v.array(v.string()),
+  }),
+  handler: async (
+    ctx,
+    { caseId },
+  ): Promise<{
+    fingerprint: string;
+    documents: Infer<typeof vPacketPdf>[];
+    openItems: string[];
+  }> => {
+    const { forms, answers, fingerprint } = await ctx.runQuery(
+      internal.easygov.case.data.packetInput,
+      { caseId },
+    );
+    const documents = [];
+    const openItems = [];
+    for (const { blueprintId, code, sourceUrl, openItem } of forms) {
+      if (!blueprintId) {
+        openItems.push(openItem ?? `Complete ${code} at ${sourceUrl}`);
+        continue;
+      }
+      try {
+        const input = await ctx.runQuery(
+          internal.easygov.forms.data.blueprintForFill,
+          { id: blueprintId },
+        );
+        documents.push({
+          code,
+          sourceUrl,
+          ...(await writeDocument(ctx, input, answers)),
+        });
+      } catch (error) {
+        console.error("Could not fill packet form", code, error);
+        openItems.push(
+          `Complete ${code} at ${sourceUrl}. The PDF could not be filled.`,
+        );
+      }
+    }
+    return { fingerprint, documents, openItems };
   },
 });

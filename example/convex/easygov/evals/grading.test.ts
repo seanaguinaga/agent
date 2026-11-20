@@ -8,7 +8,7 @@ import {
   gradeIntake,
   gradeMapping,
   gradePipeline,
-  gradePrefill,
+  gradeSuggest,
   gradeRequest,
   gradeResearch,
   gradeTailor,
@@ -170,22 +170,22 @@ test("research: sources must be on the authority's domain, with the facts", () =
   });
 });
 
-test("prefill: everything said is found, and nothing unsaid is guessed", () => {
+test("suggest: everything said is found, and nothing unsaid is guessed", () => {
   const expected = {
     has: { newAddress: "2 New Street" },
     absent: ["fullName"],
   };
   expect(
     passes(
-      gradePrefill(expected, { newAddress: "2 New Street, Berkeley" }).checks,
+      gradeSuggest(expected, { newAddress: "2 New Street, Berkeley" }).checks,
     ),
   ).toBe(true);
-  expect(gradePrefill(expected, {})).toEqual({
+  expect(gradeSuggest(expected, {})).toEqual({
     checks: { found: false, noGuess: true },
     detail: "missed: newAddress=(none)",
   });
   expect(
-    gradePrefill(expected, { newAddress: "2 New Street", fullName: "Ada" }),
+    gradeSuggest(expected, { newAddress: "2 New Street", fullName: "Ada" }),
   ).toEqual({
     checks: { found: true, noGuess: false },
     detail: "guessed: fullName=Ada",
@@ -309,7 +309,7 @@ test("a case on a real form is graded on what the PDF itself holds", () => {
   const c = {
     status: "done",
     answers: { fullName: "Ada Lovelace", newAddress: "2 New Street" },
-    approval: { fingerprint: "f" },
+    accepted: { fingerprint: "f" },
     artifact: {
       fingerprint: "f",
       document: {

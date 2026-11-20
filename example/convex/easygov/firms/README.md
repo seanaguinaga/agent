@@ -2,7 +2,7 @@
 
 **Who may take a case the person agreed to share?**
 
-When a person says yes to a referral, a copy of what they approved is saved as a
+When a person says yes to a referral, a copy of what they accepted is saved as a
 row in `referrals`. One law firm that covers it accepts it, and only that firm
 reads it.
 
@@ -26,7 +26,7 @@ reads it.
    firm only, and only while it's `open`. A firm that declined can still accept:
    that undoes its decline.
 4. **Read.** `packet` returns the goal, the answers, and every file the person
-   attached before approving (a link, its name, and what reading it found) to
+   attached before accepting (a link, its name, and what reading it found) to
    the firm that accepted, and to no one else.
 
 The person can take an `open` referral back with `case/public:withdrawReferral`:

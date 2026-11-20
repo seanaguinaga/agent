@@ -192,8 +192,8 @@ export function Launcher({
 const UNTIL: { value: PilotOptions["until"]; label: string }[] = [
   { value: "pack", label: "a pack is proposed" },
   { value: "answers", label: "it asks for answers" },
-  { value: "approval", label: "the document is ready to review" },
-  { value: "approved", label: "it's approved" },
+  { value: "review", label: "the document is ready to review" },
+  { value: "accepted", label: "it's accepted" },
   { value: "consent", label: "it asks to share with a lawyer" },
   { value: "end", label: "the case ends" },
 ];
@@ -266,7 +266,7 @@ export function PilotBar({
             }
           >
             <option value="share">share</option>
-            <option value="decline">decline</option>
+            <option value="reject">reject</option>
           </select>
         </div>
         {pilot.running ? (

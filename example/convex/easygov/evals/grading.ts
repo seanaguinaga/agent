@@ -204,17 +204,17 @@ export function gradeDraft(
   };
 }
 
-// --- Prefill ----------------------------------------------------------------
+// --- Suggest ----------------------------------------------------------------
 
-export type PrefillExpectation = {
+export type SuggestExpectation = {
   /** What must be found: a pattern for each key the person answered. */
   has: Record<string, string>;
   /** Keys the person never answered: any value here is a guess. */
   absent: readonly string[];
 };
 
-export function gradePrefill(
-  expected: PrefillExpectation,
+export function gradeSuggest(
+  expected: SuggestExpectation,
   answers: Record<string, string>,
 ): Graded {
   const missed = Object.entries(expected.has).filter(
@@ -421,7 +421,7 @@ export function outcomeOf(c: CaseView): Outcome {
 
 export type PipelineExpectation = {
   delivery?: string | null;
-  referral?: "shared" | "declined" | null;
+  referral?: "shared" | "rejected" | null;
   /** Text the finished letter must contain, e.g. an answer it was built from. */
   letterHas?: string;
   /**
@@ -442,7 +442,7 @@ export function gradePipeline(
 ): Graded {
   const checks: Checks = {
     done: c.status === "done",
-    approved: c.approval?.fingerprint === c.artifact?.fingerprint,
+    accepted: c.accepted?.fingerprint === c.artifact?.fingerprint,
   };
   if (expected.delivery !== undefined) {
     checks.delivery = (c.delivery?.channel ?? null) === expected.delivery;

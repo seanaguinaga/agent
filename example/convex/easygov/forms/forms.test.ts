@@ -180,7 +180,7 @@ test("a case on the form's pack is filled from the profile, and read back", asyn
     value: "2 New Street, Berkeley, CA 94704",
   });
   expect(review).toMatchObject({
-    waitingFor: "approval",
+    waitingFor: "review",
     artifact: {
       document: {
         omissions: [],
@@ -216,7 +216,7 @@ test("a case on the form's pack is filled from the profile, and read back", asyn
   // A form filled from answers that have since moved on (a profile save
   // reaches a case at any time) is behind them: it isn't put up for review.
   const { document, fingerprint } = review.artifact!;
-  const fill = internal.easygov.case.data.fill;
+  const fill = internal.easygov.case.data.recordArtifact;
   await t.mutation(fill, {
     caseId,
     document: { ...document!, fingerprint: "the answers before" },
@@ -226,7 +226,7 @@ test("a case on the form's pack is filled from the profile, and read back", asyn
     artifact: { fingerprint: "the answers before" },
   });
   await t.mutation(fill, { caseId, document: { ...document!, fingerprint } });
-  expect((await read(t, caseId)).waitingFor).toBe("approval");
+  expect((await read(t, caseId)).waitingFor).toBe("review");
 
   // A pack fills this edition now, so its mapping can be corrected but not
   // taken back to unreviewed, and its targets can't be read again.
@@ -241,7 +241,7 @@ test("a case on the form's pack is filled from the profile, and read back", asyn
   ).rejects.toThrow(/can't be read again/);
   await t.mutation(forms.saveMapping, { editionId, mapping, reviewed: true });
 
-  expect(await send(t, caseId, { type: "review.approve" })).toMatchObject({
+  expect(await send(t, caseId, { type: "artifact.accept" })).toMatchObject({
     status: "done",
   });
 });
@@ -316,12 +316,12 @@ test("a group of boxes is asked as one question, and typing isn't refused for a 
   });
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   const review = await read(t, caseId);
-  expect(review.waitingFor).toBe("approval");
+  expect(review.waitingFor).toBe("review");
   await expect(
     t.mutation(api.easygov.case.public.send, {
       caseId,
       expectedSeq: started.seq,
-      event: { type: "review.approve" },
+      event: { type: "artifact.accept" },
     }),
   ).rejects.toThrow(/case has changed/);
 

@@ -164,7 +164,7 @@ function Goal({ session }: { session: CaseSession }) {
         id="file-start"
         label="Or start from the letter or notice you received (a model reads it, and intake answers)"
       />
-      <FileList session={session} files={c.files} />
+      <FileList session={session} files={c.evidence} />
       <Refusal error={act.error} />
     </div>
   );
@@ -230,7 +230,7 @@ function Proposal({ session }: { session: CaseSession }) {
           <p className="text-gray-600">
             {draft.inputs.length
               ? `It will ask: ${draft.inputQuestions?.map(({ question }) => question).join(" · ")}`
-              : "It asks nothing: confirming goes straight to review."}{" "}
+              : "It asks nothing: accepting goes straight to review."}{" "}
             A draft runs on this case only and is never saved as a pack.
           </p>
         </div>
@@ -248,14 +248,14 @@ function Proposal({ session }: { session: CaseSession }) {
         <button
           className="demo-button"
           disabled={act.pending}
-          onClick={() => void send({ type: "processPack.confirm" })}
+          onClick={() => void send({ type: "pack.accept" })}
         >
-          Confirm
+          Accept
         </button>
         <button
           className="demo-secondary"
           disabled={act.pending}
-          onClick={() => void send({ type: "processPack.reject" })}
+          onClick={() => void send({ type: "pack.reject" })}
         >
           Reject
         </button>
@@ -464,7 +464,7 @@ function Answers({ session }: { session: CaseSession }) {
             ))}
         </details>
       )}
-      {pack.documents?.map((document) => (
+      {pack.evidence?.map((document) => (
         <div key={document.key} className="space-y-1">
           <AttachFiles
             session={session}
@@ -479,7 +479,7 @@ function Answers({ session }: { session: CaseSession }) {
           />
           <FileList
             session={session}
-            files={c.files.filter((file) => file.key === document.key)}
+            files={c.evidence.filter((file) => file.key === document.key)}
           />
         </div>
       ))}
@@ -490,7 +490,7 @@ function Answers({ session }: { session: CaseSession }) {
       />
       <FileList
         session={session}
-        files={c.files.filter((file) => !file.key && !file.followUp)}
+        files={c.evidence.filter((file) => !file.key && !file.followUp)}
       />
       <Refusal error={act.error} />
     </div>
@@ -549,13 +549,13 @@ function FileList({
   files,
 }: {
   session: CaseSession;
-  files: CaseView["files"];
+  files: CaseView["evidence"];
 }) {
   const c = session.c!;
   const act = useAct();
-  const asked = definitionOf(c.selection)?.documents ?? [];
-  // A case's own files until it's approved; a follow-up once it's done.
-  const open = c.status === "done" || c.approval === undefined;
+  const asked = definitionOf(c.selection)?.evidence ?? [];
+  // A case's own files until it's accepted; a follow-up once it's done.
+  const open = c.status === "done" || c.accepted === undefined;
   if (!files.length) return null;
   return (
     <ul className="space-y-2 text-sm">
@@ -564,7 +564,7 @@ function FileList({
           <p className="flex flex-wrap items-center gap-2">
             <a
               className="link-text"
-              href={c.fileUrls[file.storageId]}
+              href={c.evidenceUrls[file.storageId]}
               target="_blank"
               rel="noreferrer"
             >
@@ -583,7 +583,7 @@ function FileList({
                 onClick={() =>
                   void act.run(() =>
                     session.send(
-                      { type: "document.remove", storageId: file.storageId },
+                      { type: "evidence.remove", storageId: file.storageId },
                       c.seq,
                     ),
                   )
@@ -609,7 +609,7 @@ function FileList({
                 void act.run(() =>
                   session.send(
                     {
-                      type: "document.label",
+                      type: "evidence.update",
                       storageId: file.storageId,
                       key: event.target.value || undefined,
                     },
@@ -724,10 +724,10 @@ function Review({ session }: { session: CaseSession }) {
         className="demo-button"
         disabled={act.pending}
         onClick={() =>
-          void act.run(() => session.send({ type: "review.approve" }, c.seq))
+          void act.run(() => session.send({ type: "artifact.accept" }, c.seq))
         }
       >
-        Approve
+        Accept
       </button>
       <Refusal error={act.error} />
     </div>
@@ -766,7 +766,7 @@ function Consent({
         <button
           className="demo-secondary"
           disabled={act.pending}
-          onClick={() => void send({ type: "referral.decline" })}
+          onClick={() => void send({ type: "referral.reject" })}
         >
           Don't share
         </button>
@@ -836,7 +836,7 @@ function Ended({ session }: { session: CaseSession }) {
           />
           <FileList
             session={session}
-            files={c.files.filter((file) => file.followUp)}
+            files={c.evidence.filter((file) => file.followUp)}
           />
         </>
       )}
@@ -864,14 +864,14 @@ function Failed({ session }: { session: CaseSession }) {
         <button
           className="demo-button"
           disabled={act.pending}
-          onClick={() => void send({ type: "step.retry" })}
+          onClick={() => void send({ type: "case.retry" })}
         >
           Retry from the top
         </button>
         <button
           className="demo-secondary"
           disabled={act.pending}
-          onClick={() => void send({ type: "step.cancel" })}
+          onClick={() => void send({ type: "case.stop" })}
         >
           Give up
         </button>
@@ -905,7 +905,7 @@ function Now({
       return <Proposal session={session} />;
     case "answers":
       return <Answers session={session} />;
-    case "approval":
+    case "review":
       return (
         <>
           <Review session={session} />
@@ -944,17 +944,17 @@ function Busy() {
 
 const TEMPLATES: CaseEvent[] = [
   { type: "goal.set", goal: "I moved and need to tell the IRS" },
-  { type: "processPack.confirm" },
-  { type: "processPack.reject" },
+  { type: "pack.accept" },
+  { type: "pack.reject" },
   { type: "answers.set", key: "fullName", value: "Ada Lovelace" },
   { type: "answers.accept" },
-  { type: "document.label", storageId: "<storage id>" as Id<"_storage"> },
-  { type: "document.remove", storageId: "<storage id>" as Id<"_storage"> },
-  { type: "review.approve" },
+  { type: "evidence.update", storageId: "<storage id>" as Id<"_storage"> },
+  { type: "evidence.remove", storageId: "<storage id>" as Id<"_storage"> },
+  { type: "artifact.accept" },
   { type: "referral.share" },
-  { type: "referral.decline" },
-  { type: "step.retry" },
-  { type: "step.cancel" },
+  { type: "referral.reject" },
+  { type: "case.retry" },
+  { type: "case.stop" },
   { type: "case.cancel" },
 ];
 

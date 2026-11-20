@@ -16,7 +16,7 @@ const run: PilotOptions = {
 const wagePack = {
   id: "pack1",
   inputs: ["fullName", "amountOwed", "lastWorkDate"],
-  documents: [
+  evidence: [
     { key: "payStub", label: "Pay stub", required: true },
     { key: "contract", label: "Offer letter", required: false },
   ],
@@ -32,7 +32,7 @@ function view(fields: Partial<CaseView>): CaseView {
     seq: 1,
     userId: "test user",
     answers: {},
-    files: [],
+    evidence: [],
     waitingFor: null,
     deadline: null,
     suggestions: {},
@@ -44,7 +44,7 @@ const onPack = (fields: Partial<CaseView>) =>
   view({
     goal: { text: "wages", version: 1 },
     selection: {
-      status: "confirmed",
+      status: "accepted",
       kind: "pack",
       goalVersion: 1,
       definition: wagePack,
@@ -86,8 +86,8 @@ test("hands the case back where it was told to", () => {
   ).toBe("stop");
   expect(
     pilot(
-      onPack({ waitingFor: "consent", approval: { fingerprint: "f" } }),
-      { ...run, until: "approved" },
+      onPack({ waitingFor: "consent", accepted: { fingerprint: "f" } }),
+      { ...run, until: "accepted" },
       TODAY,
     ),
   ).toBe("stop");
@@ -102,11 +102,11 @@ test("hands the case back where it was told to", () => {
   ).toBe("stop");
 });
 
-test("a guest is not made to share, but can decline", () => {
+test("a guest is not made to share, but can reject", () => {
   const guest = onPack({ waitingFor: "consent", userId: "guest:key" });
   expect(pilot(guest, run, TODAY)).toBe("stop");
-  expect(pilot(guest, { ...run, consent: "decline" }, TODAY)).toEqual({
-    event: { type: "referral.decline" },
+  expect(pilot(guest, { ...run, consent: "reject" }, TODAY)).toEqual({
+    event: { type: "referral.reject" },
   });
 });
 

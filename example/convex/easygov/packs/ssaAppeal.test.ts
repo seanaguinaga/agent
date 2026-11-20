@@ -12,7 +12,7 @@ describe("SSA appeal", () => {
   test("a referral is offered only when representation is wanted, and shared only on a yes", async () => {
     for (const [wantsRepresentation, reply] of [
       ["yes", "referral.share"],
-      ["yes", "referral.decline"],
+      ["yes", "referral.reject"],
       ["no", undefined],
     ] as const) {
       const { t, caseId } = await start();
@@ -25,14 +25,14 @@ describe("SSA appeal", () => {
         choose(1),
       );
       await send(t, caseId, { type: "goal.set", goal: "Appeal a denial" });
-      await send(t, caseId, { type: "processPack.confirm" });
+      await send(t, caseId, { type: "pack.accept" });
       await answer(t, caseId, {
         fullName: "Ada Lovelace",
         denialDate: "2026-10-01",
         reasonForAppeal: "New evidence",
         wantsRepresentation,
       });
-      let found = await send(t, caseId, { type: "review.approve" });
+      let found = await send(t, caseId, { type: "artifact.accept" });
       if (reply) {
         expect(found).toMatchObject({
           status: "active",

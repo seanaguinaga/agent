@@ -52,7 +52,7 @@ const garnishment = {
   inputs: ["noticeDate"],
   output: {
     title: "Notice review preparation",
-    checklist: ["Confirm the court and case number on the notice."],
+    checklist: ["Accept the court and case number on the notice."],
     letter: "I received a notice dated {{noticeDate}}.",
   },
 };
@@ -249,7 +249,7 @@ describe("saving packs", () => {
       choose(1),
     );
     await send(t, caseId, { type: "goal.set", goal: "Renew my CA DL" });
-    await send(t, caseId, { type: "processPack.confirm" });
+    await send(t, caseId, { type: "pack.accept" });
 
     await expect(
       t.mutation(processPacks.save, {
@@ -278,7 +278,7 @@ describe("saving packs", () => {
       }),
     ).toMatchObject([{ id: v2.id }]);
     await answer(t, caseId, { expirationDate: "2027-01-09" });
-    const pinned = await send(t, caseId, { type: "review.approve" });
+    const pinned = await send(t, caseId, { type: "artifact.accept" });
     expect(pinned).toMatchObject({
       status: "done",
       selection: { definition: { id: v1.id, inputs: ["expirationDate"] } },
@@ -317,15 +317,15 @@ describe("selecting a pack for a case", () => {
       status: "proposed",
       definition: { id: saved.id },
     });
-    await send(t, caseId, { type: "processPack.confirm" });
+    await send(t, caseId, { type: "pack.accept" });
     await answer(t, caseId, { expirationDate: "2027-01-09" });
-    expect(await send(t, caseId, { type: "review.approve" })).toMatchObject({
+    expect(await send(t, caseId, { type: "artifact.accept" })).toMatchObject({
       status: "done",
-      selection: { status: "confirmed", definition: { id: saved.id } },
+      selection: { status: "accepted", definition: { id: saved.id } },
     });
   });
 
-  test("a confirmed draft runs on its own case, and is never saved (live run)", async () => {
+  test("an accepted draft runs on its own case, and is never saved (live run)", async () => {
     const { t, caseId } = await start();
     const before = await read(t, caseId);
     const goal = "I got a letter about wage garnishment and I need help.";
@@ -358,20 +358,20 @@ describe("selecting a pack for a case", () => {
       t.mutation(api.easygov.case.public.send, {
         caseId,
         expectedSeq: before.seq,
-        event: { type: "processPack.confirm" },
+        event: { type: "pack.accept" },
       }),
     ).rejects.toThrow(/case has changed/);
 
-    const confirmed = await send(t, caseId, { type: "processPack.confirm" });
-    expect(confirmed).toMatchObject({
+    const accepted = await send(t, caseId, { type: "pack.accept" });
+    expect(accepted).toMatchObject({
       waitingFor: "answers",
       selection: {
-        status: "confirmed",
+        status: "accepted",
         definition: { inputs: ["noticeDate"], inputQuestions: asked },
         draft: { title: recipe.title },
       },
     });
-    expect(definitionOf(confirmed.selection)?.id).toBeUndefined();
+    expect(definitionOf(accepted.selection)?.id).toBeUndefined();
     const review = await answer(t, caseId, { noticeDate: "2026-11-01" });
     expect(review.artifact?.letter).toBe(
       "I received a notice dated 2026-11-01.",
@@ -380,7 +380,7 @@ describe("selecting a pack for a case", () => {
       process: recipe.title,
       output: { ...recipe.output, sources },
     });
-    expect(await send(t, caseId, { type: "review.approve" })).toMatchObject({
+    expect(await send(t, caseId, { type: "artifact.accept" })).toMatchObject({
       status: "done",
     });
 
@@ -412,12 +412,12 @@ describe("selecting a pack for a case", () => {
     });
     // No pages found: the checklist carries no sources.
     expect(draftOf(proposed.selection)?.output?.sources).toBeUndefined();
-    const review = await send(t, caseId, { type: "processPack.confirm" });
-    expect(review.waitingFor).toBe("approval");
+    const review = await send(t, caseId, { type: "pack.accept" });
+    expect(review.waitingFor).toBe("review");
     expect(JSON.parse(review.artifact?.summary ?? "{}")).toMatchObject({
       output: checklist,
     });
-    expect(await send(t, caseId, { type: "review.approve" })).toMatchObject({
+    expect(await send(t, caseId, { type: "artifact.accept" })).toMatchObject({
       status: "done",
     });
   });
@@ -449,16 +449,16 @@ describe("selecting a pack for a case", () => {
     expect(proposed.selection).toMatchObject({
       draft: { inputs: ["method"], output: { tailorBy: ["method"] } },
     });
-    // After confirming: nothing found in the conversation, then (once
+    // After accepting: nothing found in the conversation, then (once
     // answered) the model keeps steps 1 and 2, and a step that isn't there.
     model.replies.push(
       JSON.stringify({ answers: [] }),
       JSON.stringify({ keep: [2, 1, 9] }),
     );
-    await send(t, caseId, { type: "processPack.confirm" });
+    await send(t, caseId, { type: "pack.accept" });
     const review = await answer(t, caseId, { method: "online" });
     expect(review).toMatchObject({
-      waitingFor: "approval",
+      waitingFor: "review",
       artifact: { checklist: [steps[0], steps[1]] },
     });
     // Changing the answer cuts it again; a model that fails keeps every step.
@@ -466,7 +466,7 @@ describe("selecting a pack for a case", () => {
     const again = await answer(t, caseId, { method: "by mail" });
     expect(again.artifact?.checklist).toEqual(steps);
     model.failing = false;
-    expect(await send(t, caseId, { type: "review.approve" })).toMatchObject({
+    expect(await send(t, caseId, { type: "artifact.accept" })).toMatchObject({
       status: "done",
     });
   });

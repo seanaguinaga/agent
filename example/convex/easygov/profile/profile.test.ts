@@ -1,4 +1,4 @@
-// The profile meeting cases: filled ahead, followed until approval, written
+// The profile meeting cases: filled ahead, followed until accepted, written
 // back from answers, and offered back when it needs a look.
 import type { FunctionArgs } from "convex/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -76,7 +76,7 @@ describe("a profile filled in before the form is known", () => {
 });
 
 describe("a case and the profile", () => {
-  test("the case follows the profile until it's approved, then keeps its own", async () => {
+  test("the case follows the profile until it's accepted, then keeps its own", async () => {
     const { t, packs } = await setup();
     await save(t, { key: "name", value: name });
     const caseId = await startOn(t, packs.irs8822);
@@ -97,7 +97,7 @@ describe("a case and the profile", () => {
       key: "newAddress",
       value: "2 New Street",
     });
-    const done = await send(t, caseId, { type: "review.approve" });
+    const done = await send(t, caseId, { type: "artifact.accept" });
     expect(done.status).toBe("done");
     // A later change is the person's, not this document's.
     await save(t, {
@@ -225,7 +225,7 @@ test("a finished change of address suggests the new home address", async () => {
     key: "newAddress",
     value: "2 New Street, Berkeley, CA 94704",
   });
-  await send(t, caseId, { type: "review.approve" });
+  await send(t, caseId, { type: "artifact.accept" });
   const { proposals } = await t.query(profile.get, {});
   expect(proposals).toMatchObject([
     {

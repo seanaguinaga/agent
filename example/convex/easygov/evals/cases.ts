@@ -2,7 +2,7 @@
 // reviewed like any other change; results live in the tables.
 //
 // A slice is one model call run on its own with fixed inputs ("intake",
-// "request", "choose", "research", "draft", "prefill", "tailor", "address"), the pack search with no model
+// "request", "choose", "research", "draft", "suggest", "tailor", "address"), the pack search with no model
 // ("search"), stage 1 end to end ("outcome"), or a whole case ("pipeline").
 import type { PilotOptions } from "../autopilot";
 import type { Candidate, Question, Subject } from "../case/agents";
@@ -11,7 +11,7 @@ import type {
   AddressExpectation,
   Outcome,
   PipelineExpectation,
-  PrefillExpectation,
+  SuggestExpectation,
   TargetExpectation,
   TailorExpectation,
   RequestExpectation,
@@ -322,7 +322,7 @@ export const judgeCheck = {
   ],
 };
 
-// --- Prefill: what a person said and a form's questions in; answers out -----
+// --- Suggest: what a person said and a form's questions in; answers out -----
 //
 // Only what they plainly said. A guess is worse than a blank: it ends up in
 // their document.
@@ -363,11 +363,11 @@ const WAGES: Question[] = [
   },
 ];
 
-export const prefill: ({
+export const suggest: ({
   id: string;
   questions: Question[];
   said: string[];
-} & PrefillExpectation)[] = [
+} & SuggestExpectation)[] = [
   {
     id: "two of three stated",
     questions: ADDRESS,
@@ -808,7 +808,7 @@ export const pipeline: {
     // and read back from the file.
     id: "a real form, fetched and filled",
     start: { form: FORM_8822 },
-    pilot: { referral: "avoid", consent: "decline" },
+    pilot: { referral: "avoid", consent: "reject" },
     expect: {
       delivery: "mail",
       form: {
@@ -822,7 +822,7 @@ export const pipeline: {
   {
     id: "a form, delivered by mail",
     start: { pack: "irs8822" },
-    pilot: { referral: "avoid", consent: "decline" },
+    pilot: { referral: "avoid", consent: "reject" },
     expect: { delivery: "mail", referral: null },
   },
   {
@@ -832,11 +832,11 @@ export const pipeline: {
     expect: { delivery: "online", referral: "shared" },
   },
   {
-    id: "referral offered and declined",
+    id: "referral offered and rejected",
     start: { pack: "wageClaim" },
-    pilot: { referral: "trigger", consent: "decline" },
+    pilot: { referral: "trigger", consent: "reject" },
     // The letter is built from the answers, and the required file is in.
-    expect: { referral: "declined", letterHas: "Analytical Engines Ltd" },
+    expect: { referral: "rejected", letterHas: "Analytical Engines Ltd" },
   },
   {
     id: "referral check not met: none offered",
@@ -845,10 +845,10 @@ export const pipeline: {
     expect: { delivery: null, referral: null },
   },
   {
-    // Every stage, with the models: goal, saved pack, answers, approval.
+    // Every stage, with the models: goal, saved pack, answers, review.
     id: "from a goal to a delivered form",
     start: { goal: "I moved and need to tell the IRS my new address." },
-    pilot: { referral: "avoid", consent: "decline" },
+    pilot: { referral: "avoid", consent: "reject" },
     expect: { delivery: "mail" },
   },
 ];

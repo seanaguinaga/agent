@@ -49,7 +49,7 @@ const upload = (t: T) =>
 
 async function attach(t: T, caseId: Id<"cases">, key: string) {
   const storageId = await upload(t);
-  return await send(t, caseId, { type: "document.attach", key, storageId });
+  return await send(t, caseId, { type: "evidence.add", key, storageId });
 }
 
 describe("starting on a pack", () => {
@@ -62,7 +62,7 @@ describe("starting on a pack", () => {
       source: "wage-claim-ca",
       waitingFor: "answers",
       goal: { text: wageClaim.title },
-      selection: { status: "confirmed" },
+      selection: { status: "accepted" },
     });
     expect((await read(t, caseId)).run?.state).toBe("running");
   });
@@ -104,12 +104,12 @@ describe("files, the deadline and the letter", () => {
     );
 
     found = await attach(t, caseId, "payStub");
-    expect(found.waitingFor).toBe("approval");
+    expect(found.waitingFor).toBe("review");
     const built = found.artifact!.fingerprint;
 
-    // Another file in review: the document is rebuilt before approval.
+    // Another file in review: the document is rebuilt before it's accepted.
     found = await attach(t, caseId, "contract");
-    expect(found.waitingFor).toBe("approval");
+    expect(found.waitingFor).toBe("review");
     expect(found.artifact!.fingerprint).not.toBe(built);
   });
 
@@ -142,34 +142,34 @@ describe("files, the deadline and the letter", () => {
 describe("the referral", () => {
   afterEach(resetCases);
 
-  async function approved(amountOwed: string, args: object = {}) {
+  async function accepted(amountOwed: string, args: object = {}) {
     const { t, caseId } = await startOn({}, args);
     await answer(t, caseId, { ...wages, amountOwed });
     await attach(t, caseId, "payStub");
     return {
       t,
       caseId,
-      found: await send(t, caseId, { type: "review.approve" }),
+      found: await send(t, caseId, { type: "artifact.accept" }),
     };
   }
   const referrals = (t: T) =>
     t.run((ctx) => ctx.db.query("referrals").collect());
 
   test("isn't offered when the pack's check doesn't pass", async () => {
-    const { t, found } = await approved("300");
+    const { t, found } = await accepted("300");
     expect(found).toMatchObject({ status: "done", waitingFor: null });
     expect(found.referral).toBeUndefined();
     expect(await referrals(t)).toEqual([]);
   });
 
-  test("shares exactly what was approved, and only on a yes", async () => {
-    const { t, caseId, found } = await approved("6200", { source: "wages" });
+  test("shares exactly what was accepted, and only on a yes", async () => {
+    const { t, caseId, found } = await accepted("6200", { source: "wages" });
     expect(found).toMatchObject({
       status: "active",
       waitingFor: "consent",
       referral: { kind: "employment", status: "offered" },
     });
-    // Nothing more can change once it's approved.
+    // Nothing more can change once it's accepted.
     await expect(answer(t, caseId, { amountOwed: "1" })).rejects.toThrow(
       /isn't expected/,
     );
@@ -187,19 +187,19 @@ describe("the referral", () => {
         source: "wages",
         goal: wageClaim.title,
         answers: wages,
-        files: [{ key: "payStub", storageId: shared.files[0].storageId }],
+        evidence: [{ key: "payStub", storageId: shared.evidence[0].storageId }],
         deadline: "2029-09-29",
-        fingerprint: shared.approval!.fingerprint,
+        fingerprint: shared.accepted!.fingerprint,
       },
     ]);
   });
 
   test("declining ends the case with nothing shared", async () => {
-    const { t, caseId } = await approved("6200");
-    const found = await send(t, caseId, { type: "referral.decline" });
+    const { t, caseId } = await accepted("6200");
+    const found = await send(t, caseId, { type: "referral.reject" });
     expect(found).toMatchObject({
       status: "done",
-      referral: { status: "declined" },
+      referral: { status: "rejected" },
     });
     expect(await referrals(t)).toEqual([]);
   });
@@ -234,8 +234,8 @@ describe("a guest", () => {
       await guestSend({ type: "answers.set", key, value });
     }
     const storageId = await upload(t);
-    await guestSend({ type: "document.attach", key: "payStub", storageId });
-    await guestSend({ type: "review.approve" });
+    await guestSend({ type: "evidence.add", key: "payStub", storageId });
+    await guestSend({ type: "artifact.accept" });
     await expect(guestSend({ type: "referral.share" })).rejects.toThrow(
       /Create an account/,
     );
@@ -257,7 +257,7 @@ describe("landing pages", () => {
       t,
       {
         ...irs8822,
-        documents: undefined,
+        evidence: undefined,
         deadline: undefined,
         referral: undefined,
         output: undefined,
@@ -273,7 +273,7 @@ describe("landing pages", () => {
     expect(landing).toMatchObject({
       id: packId,
       deadline: "File a wage claim",
-      documents: [{ key: "payStub", required: true }, { key: "contract" }],
+      evidence: [{ key: "payStub", required: true }, { key: "contract" }],
     });
     expect(landing?.questions.map(({ key }) => key)).toEqual(wageClaim.inputs);
   });
@@ -317,7 +317,7 @@ describe("a pack's checks", () => {
     ).rejects.toThrow(/isn't an input/);
     await expect(
       save({
-        documents: [
+        evidence: [
           { key: "a", label: "A", required: true },
           { key: "a", label: "B", required: false },
         ],

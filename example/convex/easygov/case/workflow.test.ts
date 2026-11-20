@@ -72,7 +72,7 @@ describe("agreeing on what to do", () => {
   test("rejecting the pack goes back to intake, and a new goal gets a new proposal", async () => {
     const { t, caseId } = await start();
     await send(t, caseId, { type: "goal.set", goal: "Something" });
-    let found = await send(t, caseId, { type: "processPack.reject" });
+    let found = await send(t, caseId, { type: "pack.reject" });
     expect(found).toMatchObject({
       waitingFor: "goal",
       selection: { status: "rejected", reason: "person" },
@@ -90,7 +90,7 @@ describe("agreeing on what to do", () => {
       '{"reply":"Got it.","goal":"Tell the IRS my new address"}',
     );
     await chat(t, caseId, "I moved to 2 New Street and need to tell the IRS");
-    // Read after the pack is confirmed. The model also offers a key the pack
+    // Read after the pack is accepted. The model also offers a key the pack
     // doesn't ask for; that one is dropped.
     model.replies.push(
       JSON.stringify({
@@ -108,13 +108,13 @@ describe("agreeing on what to do", () => {
       messageKey: "while proposed",
     });
     expect((await read(t, caseId)).pendingMessageId).toBeDefined();
-    let found = await send(t, caseId, { type: "processPack.confirm" });
+    let found = await send(t, caseId, { type: "pack.accept" });
     expect(found).toMatchObject({
       waitingFor: "answers",
       answers: {},
       suggestions: { newAddress: "2 New Street" },
     });
-    // Confirming ends intake: nothing is left pending, and chat is closed.
+    // Accepting ends intake: nothing is left pending, and chat is closed.
     expect(found.pendingMessageId).toBeUndefined();
     await expect(
       t.mutation(sendMessage, { caseId, text: "Hello?", messageKey: "late" }),
@@ -163,7 +163,7 @@ describe("agreeing on what to do", () => {
     ]);
   });
 
-  test("a request for legal advice is confirmed as a referral, not a pack", async () => {
+  test("a request for legal advice is accepted as a referral, not a pack", async () => {
     const { t, caseId } = await start();
     model.replies.push(
       request({
@@ -179,8 +179,8 @@ describe("agreeing on what to do", () => {
       status: "proposed",
       kind: "referral",
     });
-    // Confirming it isn't sharing it: the person is asked first.
-    found = await send(t, caseId, { type: "processPack.confirm" });
+    // Accepting it isn't sharing it: the person is asked first.
+    found = await send(t, caseId, { type: "pack.accept" });
     expect(found).toMatchObject({ status: "active", waitingFor: "consent" });
     const referrals = () => t.run((ctx) => ctx.db.query("referrals").collect());
     expect(await referrals()).toEqual([]);
@@ -200,12 +200,12 @@ describe("agreeing on what to do", () => {
 describe("answers and review", () => {
   afterEach(resetCases);
 
-  test("approval is only taken while the document matches the answers", async () => {
+  test("accepted is only taken while the document matches the answers", async () => {
     const { t, caseId } = await start();
     await send(t, caseId, { type: "goal.set", goal: "I moved" });
-    await send(t, caseId, { type: "processPack.confirm" });
+    await send(t, caseId, { type: "pack.accept" });
     const found = await answer(t, caseId, address);
-    expect(found.waitingFor).toBe("approval");
+    expect(found.waitingFor).toBe("review");
     // Answers changed behind the document's back: no longer in review.
     await t.run((ctx) =>
       ctx.db.patch("cases", caseId, {
@@ -215,7 +215,7 @@ describe("answers and review", () => {
     await expect(
       t.mutation(api.easygov.case.public.send, {
         caseId,
-        event: { type: "review.approve" },
+        event: { type: "artifact.accept" },
         expectedSeq: found.seq,
       }),
     ).rejects.toThrow(/isn't expected/);
@@ -228,7 +228,7 @@ describe("a busy person", () => {
   test("many edits to the answers don't fail the case", async () => {
     const { t, caseId } = await start();
     await send(t, caseId, { type: "goal.set", goal: "I moved" });
-    await send(t, caseId, { type: "processPack.confirm" });
+    await send(t, caseId, { type: "pack.accept" });
     // Far more edits than the workflow has looks to spend on one wait.
     for (let i = 0; i < 120; i++) {
       await t.mutation(api.easygov.case.public.send, {
@@ -247,7 +247,7 @@ describe("a busy person", () => {
       fullName: address.fullName,
       newAddress: address.newAddress,
     });
-    expect(found).toMatchObject({ waitingFor: "approval" });
+    expect(found).toMatchObject({ waitingFor: "review" });
   });
 });
 
@@ -275,26 +275,24 @@ describe("failures", () => {
     ).rejects.toThrow(/isn't expected/);
 
     model.failing = false;
-    found = await send(t, caseId, { type: "step.retry" });
+    found = await send(t, caseId, { type: "case.retry" });
     expect(found.run?.state).toBe("running");
     expect(found).toMatchObject({
       waitingFor: "pack",
       goal: { text: "I moved", version: 1 },
     });
-    await expect(send(t, caseId, { type: "step.retry" })).rejects.toThrow(
+    await expect(send(t, caseId, { type: "case.retry" })).rejects.toThrow(
       /Nothing has failed/,
     );
   });
 
   test("a failed case can be given up on, or canceled", async () => {
-    for (const type of ["step.cancel", "case.cancel"] as const) {
+    for (const type of ["case.stop", "case.cancel"] as const) {
       const { t, caseId } = await start();
       model.failing = true;
       await send(t, caseId, { type: "goal.set", goal: "I moved" });
       const found = await send(t, caseId, { type });
-      expect(found.status).toBe(
-        type === "step.cancel" ? "stopped" : "canceled",
-      );
+      expect(found.status).toBe(type === "case.stop" ? "stopped" : "canceled");
       // An ended case has no run, failed or otherwise.
       expect(found.run).toBeUndefined();
       model.failing = false;
@@ -304,7 +302,7 @@ describe("failures", () => {
   test("a restart mid-case keeps what the person already did", async () => {
     const { t, caseId } = await start();
     await send(t, caseId, { type: "goal.set", goal: "I moved" });
-    await send(t, caseId, { type: "processPack.confirm" });
+    await send(t, caseId, { type: "pack.accept" });
     await answer(t, caseId, { fullName: address.fullName });
 
     // Break the case under the waiting workflow, so its next look fails.
@@ -319,9 +317,9 @@ describe("failures", () => {
     expect((await read(t, caseId)).run?.state).toBe("failed");
 
     // Repair it and retry: the workflow replays from the top, finds the goal
-    // and the confirmed pack in place, and waits for the rest of the answers.
+    // and the accepted pack in place, and waits for the rest of the answers.
     await t.run((ctx) => ctx.db.patch("cases", caseId, { selection: saved }));
-    let found = await send(t, caseId, { type: "step.retry" });
+    let found = await send(t, caseId, { type: "case.retry" });
     expect(found).toMatchObject({
       waitingFor: "answers",
       answers: { fullName: address.fullName },
@@ -330,7 +328,7 @@ describe("failures", () => {
       oldAddress: address.oldAddress,
       newAddress: address.newAddress,
     });
-    expect(found.waitingFor).toBe("approval");
+    expect(found.waitingFor).toBe("review");
     expect(
       (await texts(t, caseId)).filter(([role]) => role === "assistant"),
     ).toHaveLength(1);

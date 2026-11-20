@@ -22,23 +22,23 @@ describe("IRS 8822", () => {
     found = await send(t, caseId, { type: "goal.set", goal: "I moved" });
     expect(found.waitingFor).toBe("pack");
 
-    found = await send(t, caseId, { type: "processPack.confirm" });
+    found = await send(t, caseId, { type: "pack.accept" });
     expect(found).toMatchObject({
       waitingFor: "answers",
-      selection: { status: "confirmed" },
+      selection: { status: "accepted" },
     });
 
     found = await answer(t, caseId, address);
-    expect(found.waitingFor).toBe("approval");
+    expect(found.waitingFor).toBe("review");
     expect(JSON.parse(found.artifact!.summary).answers).toEqual(address);
 
     // Changing an answer in review goes around again: the document is
-    // rebuilt, and review waits for approval of the new one.
+    // rebuilt, and review waits for the new one to be accepted.
     found = await answer(t, caseId, { newAddress: "3 Newer Street" });
-    expect(found.waitingFor).toBe("approval");
+    expect(found.waitingFor).toBe("review");
     expect(found.artifact!.summary).toContain("3 Newer Street");
 
-    found = await send(t, caseId, { type: "review.approve" });
+    found = await send(t, caseId, { type: "artifact.accept" });
     expect(found).toMatchObject({
       status: "done",
       waitingFor: null,

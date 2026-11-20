@@ -22,7 +22,7 @@ import {
 import { currentFacts, scheduleSync, syncCase } from "../profile/data";
 import { FACT_KEYS, factOf } from "../profile/vocabulary";
 import { take, type PersonEvent } from "./events";
-import { attachFollowUp, remove } from "./files";
+import { addFollowUp, remove } from "./evidence";
 import { vCaseEvent, vPhase, vWaitingFor, type CaseEvent } from "./schema";
 import {
   currentSelection,
@@ -66,12 +66,12 @@ export const startCase = mutation({
       status: "active",
       seq: 0,
       answers: {},
-      files: [],
-      // Choosing the page is choosing the pack: it starts out confirmed.
+      evidence: [],
+      // Choosing the page is choosing the pack: it starts out accepted.
       ...(pack && {
         goal: { text: pack.title, version: 1 },
         selection: {
-          status: "confirmed" as const,
+          status: "accepted" as const,
           kind: "pack" as const,
           goalVersion: 1,
           definition: processPackDefinition(pack),
@@ -121,17 +121,17 @@ export const getCase = query({
      */
     profileInputs: v.record(v.string(), v.string()),
     /** A link to each attached file, by its storage id. */
-    fileUrls: v.record(v.string(), v.string()),
+    evidenceUrls: v.record(v.string(), v.string()),
   }),
   handler: async (ctx, { caseId, guestKey }) => {
     const found = await authorizeCase(ctx, caseId, guestKey);
-    const fileUrls: Record<string, string> = {};
-    for (const { storageId } of found.files) {
+    const evidenceUrls: Record<string, string> = {};
+    for (const { storageId } of found.evidence) {
       const url = await ctx.storage.getUrl(storageId);
-      if (url) fileUrls[storageId] = url;
+      if (url) evidenceUrls[storageId] = url;
     }
     return {
-      fileUrls,
+      evidenceUrls,
       ...found,
       phase: phase(found),
       waitingFor: waitingFor(found),
@@ -207,7 +207,7 @@ export const withdrawReferral = mutation({
 
 /**
  * Where to upload a file for the case. Post the file to the URL, with its
- * media type as the `Content-Type`, then send `document.attach` with the
+ * media type as the `Content-Type`, then send `evidence.add` with the
  * storage id it returns. A done case takes files too: what came afterwards.
  */
 export const uploadUrl = mutation({
@@ -225,7 +225,7 @@ export const uploadUrl = mutation({
 /**
  * Saves a chat message to the case's thread. Intake answers it: at once
  * while the case waits for a goal, or when a proposed pack is rejected. Once
- * a pack is confirmed there's no intake left, and a message is refused.
+ * a pack is accepted there's no intake left, and a message is refused.
  *
  * `messageKey` is a string the client makes up once per message (a UUID,
  * say) and sends again on a retry. The same key twice in a row is the same
@@ -244,8 +244,8 @@ export const sendMessage = mutation({
     if (found.status !== "active") {
       throw new ConvexError(`The case is ${found.status}.`);
     }
-    // Only intake answers chat, and it's over once a pack is confirmed.
-    if (currentSelection(found)?.status === "confirmed") {
+    // Only intake answers chat, and it's over once a pack is accepted.
+    if (currentSelection(found)?.status === "accepted") {
       throw new ConvexError(
         "The process is chosen: answer its questions instead of chatting.",
       );
@@ -271,9 +271,9 @@ export const sendMessage = mutation({
 /** Events that only add what the person gave: taken on a stale view. */
 const DATA_ENTRY = new Set<CaseEvent["type"]>([
   "answers.set",
-  "document.attach",
-  "document.label",
-  "document.remove",
+  "evidence.add",
+  "evidence.update",
+  "evidence.remove",
 ]);
 
 /**
@@ -291,7 +291,7 @@ export const send = mutation({
   returns: v.null(),
   handler: async (ctx, { caseId, event, expectedSeq, guestKey }) => {
     const found = await authorizeCase(ctx, caseId, guestKey);
-    // The guard is for decisions: nobody should approve or confirm what
+    // The guard is for decisions: nobody should accept what
     // changed while they weren't looking. Typing an answer or attaching a
     // file isn't one: it writes its own key, whatever else moved.
     if (found.seq !== expectedSeq && !DATA_ENTRY.has(event.type)) {
@@ -300,14 +300,14 @@ export const send = mutation({
     if (found.status !== "active") {
       // A finished case still takes what comes afterwards: the receipt, and
       // whatever the authority sends back.
-      if (found.status === "done" && event.type === "document.attach") {
+      if (found.status === "done" && event.type === "evidence.add") {
         if (event.key !== undefined) {
           throw new ConvexError("The case is done: attach it without a key.");
         }
-        await writeCase(ctx, caseId, await attachFollowUp(ctx, found, event));
+        await writeCase(ctx, caseId, await addFollowUp(ctx, found, event));
         return null;
       }
-      if (found.status === "done" && event.type === "document.remove") {
+      if (found.status === "done" && event.type === "evidence.remove") {
         const { storageId } = event;
         const followUp = { followUp: true };
         await writeCase(
@@ -322,9 +322,9 @@ export const send = mutation({
     switch (event.type) {
       case "case.cancel":
         return await cancel(ctx, found);
-      case "step.retry":
+      case "case.retry":
         return await retry(ctx, found);
-      case "step.cancel":
+      case "case.stop":
         if (found.run?.state !== "failed") {
           throw new ConvexError("Nothing has failed.");
         }

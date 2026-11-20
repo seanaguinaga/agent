@@ -36,13 +36,13 @@ const TRACK: Step[] = [
   },
   {
     phase: "pack",
-    label: "Confirm the process",
+    label: "Accept the process",
     who: "person",
-    doing: "Waiting for the person to confirm the process, or reject it",
+    doing: "Waiting for the person to accept the process, or reject it",
     kinds: [],
   },
   {
-    phase: "reading",
+    phase: "suggesting",
     label: "Read the conversation",
     who: "workflow",
     doing: "Reading what the person already said for answers",
@@ -60,13 +60,13 @@ const TRACK: Step[] = [
     label: "Build the document",
     who: "workflow",
     doing: "Building the document from the answers",
-    kinds: ["document.filled"],
+    kinds: ["artifact.filled"],
   },
   {
-    phase: "approval",
+    phase: "review",
     label: "Review",
     who: "person",
-    doing: "Waiting for the person to approve the document",
+    doing: "Waiting for the person to accept the document",
     kinds: [],
   },
   {
@@ -156,7 +156,7 @@ export function Phases({ c }: { c: CaseView }) {
         const behind =
           at === -1 ? events.length > 0 || c.phase === "done" : i < at;
         // Passed with nothing to show for it: a case started on a pack
-        // never looked for one, so nobody confirmed one either.
+        // never looked for one, so nobody accepted one either.
         const quiet = (quietStep: Step) =>
           quietStep.kinds.length > 0 && eventsOf(quietStep.kinds).length === 0;
         const skipped =

@@ -3,7 +3,7 @@
 //
 // A stage page gets a case to where the stage begins without touching the
 // stages before it by hand: stage 2 starts on a landing page, and stage 3
-// lets the autopilot answer and approve first.
+// lets the autopilot answer and accept first.
 import { useEffect, useRef } from "react";
 import type { CaseView, PilotOptions } from "../../convex/easygov/autopilot";
 import { AllReferrals, FirmDesk, FirmForm } from "./FirmDesk";
@@ -19,22 +19,22 @@ type Stage = {
   exit: string;
 };
 
-const confirmed = (c: CaseView) =>
-  c.selection?.status === "confirmed" &&
+const accepted = (c: CaseView) =>
+  c.selection?.status === "accepted" &&
   c.selection.goalVersion === c.goal?.version;
 
 const AGREE: Stage = {
   entered: () => true,
-  exited: confirmed,
-  exit: "A pack is confirmed. Stage 2 takes over: the case collects answers (or, for legal advice, goes straight to consent).",
+  exited: accepted,
+  exit: "A pack is accepted. Stage 2 takes over: the case collects answers (or, for legal advice, goes straight to consent).",
 };
 const COLLECT: Stage = {
-  entered: confirmed,
-  exited: (c) => c.approval !== undefined && c.waitingFor !== "approval",
-  exit: "The document is approved. Stage 3 takes over: consent if a referral was offered, then delivery.",
+  entered: accepted,
+  exited: (c) => c.accepted !== undefined && c.waitingFor !== "review",
+  exit: "The document is accepted. Stage 3 takes over: consent if a referral was offered, then delivery.",
 };
 const FINISH: Stage = {
-  entered: (c) => c.approval !== undefined || c.referral !== undefined,
+  entered: (c) => c.accepted !== undefined || c.referral !== undefined,
   exited: (c) => c.status !== "active",
   exit: "The case has ended. Check delivery and the referral below.",
 };
@@ -149,7 +149,7 @@ export function StageAgree() {
   return (
     <CasePage
       title="easygov stage 1: agree on what to do"
-      description="Intake chats until there's a goal, selection proposes a saved pack, a one-off draft, or a legal referral, and the person confirms or rejects it. This stage makes model calls."
+      description="Intake chats until there's a goal, selection proposes a saved pack, a one-off draft, or a legal referral, and the person accepts or rejects it. This stage makes model calls."
       entry="chat"
       source="test:stage-agree"
       stage={AGREE}
@@ -184,7 +184,7 @@ export function StageCollect() {
       entry="pack"
       source="test:stage-collect"
       stage={COLLECT}
-      pilotBar={{ until: "approval" }}
+      pilotBar={{ until: "review" }}
     />
   );
 }
@@ -193,12 +193,12 @@ export function StageFinish() {
   return (
     <CasePage
       title="easygov stage 3: finish"
-      description="The autopilot answers and approves, then hands the case back: share or decline the referral if one was offered, and see delivery prepared. Start as a guest to see that sharing needs an account."
+      description="The autopilot answers and accepts, then hands the case back: share or reject the referral if one was offered, and see delivery prepared. Start as a guest to see that sharing needs an account."
       entry="pack"
       source="test:stage-finish"
       stage={FINISH}
-      onStart={{ until: "approved", referral: "trigger", consent: "share" }}
-      pilotBar={{ until: "approved" }}
+      onStart={{ until: "accepted", referral: "trigger", consent: "share" }}
+      pilotBar={{ until: "accepted" }}
     />
   );
 }

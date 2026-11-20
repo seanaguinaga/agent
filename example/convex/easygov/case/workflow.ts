@@ -2,9 +2,9 @@
 // https://docs.convex.dev/agents/workflows
 //
 // 1. Agree on what to do: chat until there's a goal, propose a process pack,
-//    and wait for the person to confirm it (or reject it and try again).
+//    and wait for the person to accept it (or reject it and try again).
 // 2. Collect the pack's answers and files, build the document, and wait for
-//    approval. Editing an answer in review goes around again.
+//    the person to accept it. Editing an answer in review goes around again.
 // 3. Finish: ask before sharing the case with a lawyer, if a referral is
 //    offered, and prepare delivery if the pack says so.
 //
@@ -74,27 +74,27 @@ export const run = workflow.define({
       const decision = await waitFor(step, () =>
         step.runQuery(data.packDecision, { caseId }),
       );
-      if (decision === "confirmed") break;
+      if (decision === "accepted") break;
     }
 
     // What the person already said may answer some of the pack's questions:
     // those are offered back for them to accept, so they aren't asked twice.
-    if (await step.runQuery(data.needsPrefill, { caseId })) {
+    if (await step.runQuery(data.needsSuggestions, { caseId })) {
       const found = await step.runAction(
-        agents.prefill,
+        agents.suggest,
         { caseId },
         { retry: true },
       );
-      await step.runMutation(data.recordPrefill, { caseId, ...found });
+      await step.runMutation(data.recordSuggestions, { caseId, ...found });
     }
 
     // 2. Answers, the document, and review. Legal advice has no pack, so
     // there's nothing to collect.
     if (
-      !(await step.runQuery(data.isReferral, { caseId })) &&
-      !(await reviewUntilApproved(step, caseId))
+      !(await step.runQuery(data.isAdviceRequest, { caseId })) &&
+      !(await reviewUntilAccepted(step, caseId))
     ) {
-      return stop(`Reviewed ${MAX_REVIEWS} times without approval`);
+      return stop(`Reviewed ${MAX_REVIEWS} times without acceptance`);
     }
 
     // 3. Finish, once the person has said whether to share an offered
@@ -105,8 +105,8 @@ export const run = workflow.define({
   },
 });
 
-/** Collects, builds and reviews until approved. False if it ran out of tries. */
-async function reviewUntilApproved(
+/** Collects, builds and reviews until accepted. False if it ran out of tries. */
+async function reviewUntilAccepted(
   step: WorkflowCtx,
   caseId: Id<"cases">,
 ): Promise<boolean> {
@@ -133,15 +133,15 @@ async function reviewUntilApproved(
           { retry: true },
         )
       : null;
-    await step.runMutation(data.fill, {
+    await step.runMutation(data.recordArtifact, {
       caseId,
       ...(tailored && { tailored }),
       ...(document && { document }),
     });
     const outcome = await waitFor(step, () =>
-      step.runQuery(data.reviewResult, { caseId }),
+      step.runQuery(data.reviewOutcome, { caseId }),
     );
-    if (outcome === "approved") return true;
+    if (outcome === "accepted") return true;
   }
   return false;
 }

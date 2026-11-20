@@ -1,4 +1,4 @@
-// A case's files: the letter that starts it, the evidence behind it, what
+// A case's evidence: the letter that starts it, the evidence behind it, what
 // reading them finds, and what comes back once the case is done.
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "../../_generated/api";
@@ -14,7 +14,7 @@ import {
   texts,
   type T,
 } from "./cases.testkit";
-import { MAX_FILES } from "./files";
+import { MAX_EVIDENCE } from "./evidence";
 
 vi.mock("../../modelsForDemo", async () =>
   (await import("./cases.testkit")).mockModels(),
@@ -52,7 +52,7 @@ async function attach(
   const { type, ...rest } = file;
   const storageId = await upload(t, type);
   const found = await send(t, caseId, {
-    type: "document.attach",
+    type: "evidence.add",
     storageId,
     ...rest,
   });
@@ -74,7 +74,7 @@ describe("attaching", () => {
     // Other evidence doesn't stand in for the file the pack requires.
     const other = await attach(t, caseId, { name: "texts.png" });
     expect(other.found.waitingFor).toBe("answers");
-    expect(other.found.files).toMatchObject([
+    expect(other.found.evidence).toMatchObject([
       {
         name: "texts.png",
         mediaType: "application/octet-stream",
@@ -82,41 +82,48 @@ describe("attaching", () => {
         read: { status: "unread" },
       },
     ]);
-    expect(other.found.fileUrls[other.storageId]).toEqual(expect.any(String));
+    expect(other.found.evidenceUrls[other.storageId]).toEqual(
+      expect.any(String),
+    );
 
     // Labelled, the same file becomes that document.
     let found = await send(t, caseId, {
-      type: "document.label",
+      type: "evidence.update",
       storageId: other.storageId,
       key: "payStub",
     });
-    expect(found.files).toMatchObject([{ name: "texts.png", key: "payStub" }]);
-    expect(found.waitingFor).toBe("approval");
+    expect(found.evidence).toMatchObject([
+      { name: "texts.png", key: "payStub" },
+    ]);
+    expect(found.waitingFor).toBe("review");
 
     // A second page of the same document sits beside the first.
     ({ found } = await attach(t, caseId, { key: "payStub", name: "page 2" }));
-    expect(found.files.map(({ key }) => key)).toEqual(["payStub", "payStub"]);
+    expect(found.evidence.map(({ key }) => key)).toEqual([
+      "payStub",
+      "payStub",
+    ]);
   });
 
   test("removing the only required file sends the case back for it", async () => {
     const { t, caseId } = await startOn();
     await answer(t, caseId, wages);
     const { found, storageId } = await attach(t, caseId, { key: "payStub" });
-    expect(found.waitingFor).toBe("approval");
+    expect(found.waitingFor).toBe("review");
     const removed = await send(t, caseId, {
-      type: "document.remove",
+      type: "evidence.remove",
       storageId,
     });
-    expect(removed).toMatchObject({ files: [], waitingFor: "answers" });
+    expect(removed).toMatchObject({ evidence: [], waitingFor: "answers" });
     expect(await t.run((ctx) => ctx.storage.get(storageId))).toBeNull();
     await expect(
-      send(t, caseId, { type: "document.remove", storageId }),
+      send(t, caseId, { type: "evidence.remove", storageId }),
     ).rejects.toThrow(/isn't attached/);
   });
 
   test("a case holds a bounded number of files", async () => {
     const { t, caseId } = await startOn();
-    for (let i = 0; i < MAX_FILES; i++) await attach(t, caseId);
+    for (let i = 0; i < MAX_EVIDENCE; i++) await attach(t, caseId);
     await expect(attach(t, caseId)).rejects.toThrow(/up to 30 files/);
   });
 });
@@ -139,7 +146,7 @@ describe("reading", () => {
       name: "stub.txt",
       type: "text/plain",
     });
-    expect(found.files[0].read).toEqual({
+    expect(found.evidence[0].read).toEqual({
       status: "read",
       summary: "A pay stub from Analytical Engines Ltd.",
       answers: { employer: "Analytical Engines Ltd" },
@@ -159,7 +166,7 @@ describe("reading", () => {
       key: "payStub",
       type: "text/plain",
     });
-    expect(found.files[0].read).toEqual({
+    expect(found.evidence[0].read).toEqual({
       status: "unread",
       reason: "It couldn't be read.",
     });
@@ -197,12 +204,12 @@ describe("after filing", () => {
     const { t, caseId } = await startOn();
     await answer(t, caseId, { ...wages, amountOwed: "100" });
     await attach(t, caseId, { key: "payStub" });
-    const found = await send(t, caseId, { type: "review.approve" });
+    const found = await send(t, caseId, { type: "artifact.accept" });
     expect(found.status).toBe("done");
-    return { t, caseId, approved: found.approval!.fingerprint };
+    return { t, caseId, accepted: found.accepted!.fingerprint };
   }
 
-  test("a done case takes what came back, apart from what was approved", async () => {
+  test("a done case takes what came back, apart from what was accepted", async () => {
     const { t, caseId } = await done();
     model.replies.push(reading("A receipt dated 2026-11-02."));
     const { found, storageId } = await attach(t, caseId, {
@@ -210,7 +217,7 @@ describe("after filing", () => {
       type: "text/plain",
     });
     expect(found.status).toBe("done");
-    expect(found.files[1]).toMatchObject({
+    expect(found.evidence[1]).toMatchObject({
       name: "receipt.txt",
       followUp: true,
       read: { status: "read", summary: "A receipt dated 2026-11-02." },
@@ -221,15 +228,15 @@ describe("after filing", () => {
     );
     await expect(
       send(t, caseId, {
-        type: "document.remove",
-        storageId: found.files[0].storageId,
+        type: "evidence.remove",
+        storageId: found.evidence[0].storageId,
       }),
     ).rejects.toThrow(/isn't attached/);
     const removed = await send(t, caseId, {
-      type: "document.remove",
+      type: "evidence.remove",
       storageId,
     });
-    expect(removed.files).toHaveLength(1);
+    expect(removed.evidence).toHaveLength(1);
   });
 
   test("a canceled case takes nothing", async () => {

@@ -2,8 +2,8 @@
 //
 // A case's `answers` are always what its document is built from. The ones
 // read from the profile are listed in `following`: they follow the profile
-// until the person approves, and an answer the person gives on the case
-// itself stops following. After approval nothing here touches the case, so
+// until the person accepts, and an answer the person gives on the case
+// itself stops following. Once the artifact is accepted nothing here touches the case, so
 // it keeps what it was built from.
 import type { Id } from "../../_generated/dataModel";
 import { internal } from "../../_generated/api";
@@ -130,7 +130,7 @@ export const syncOne = internalMutation({
 /**
  * Re-reads the profile into one case: fills what the pack reads from it,
  * and offers back what needs a look (an old address, last time's answer).
- * Does nothing to a case that has ended or been approved.
+ * Does nothing to a case that has ended or been accepted.
  */
 export async function syncCase(
   ctx: MutationCtx,
@@ -139,13 +139,13 @@ export async function syncCase(
   const c = await ctx.db.get("cases", caseId);
   const pack = c && pinnedPack(c);
   if (!c || !pack || c.status !== "active") return;
-  if (reviewOutcome(c) === "approved") return;
+  if (reviewOutcome(c) === "accepted") return;
 
   const { facts, at } = await currentFacts(ctx, c.userId);
   const now = Date.now();
   const answers = { ...c.answers };
   const follows = new Set(c.following ?? []);
-  const profileOffers: Record<string, string> = {};
+  const profileSuggestions: Record<string, string> = {};
   const read = (key: string): string | undefined =>
     isReading(key) ? READINGS[key].read(facts) : undefined;
 
@@ -161,7 +161,7 @@ export async function syncCase(
       const fact = READINGS[key].fact;
       // An old address is offered back, not filled in: "still right?".
       if (!follows.has(key) && isStale(fact, at[fact] ?? now, now)) {
-        profileOffers[key] = value;
+        profileSuggestions[key] = value;
         continue;
       }
       answers[key] = value;
@@ -182,21 +182,21 @@ export async function syncCase(
           .first()
       : null;
     const offered = (link?.reads && read(link.reads)) || remembered?.value;
-    if (offered) profileOffers[key] = offered;
+    if (offered) profileSuggestions[key] = offered;
   }
 
   const following = [...follows].sort();
   if (
-    JSON.stringify([answers, following, profileOffers]) ===
+    JSON.stringify([answers, following, profileSuggestions]) ===
     JSON.stringify([
       c.answers,
       [...(c.following ?? [])].sort(),
-      c.profileOffers ?? {},
+      c.profileSuggestions ?? {},
     ])
   ) {
     return;
   }
-  await writeCase(ctx, caseId, { answers, following, profileOffers });
+  await writeCase(ctx, caseId, { answers, following, profileSuggestions });
   await nudgeIfMoved(ctx, c);
 }
 
@@ -245,7 +245,7 @@ export async function keepAnswer(
   return false;
 }
 
-/** What the person answered on other packs, newest first, for prefill. */
+/** What the person answered on other packs, newest first, to suggest from. */
 export async function rememberedElsewhere(
   ctx: QueryCtx,
   c: Case,

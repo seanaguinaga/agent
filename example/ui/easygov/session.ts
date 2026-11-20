@@ -86,10 +86,7 @@ export function useCaseSession(
           storageId: Id<"_storage">;
         };
         const name = file instanceof File ? file.name : undefined;
-        await send(
-          { type: "document.attach", storageId, key, name },
-          expectedSeq,
-        );
+        await send({ type: "evidence.add", storageId, key, name }, expectedSeq);
       },
     };
   }, [caseId, guestKey, c, sendEvent, sendMessage, uploadUrl]);

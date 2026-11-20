@@ -16,7 +16,7 @@ const ABOUT: Record<Slice, string> = {
   choose: "A goal and candidate packs; the right one, or none. Model.",
   research: "A process in; notes from the authority's own site. Live web.",
   draft: "Frozen notes in; a checklist and letter out. Model + judge.",
-  prefill:
+  suggest:
     "What a person said and a form's questions; only stated answers. Model.",
   tailor: "A checklist and a situation; only the steps that apply. Model.",
   address: "An address as one line; its parts, with nothing made up. Model.",

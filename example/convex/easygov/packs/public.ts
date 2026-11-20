@@ -5,7 +5,7 @@ import { v } from "convex/values";
 import type { Doc } from "../../_generated/dataModel";
 import { query } from "../../_generated/server";
 import { currentVersion } from "./data";
-import { vPackDocuments, vPackMatch, vProcessPackQuestions } from "./schema";
+import { vPackEvidence, vPackMatch, vProcessPackQuestions } from "./schema";
 
 const vLanding = v.object({
   ...vPackMatch.fields,
@@ -55,7 +55,7 @@ export const landing = query({
     v.object({
       ...vLanding.fields,
       questions: vProcessPackQuestions,
-      documents: vPackDocuments,
+      evidence: vPackEvidence,
       deadline: v.optional(v.string()),
     }),
     v.null(),
@@ -68,7 +68,7 @@ export const landing = query({
       questions:
         pack.inputQuestions ??
         pack.inputs.map((key) => ({ key, question: key })),
-      documents: pack.documents ?? [],
+      evidence: pack.evidence ?? [],
       deadline: pack.deadline?.label,
     };
   },

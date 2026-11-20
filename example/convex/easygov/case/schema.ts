@@ -7,7 +7,7 @@ import { v, type Infer } from "convex/values";
 import { vFilledDocument } from "../forms/schema";
 import {
   vPackDeadline,
-  vPackDocuments,
+  vPackEvidence,
   vPackProfileLinks,
   vPackReferral,
   vProcessPackDefinition,
@@ -20,7 +20,7 @@ import {
  * answers it gives to the pack's questions, for the person to accept.
  * `unread` says why not: a kind of file we don't read, or a failed attempt.
  */
-export const vFileRead = v.union(
+export const vEvidenceRead = v.union(
   v.object({ status: v.literal("reading") }),
   v.object({
     status: v.literal("read"),
@@ -31,7 +31,7 @@ export const vFileRead = v.union(
 );
 
 /** A file the person attached to the case. */
-export const vCaseFile = v.object({
+export const vEvidence = v.object({
   storageId: v.id("_storage"),
   /**
    * The pack's document this is, e.g. the denial letter. Without one it's
@@ -44,12 +44,12 @@ export const vCaseFile = v.object({
   size: v.number(),
   /**
    * Added once the case was done: the receipt, or what the authority sent
-   * back. Not part of what was approved or shared.
+   * back. Not part of what was accepted or shared.
    */
   followUp: v.optional(v.literal(true)),
-  read: vFileRead,
+  read: vEvidenceRead,
 });
-export type CaseFile = Infer<typeof vCaseFile>;
+export type Evidence = Infer<typeof vEvidence>;
 
 /**
  * The `goal.version` a selection was made for. A selection for an earlier
@@ -60,13 +60,13 @@ const goalVersion = v.number();
 
 /**
  * What the case asks for: pinned from the saved pack, or from the draft
- * once it's confirmed. Only a saved pack has an `id`.
+ * once it's accepted. Only a saved pack has an `id`.
  */
 const vPinned = v.object({
   id: v.optional(v.id("processPacks")),
   inputs: v.array(v.string()),
   inputQuestions: v.optional(vProcessPackQuestions),
-  documents: v.optional(vPackDocuments),
+  evidence: v.optional(vPackEvidence),
   deadline: v.optional(vPackDeadline),
   referral: v.optional(vPackReferral),
   profile: v.optional(vPackProfileLinks),
@@ -79,7 +79,7 @@ const kinds = {
   pack: { kind: v.literal("pack"), definition: vPinned },
   /**
    * A process drafted for this goal, when no saved pack fits. The case
-   * runs on it once the person confirms (`definition` is pinned then), and
+   * runs on it once the person accepts (`definition` is pinned then), and
    * it stays here: it's never saved as a pack, so no other case finds it.
    */
   draft: {
@@ -100,15 +100,15 @@ const kinds = {
   },
 };
 const proposed = { status: v.literal("proposed"), goalVersion };
-const confirmed = { status: v.literal("confirmed"), goalVersion };
+const accepted = { status: v.literal("accepted"), goalVersion };
 
 export const vSelection = v.union(
   v.object({ ...proposed, ...kinds.pack }),
   v.object({ ...proposed, ...kinds.draft }),
   v.object({ ...proposed, ...kinds.referral }),
-  v.object({ ...confirmed, ...kinds.pack }),
-  v.object({ ...confirmed, ...kinds.draft }),
-  v.object({ ...confirmed, ...kinds.referral }),
+  v.object({ ...accepted, ...kinds.pack }),
+  v.object({ ...accepted, ...kinds.draft }),
+  v.object({ ...accepted, ...kinds.referral }),
   v.object({
     status: v.literal("rejected"),
     goalVersion,
@@ -171,7 +171,7 @@ export const caseFields = {
 
   /**
    * The newest user message no agent has answered yet. `sendMessage` sets
-   * it; intake clears it once it has replied, and so does confirming a
+   * it; intake clears it once it has replied, and so does accepting a
    * pack, after which there's no intake to answer it.
    */
   pendingMessageId: v.optional(v.string()),
@@ -206,25 +206,25 @@ export const caseFields = {
    * a fact old enough to check ("still at this address?"), or what they
    * answered the last time this pack asked.
    */
-  profileOffers: v.optional(v.record(v.string(), v.string())),
+  profileSuggestions: v.optional(v.record(v.string(), v.string())),
   /**
-   * Answers found in what the person already said, for them to confirm.
+   * Answers found in what the person already said, for them to accept.
    * They aren't answers until the person accepts them. `goalVersion` is the
    * goal whose questions they were read for; for an earlier goal they're
    * out of date. Without `answers` the conversation is still being read,
    * and the case isn't waiting for the person yet.
    *
-   * Set when a proposal is confirmed. A case started on a landing page has
+   * Set when a proposal is accepted. A case started on a landing page has
    * said nothing, so it has none.
    */
-  prefill: v.optional(
+  chatSuggestions: v.optional(
     v.object({
       goalVersion: v.number(),
       answers: v.optional(v.record(v.string(), v.string())),
     }),
   ),
   /** The files the person attached, in the order they came. */
-  files: v.array(vCaseFile),
+  evidence: v.array(vEvidence),
   /**
    * The filled-in document, and the fingerprint of the answers and files it
    * used. `letter` is set when the pack writes one.
@@ -249,8 +249,8 @@ export const caseFields = {
       fingerprint: v.string(),
     }),
   ),
-  /** The fingerprint of the artifact the person approved. */
-  approval: v.optional(v.object({ fingerprint: v.string() })),
+  /** The fingerprint of the artifact the person accepted. */
+  accepted: v.optional(v.object({ fingerprint: v.string() })),
   /**
    * A legal referral offered to the person, and what they said. Nothing is
    * shared while it's only `offered`. `withdrawn` is a shared one the person
@@ -262,7 +262,7 @@ export const caseFields = {
       status: v.union(
         v.literal("offered"),
         v.literal("shared"),
-        v.literal("declined"),
+        v.literal("rejected"),
         v.literal("withdrawn"),
       ),
     }),
@@ -281,7 +281,7 @@ export const vWaitingFor = v.union(
   v.literal("goal"),
   v.literal("pack"),
   v.literal("answers"),
-  v.literal("approval"),
+  v.literal("review"),
   v.literal("consent"),
   v.null(),
 );
@@ -298,16 +298,16 @@ export const PHASES = [
   "intake",
   // The workflow looks for a process that fits the goal.
   "proposing",
-  // The person confirms the proposed process, or rejects it.
+  // The person accepts the proposed process, or rejects it.
   "pack",
   // The workflow reads the conversation for answers already given.
-  "reading",
+  "suggesting",
   // The person gives the answers and files the process asks for.
   "answers",
   // The workflow builds the document from the answers.
   "filling",
-  // The person reviews the document and approves it.
-  "approval",
+  // The person reviews the document and accepts it.
+  "review",
   // The person says whether to share the case with a lawyer.
   "consent",
   // The workflow prepares delivery and ends the case.
@@ -324,10 +324,10 @@ export const vPhase = v.union(
   v.literal("intake"),
   v.literal("proposing"),
   v.literal("pack"),
-  v.literal("reading"),
+  v.literal("suggesting"),
   v.literal("answers"),
   v.literal("filling"),
-  v.literal("approval"),
+  v.literal("review"),
   v.literal("consent"),
   v.literal("finishing"),
   v.literal("failed"),
@@ -341,7 +341,7 @@ export const WAITS: Partial<Record<Phase, NonNullable<WaitingFor>>> = {
   intake: "goal",
   pack: "pack",
   answers: "answers",
-  approval: "approval",
+  review: "review",
   consent: "consent",
 };
 
@@ -361,9 +361,9 @@ export const vHistoryKind = v.union(
   v.literal("pack.proposed"),
   v.literal("pack.clarification"),
   v.literal("answers.suggested"),
-  v.literal("file.attached"),
-  v.literal("file.removed"),
-  v.literal("document.filled"),
+  v.literal("evidence.added"),
+  v.literal("evidence.removed"),
+  v.literal("artifact.filled"),
   v.literal("referral.shared"),
   v.literal("referral.accepted"),
   v.literal("referral.withdrawn"),
@@ -375,8 +375,8 @@ export const vCaseEvent = v.union(
   // While waiting for a goal: state it without chatting.
   v.object({ type: v.literal("goal.set"), goal: v.string() }),
   // While waiting on a proposed pack.
-  v.object({ type: v.literal("processPack.confirm") }),
-  v.object({ type: v.literal("processPack.reject") }),
+  v.object({ type: v.literal("pack.accept") }),
+  v.object({ type: v.literal("pack.reject") }),
   // While collecting answers, or in review (which sends the case back).
   v.object({
     type: v.literal("answers.set"),
@@ -387,11 +387,11 @@ export const vCaseEvent = v.union(
   }),
   // With the answers: take every suggested answer that's still unanswered.
   v.object({ type: v.literal("answers.accept") }),
-  // Until the document is approved: attach an uploaded file. With a `key`
+  // Until the document is accepted: attach an uploaded file. With a `key`
   // it's one the pack asks for; without, anything else that helps. Once the
   // case is done, it adds what came afterwards (a follow-up, with no key).
   v.object({
-    type: v.literal("document.attach"),
+    type: v.literal("evidence.add"),
     storageId: v.id("_storage"),
     key: v.optional(v.string()),
     /** The file's name, as the person knows it. */
@@ -399,20 +399,20 @@ export const vCaseEvent = v.union(
   }),
   // Says which of the pack's documents an attached file is, or none.
   v.object({
-    type: v.literal("document.label"),
+    type: v.literal("evidence.update"),
     storageId: v.id("_storage"),
     key: v.optional(v.string()),
   }),
   // Takes an attached file off the case.
-  v.object({ type: v.literal("document.remove"), storageId: v.id("_storage") }),
+  v.object({ type: v.literal("evidence.remove"), storageId: v.id("_storage") }),
   // In review.
-  v.object({ type: v.literal("review.approve") }),
+  v.object({ type: v.literal("artifact.accept") }),
   // When a referral is offered: share the case with a lawyer, or don't.
   v.object({ type: v.literal("referral.share") }),
-  v.object({ type: v.literal("referral.decline") }),
+  v.object({ type: v.literal("referral.reject") }),
   // After a failure: run again, or stop.
-  v.object({ type: v.literal("step.retry") }),
-  v.object({ type: v.literal("step.cancel") }),
+  v.object({ type: v.literal("case.retry") }),
+  v.object({ type: v.literal("case.stop") }),
   // At any time.
   v.object({ type: v.literal("case.cancel") }),
 );

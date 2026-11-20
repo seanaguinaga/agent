@@ -70,9 +70,9 @@ covers. A person turns a good one into a shared pack with `save`.
 
 1. After intake, read `getCase.selection.draft` to review the checklist and the
    questions.
-2. Send `{ "type": "processPack.confirm" }` with the case's current
-   `expectedSeq`, which makes sure you confirm the proposal you read. The case
-   pins the draft's inputs; there is no pack id.
+2. Send `{ "type": "pack.accept" }` with the case's current `expectedSeq`, which
+   makes sure you accept the proposal you read. The case pins the draft's
+   inputs; there is no pack id.
 3. The case collects the answers, builds the checklist and letter, and waits for
    review. A draft with no letter asks nothing and goes straight to review.
 
@@ -83,7 +83,7 @@ checklist.
 
 ## What a pack can ask for
 
-- **`documents`**: files to attach, each `required` or not. A case waits for at
+- **`evidence`**: files to attach, each `required` or not. A case waits for at
   least one file for each required one, along with the answers. The person can
   attach other evidence too, which no pack needs to list.
 - **`deadline`**: `{ label, fromInput, days }`. The date is `days` after the
@@ -97,8 +97,9 @@ checklist.
   step is kept.
 - **`referral`**: `{ kind, when }`. `when` is one check on one answer: `equals`
   some text, `atLeast` a number, or `withinDays` (the date answered is today or
-  at most that many days ago). When it passes at approval, the person is asked
-  whether to share the case. Without `when` they're always asked.
+  at most that many days ago). When it passes when the artifact is accepted, the
+  person is asked whether to share the case. Without `when` they're always
+  asked.
 
 `save` refuses a pack whose deadline, referral or letter names an input the pack
 doesn't have. It also refuses an input nothing reads: each one must appear in

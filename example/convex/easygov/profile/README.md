@@ -42,9 +42,9 @@ them. `profile/public:askAhead` says what's worth asking now:
 A case's `answers` are always what its document is built from. `following` lists
 the ones read from the profile.
 
-- **Until approval, the case follows the profile.** Saving a fact re-reads it
-  into the person's open cases (`syncCase` in `data.ts`).
-- **After approval, it keeps its own.** A later move doesn't rewrite a filed
+- **Until the artifact is accepted, the case follows the profile.** Saving a
+  fact re-reads it into the person's open cases (`syncCase` in `data.ts`).
+- **After that, it keeps its own.** A later move doesn't rewrite a filed
   document.
 - **An answer given on the case is the case's.** With `caseOnly` it stays there;
   without, it's kept for next time (below).
@@ -60,8 +60,8 @@ the case (`keepAnswer` in `data.ts`):
   what it means: a phone number, an email, a date, a two-word name. A longer
   name or a one-line address stays on the case; its parts aren't ours to guess.
 - **Anything else is remembered** against the pack that asked, with the
-  question's words. The same pack offers it back next time. Another pack's
-  prefill sees it as something the person said, and may suggest it for a similar
+  question's words. The same pack offers it back next time. Another pack's it
+  counts as something the person said, and may be suggested for a similar
   question. Suggested, never filled in.
 
 A pack can also link an input to the profile without being a reading (`profile`

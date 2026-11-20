@@ -1,4 +1,4 @@
-// A case's files: the letter that started it, the evidence behind it, and
+// A case's evidence: the letter that started it, the evidence behind it, and
 // what comes back once it's filed. A file is uploaded to storage first
 // (`uploadUrl`), then attached here, and read once by a model: what it
 // states is offered as answers, and is all any later step sees of it.
@@ -14,12 +14,12 @@ import {
 } from "../../_generated/server";
 import { readableAs, readDocument, type Question } from "./agents";
 import { attachedLine, logCaseEvent, openQuestions, writeCase } from "./data";
-import { vFileRead, type CaseFile } from "./schema";
+import { vEvidenceRead, type Evidence } from "./schema";
 import { pinnedPack, waitingFor, type Case } from "./state";
 import { nudgeIfMoved } from "./workflow";
 
 /** Enough for a thick case, and a bounded case row. */
-export const MAX_FILES = 30;
+export const MAX_EVIDENCE = 30;
 const MB = 1024 * 1024;
 export const MAX_FILE_BYTES = 20 * MB;
 /** Past this a file is kept but not sent to the model. */
@@ -28,30 +28,30 @@ const MAX_READ_BYTES = 10 * MB;
 type Upload = { storageId: Id<"_storage">; name?: string };
 
 /** Attaches an uploaded file to a case that's still being put together. */
-export async function attach(
+export async function add(
   ctx: MutationCtx,
   c: Case,
   { key, ...upload }: Upload & { key?: string },
 ): Promise<Partial<Case>> {
-  if (key === undefined) return add(ctx, c, await uploaded(ctx, c, upload));
+  if (key === undefined) return keep(ctx, c, await uploaded(ctx, c, upload));
   requireAsked(c, key);
   const named = { ...upload, name: upload.name ?? key };
   const file = await uploaded(ctx, c, named);
-  return add(ctx, c, { ...file, key });
+  return keep(ctx, c, { ...file, key });
 }
 
 /** Attaches what came once the case was done: a receipt, or a reply. */
-export async function attachFollowUp(
+export async function addFollowUp(
   ctx: MutationCtx,
   c: Case,
   upload: Upload,
 ): Promise<Partial<Case>> {
   const file = await uploaded(ctx, c, upload);
-  return add(ctx, c, { ...file, followUp: true });
+  return keep(ctx, c, { ...file, followUp: true });
 }
 
 /** Says which of the pack's documents an attached file is, or (no key) none. */
-export function label(
+export function update(
   c: Case,
   storageId: Id<"_storage">,
   key?: string,
@@ -60,7 +60,7 @@ export function label(
   if (key !== undefined) requireAsked(c, key);
   const labelled = key === undefined ? file : { ...file, key };
   return {
-    files: c.files.map((other) =>
+    evidence: c.evidence.map((other) =>
       other.storageId === storageId ? labelled : other,
     ),
   };
@@ -82,12 +82,14 @@ export async function remove(
       .withIndex("by_caseId_and_kind", (q) => q.eq("caseId", c._id))
       .first());
   if (!shared) await ctx.storage.delete(storageId);
-  await logCaseEvent(ctx, c._id, "file.removed", file.name);
-  return { files: c.files.filter((other) => other.storageId !== storageId) };
+  await logCaseEvent(ctx, c._id, "evidence.removed", file.name);
+  return {
+    evidence: c.evidence.filter((other) => other.storageId !== storageId),
+  };
 }
 
 function requireAsked(c: Case, key: string): void {
-  if (!pinnedPack(c)?.documents?.some((document) => document.key === key)) {
+  if (!pinnedPack(c)?.evidence?.some((document) => document.key === key)) {
     throw new ConvexError(`"${key}" isn't one of this case's documents.`);
   }
 }
@@ -97,8 +99,8 @@ function attached(
   c: Case,
   storageId: Id<"_storage">,
   { followUp }: { followUp: boolean },
-): CaseFile {
-  const file = c.files.find((file) => file.storageId === storageId);
+): Evidence {
+  const file = c.evidence.find((file) => file.storageId === storageId);
   if (!file || !!file.followUp !== followUp) {
     throw new ConvexError("That file isn't attached.");
   }
@@ -117,12 +119,12 @@ async function uploaded(
   ctx: MutationCtx,
   c: Case,
   { storageId, name }: Upload,
-): Promise<CaseFile> {
-  if (c.files.some((file) => file.storageId === storageId)) {
+): Promise<Evidence> {
+  if (c.evidence.some((file) => file.storageId === storageId)) {
     throw new ConvexError("That file is already attached.");
   }
-  if (c.files.length >= MAX_FILES) {
-    throw new ConvexError(`A case holds up to ${MAX_FILES} files.`);
+  if (c.evidence.length >= MAX_EVIDENCE) {
+    throw new ConvexError(`A case holds up to ${MAX_EVIDENCE} files.`);
   }
   const stored = await ctx.db.system.get("_storage", storageId);
   if (!stored) throw new ConvexError("Upload the file first.");
@@ -146,13 +148,13 @@ async function uploaded(
 }
 
 /** Puts the file on the case, and starts reading it if it can be read. */
-async function add(
+async function keep(
   ctx: MutationCtx,
   c: Case,
-  file: CaseFile,
+  file: Evidence,
 ): Promise<Partial<Case>> {
   if (file.read.status === "reading") {
-    await ctx.scheduler.runAfter(0, internal.easygov.case.files.read, {
+    await ctx.scheduler.runAfter(0, internal.easygov.case.evidence.read, {
       caseId: c._id,
       storageId: file.storageId,
     });
@@ -160,10 +162,10 @@ async function add(
   await logCaseEvent(
     ctx,
     c._id,
-    "file.attached",
+    "evidence.added",
     file.followUp ? `${file.name} (after filing)` : file.name,
   );
-  return { files: [...c.files, file] };
+  return { evidence: [...c.evidence, file] };
 }
 
 // --- Reading ----------------------------------------------------------------
@@ -188,7 +190,7 @@ export const readInput = internalQuery({
   ),
   handler: async (ctx, { caseId, storageId }) => {
     const found = await ctx.db.get("cases", caseId);
-    const file = found?.files.find((file) => file.storageId === storageId);
+    const file = found?.evidence.find((file) => file.storageId === storageId);
     if (!found || file?.read.status !== "reading") return null;
     return {
       threadId: found.threadId,
@@ -214,13 +216,13 @@ export const read = internalAction({
       name: string;
       mediaType: string;
       questions: Question[];
-    } | null = await ctx.runQuery(internal.easygov.case.files.readInput, {
+    } | null = await ctx.runQuery(internal.easygov.case.evidence.readInput, {
       caseId,
       storageId,
     });
     if (!input) return null;
     const { threadId, name, mediaType, questions } = input;
-    let found: Infer<typeof vFileRead>;
+    let found: Infer<typeof vEvidenceRead>;
     try {
       const blob = await ctx.storage.get(storageId);
       if (!blob) throw new Error("The file is gone");
@@ -240,7 +242,7 @@ export const read = internalAction({
       console.error("easygov file read failed", error);
       found = { status: "unread", reason: "It couldn't be read." };
     }
-    await ctx.runMutation(internal.easygov.case.files.recordRead, {
+    await ctx.runMutation(internal.easygov.case.evidence.recordRead, {
       caseId,
       storageId,
       read: found,
@@ -258,17 +260,17 @@ export const recordRead = internalMutation({
   args: {
     caseId: v.id("cases"),
     storageId: v.id("_storage"),
-    read: vFileRead,
+    read: vEvidenceRead,
   },
   returns: v.null(),
   handler: async (ctx, { caseId, storageId, read }) => {
     const found = await ctx.db.get("cases", caseId);
-    const file = found?.files.find((file) => file.storageId === storageId);
+    const file = found?.evidence.find((file) => file.storageId === storageId);
     // Removed meanwhile, or already read: nothing to keep.
     if (!found || file?.read.status !== "reading") return null;
     const now = { ...file, read };
     const patch: Partial<Case> = {
-      files: found.files.map((other) => (other === file ? now : other)),
+      evidence: found.evidence.map((other) => (other === file ? now : other)),
     };
     const line = attachedLine(now);
     if (line && waitingFor(found) === "goal") {

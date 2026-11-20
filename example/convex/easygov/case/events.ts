@@ -10,7 +10,7 @@ import { factOf, READINGS, type FactKey } from "../profile/vocabulary";
 import { today } from "../dates";
 import { answerProblem } from "./answers";
 import { draftDefinition, logCaseEvent } from "./data";
-import { attach, label, remove } from "./files";
+import { add, update, remove } from "./evidence";
 import {
   definitionOf,
   draftOf,
@@ -20,7 +20,7 @@ import {
 } from "./schema";
 import {
   answerKind,
-  caseFiles,
+  caseEvidence,
   currentChoice,
   deadlineOf,
   fingerprintOf,
@@ -36,7 +36,7 @@ import {
 
 export type PersonEvent = Exclude<
   CaseEvent,
-  { type: "step.retry" | "step.cancel" | "case.cancel" }
+  { type: "case.retry" | "case.stop" | "case.cancel" }
 >;
 type Handler<T extends PersonEvent["type"]> = (
   ctx: MutationCtx,
@@ -57,11 +57,11 @@ const EVENTS: {
       return { goal: newGoal(c, text) };
     },
   },
-  "processPack.confirm": {
+  "pack.accept": {
     during: ["pack"],
-    handle: (_ctx, c) => confirm(c),
+    handle: (_ctx, c) => accept(c),
   },
-  "processPack.reject": {
+  "pack.reject": {
     during: ["pack"],
     handle: (_ctx, c) => ({
       selection: {
@@ -73,7 +73,7 @@ const EVENTS: {
   },
   // In review too: the changed answer sends the case back around.
   "answers.set": {
-    during: ["answers", "approval"],
+    during: ["answers", "review"],
     handle: async (ctx, c, { key, value: given, caseOnly }) => {
       if (!requiredInputs(c)?.includes(key)) {
         throw new ConvexError(`"${key}" isn't one of this case's inputs.`);
@@ -99,7 +99,7 @@ const EVENTS: {
   // Takes what was offered, where nothing was answered: what was found in
   // the conversation, and what the profile remembers.
   "answers.accept": {
-    during: ["answers", "approval"],
+    during: ["answers", "review"],
     handle: async (ctx, c) => {
       const offered = suggestions(c);
       if (!Object.keys(offered).length) {
@@ -132,30 +132,30 @@ const EVENTS: {
       };
     },
   },
-  // From the first message until the document is approved: the letter can
+  // From the first message until the document is accepted: the letter can
   // start the case. In review a new file sends the case back around, like
   // an answer.
-  "document.attach": {
-    during: ["goal", "pack", "answers", "approval"],
-    handle: (ctx, c, event) => attach(ctx, c, event),
+  "evidence.add": {
+    during: ["goal", "pack", "answers", "review"],
+    handle: (ctx, c, event) => add(ctx, c, event),
   },
-  "document.label": {
-    during: ["answers", "approval"],
-    handle: (_ctx, c, { storageId, key }) => label(c, storageId, key),
+  "evidence.update": {
+    during: ["answers", "review"],
+    handle: (_ctx, c, { storageId, key }) => update(c, storageId, key),
   },
-  "document.remove": {
-    during: ["goal", "pack", "answers", "approval"],
+  "evidence.remove": {
+    during: ["goal", "pack", "answers", "review"],
     handle: (ctx, c, { storageId }) =>
       remove(ctx, c, storageId, { followUp: false }),
   },
-  // Approving also settles whether a referral is offered: the pack's check
+  // Accepting also settles whether a referral is offered: the pack's check
   // is read once, today, so the offer doesn't come and go with the date.
-  "review.approve": {
-    during: ["approval"],
+  "artifact.accept": {
+    during: ["review"],
     handle: (_ctx, c) => {
       const kind = packReferral(c, today(Date.now()));
       return {
-        approval: { fingerprint: fingerprintOf(c) },
+        accepted: { fingerprint: fingerprintOf(c) },
         referral: kind ? { kind, status: "offered" } : undefined,
       };
     },
@@ -164,10 +164,10 @@ const EVENTS: {
     during: ["consent"],
     handle: (ctx, c) => share(ctx, c),
   },
-  "referral.decline": {
+  "referral.reject": {
     during: ["consent"],
     handle: (_ctx, c) => ({
-      referral: { kind: c.referral!.kind, status: "declined" },
+      referral: { kind: c.referral!.kind, status: "rejected" },
     }),
   },
 };
@@ -193,7 +193,7 @@ export async function take(
 }
 
 /**
- * Shares the case with a lawyer: copies what the person approved into
+ * Shares the case with a lawyer: copies what the person accepted into
  * `referrals`, as it is now, for one firm that covers it to accept. The
  * case's `seq` makes sure they agree to the case they saw. A guest has no account for a lawyer to reach, so they
  * claim the case first.
@@ -219,7 +219,7 @@ async function share(ctx: MutationCtx, c: Case): Promise<Partial<Case>> {
     goal: c.goal!.text,
     packId: pinned?.id,
     answers: c.answers,
-    files: caseFiles(c).map(({ read, ...file }) => ({
+    evidence: caseEvidence(c).map(({ read, ...file }) => ({
       ...file,
       ...(read.status === "read" && { summary: read.summary }),
     })),
@@ -231,22 +231,22 @@ async function share(ctx: MutationCtx, c: Case): Promise<Partial<Case>> {
 }
 
 /**
- * Confirms what was proposed: a saved pack, a draft, or a legal referral.
+ * Accepts what was proposed: a saved pack, a draft, or a legal referral.
  * A draft isn't saved as a pack. The case runs on it as it is, and it stays
- * on the case. The case's `seq` makes sure the person confirms the proposal
+ * on the case. The case's `seq` makes sure the person accepts the proposal
  * they saw.
  */
-function confirm(c: Case): Partial<Case> {
+function accept(c: Case): Partial<Case> {
   const proposed = currentChoice(c)!;
   const { goalVersion } = proposed;
   const selection: Selection =
     proposed.kind === "draft"
       ? {
           ...proposed,
-          status: "confirmed",
+          status: "accepted",
           definition: draftDefinition(proposed.draft),
         }
-      : { ...proposed, status: "confirmed" };
+      : { ...proposed, status: "accepted" };
   const referral = proposed.kind === "referral";
   return {
     selection,
@@ -255,7 +255,7 @@ function confirm(c: Case): Partial<Case> {
     pendingMessageId: undefined,
     // A proposal follows a stated goal, so there's a conversation to read
     // for answers before asking for them.
-    prefill: definitionOf(selection)?.inputs.length
+    chatSuggestions: definitionOf(selection)?.inputs.length
       ? { goalVersion }
       : undefined,
     // Legal advice has no pack: the referral is all there is to agree to.

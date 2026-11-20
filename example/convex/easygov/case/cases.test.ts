@@ -20,10 +20,10 @@ describe("the case API", () => {
     await expect(
       sendAt(seq - 1, { type: "goal.set", goal: "I moved" }),
     ).rejects.toThrow(/changed/);
-    await expect(sendAt(seq, { type: "review.approve" })).rejects.toThrow(
+    await expect(sendAt(seq, { type: "artifact.accept" })).rejects.toThrow(
       /isn't expected/,
     );
-    await expect(sendAt(seq, { type: "step.retry" })).rejects.toThrow(
+    await expect(sendAt(seq, { type: "case.retry" })).rejects.toThrow(
       /Nothing has failed/,
     );
     await expect(sendAt(seq, { type: "goal.set", goal: "  " })).rejects.toThrow(

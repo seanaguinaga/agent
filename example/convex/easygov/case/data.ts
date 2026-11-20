@@ -20,24 +20,28 @@ import type { vProcessPackDefinition } from "../packs/schema";
 import {
   definitionOf,
   draftOf,
-  type CaseFile,
+  type Evidence,
   type HistoryKind,
 } from "./schema";
 import { vFilledDocument } from "../forms/schema";
 import { intakeAgent, proposalFields, selectionAgent } from "./agents";
 import { missingInputs, renderLetter } from "./answers";
 import { rememberedElsewhere } from "../profile/data";
-import { answerKind, questionOf, readingConversation } from "./state";
 import {
-  caseFiles,
+  answerKind,
+  questionOf,
+  isSuggesting,
+  reviewOutcome as outcomeOf,
+} from "./state";
+import {
+  caseEvidence,
   currentChoice,
   currentSelection,
   fingerprintOf,
-  missingDocuments,
+  missingEvidence,
   newGoal,
   pinnedPack,
   requiredInputs,
-  reviewOutcome,
   standingGoal,
   type Case,
 } from "./state";
@@ -91,7 +95,7 @@ export function processPackDefinition(pack: Doc<"processPacks">) {
     id: pack._id,
     inputs: pack.inputs,
     inputQuestions: pack.inputQuestions,
-    documents: pack.documents,
+    evidence: pack.evidence,
     deadline: pack.deadline,
     referral: pack.referral,
     profile: pack.profile,
@@ -99,15 +103,15 @@ export function processPackDefinition(pack: Doc<"processPacks">) {
   };
 }
 
-/** What a case pins of a draft it confirmed: there's no saved row. */
+/** What a case pins of a draft it accepted: there's no saved row. */
 export function draftDefinition(draft: Draft) {
-  const { inputs, inputQuestions, documents, deadline, referral, profile } =
+  const { inputs, inputQuestions, evidence, deadline, referral, profile } =
     draft;
   // A draft never fills a form: a form's mapping is reviewed by a person.
-  return { inputs, inputQuestions, documents, deadline, referral, profile };
+  return { inputs, inputQuestions, evidence, deadline, referral, profile };
 }
 
-/** What the case runs on: the saved pack it pinned, or its confirmed draft. */
+/** What the case runs on: the saved pack it pinned, or its accepted draft. */
 async function packOf(
   ctx: QueryCtx,
   c: Case,
@@ -296,19 +300,19 @@ export const recordProposal = internalMutation({
   },
 });
 
-/** "confirmed" or "rejected" once the person decides; null to wait. */
+/** "accepted" or "rejected" once the person decides; null to wait. */
 export const packDecision = internalQuery({
   args: { caseId: v.id("cases") },
-  returns: v.union(v.literal("confirmed"), v.literal("rejected"), v.null()),
+  returns: v.union(v.literal("accepted"), v.literal("rejected"), v.null()),
   handler: async (ctx, { caseId }) => {
     const found = await ctx.db.get("cases", caseId);
     const status = found && currentSelection(found)?.status;
-    return status === "confirmed" || status === "rejected" ? status : null;
+    return status === "accepted" || status === "rejected" ? status : null;
   },
 });
 
-/** True when the person confirmed a legal referral rather than a pack. */
-export const isReferral = internalQuery({
+/** True when the person accepted a legal referral rather than a pack. */
+export const isAdviceRequest = internalQuery({
   args: { caseId: v.id("cases") },
   returns: v.boolean(),
   handler: async (ctx, { caseId }) => {
@@ -317,13 +321,13 @@ export const isReferral = internalQuery({
   },
 });
 
-// --- Prefill ----------------------------------------------------------------
+// --- Suggest ----------------------------------------------------------------
 
 /**
- * What prefill reads: the confirmed pack's unanswered questions, and
+ * What suggesting reads: the accepted pack's unanswered questions, and
  * everything the person has said, in chat and as their goal.
  */
-export const prefillInput = internalQuery({
+export const suggestInput = internalQuery({
   args: { caseId: v.id("cases") },
   returns: v.object({
     goalVersion: v.number(),
@@ -352,7 +356,7 @@ export const prefillInput = internalQuery({
     // The goal is the person's too: a proposal only follows a stated one.
     said.push(found.goal.text);
     // So is their paperwork: what each attached file states.
-    for (const file of caseFiles(found)) {
+    for (const file of caseEvidence(found)) {
       const line = attachedLine(file);
       // One attached during intake is already in the conversation.
       if (line && !said.includes(line)) said.push(line);
@@ -373,7 +377,7 @@ export const prefillInput = internalQuery({
   },
 });
 
-/** The confirmed pack's questions the case has no answer to yet. */
+/** The accepted pack's questions the case has no answer to yet. */
 export function openQuestions(c: Case) {
   return (pinnedPack(c)?.inputs ?? [])
     .filter((key) => c.answers[key] === undefined)
@@ -385,27 +389,27 @@ export function openQuestions(c: Case) {
 }
 
 /** What a read file states, as a line of what the person has said. */
-export function attachedLine(file: CaseFile): string | undefined {
+export function attachedLine(file: Evidence): string | undefined {
   return file.read.status === "read"
     ? `I attached "${file.name}". It says: ${file.read.summary}`
     : undefined;
 }
 
 /** True while the conversation is still to be read for answers. */
-export const needsPrefill = internalQuery({
+export const needsSuggestions = internalQuery({
   args: { caseId: v.id("cases") },
   returns: v.boolean(),
   handler: async (ctx, { caseId }) => {
     const found = await ctx.db.get("cases", caseId);
-    return !!found && found.status === "active" && readingConversation(found);
+    return !!found && found.status === "active" && isSuggesting(found);
   },
 });
 
 /**
- * Keeps what prefill found, as suggestions: the person still has to accept
+ * Keeps what was found, as suggestions: the person still has to accept
  * them. Recorded even when empty: that's what lets the case ask for answers.
  */
-export const recordPrefill = internalMutation({
+export const recordSuggestions = internalMutation({
   args: {
     caseId: v.id("cases"),
     goalVersion: v.number(),
@@ -419,11 +423,11 @@ export const recordPrefill = internalMutation({
       !found ||
       found.status !== "active" ||
       found.goal?.version !== goalVersion ||
-      !readingConversation(found)
+      !isSuggesting(found)
     ) {
       return null;
     }
-    await writeCase(ctx, caseId, { prefill: { goalVersion, answers } });
+    await writeCase(ctx, caseId, { chatSuggestions: { goalVersion, answers } });
     const keys = Object.keys(answers);
     if (keys.length) {
       await logCaseEvent(ctx, caseId, "answers.suggested", keys.join(", "));
@@ -441,10 +445,10 @@ export const answersComplete = internalQuery({
   handler: async (ctx, { caseId }) => {
     const found = await ctx.db.get("cases", caseId);
     const inputs = found && requiredInputs(found);
-    if (!found || !inputs) throw new Error("The case has no confirmed pack");
+    if (!found || !inputs) throw new Error("The case has no accepted pack");
     const missing =
       missingInputs(inputs, found.answers, found.following).length +
-      missingDocuments(found).length;
+      missingEvidence(found).length;
     return missing === 0 ? true : null;
   },
 });
@@ -504,7 +508,7 @@ export const tailorInput = internalQuery({
  * so was the filled form: if they've changed since, the document is out of
  * date on its own, and the workflow goes around again.
  */
-export const fill = internalMutation({
+export const recordArtifact = internalMutation({
   args: {
     caseId: v.id("cases"),
     tailored: v.optional(
@@ -560,7 +564,7 @@ export const fill = internalMutation({
     await logCaseEvent(
       ctx,
       caseId,
-      "document.filled",
+      "artifact.filled",
       checklist
         ? `${checklist.length} of ${steps.length} steps apply`
         : undefined,
@@ -569,13 +573,13 @@ export const fill = internalMutation({
   },
 });
 
-/** "approved", or "changed" when an answer was edited in review; null to wait. */
-export const reviewResult = internalQuery({
+/** "accepted", or "changed" when an answer was edited in review; null to wait. */
+export const reviewOutcome = internalQuery({
   args: { caseId: v.id("cases") },
-  returns: v.union(v.literal("approved"), v.literal("changed"), v.null()),
+  returns: v.union(v.literal("accepted"), v.literal("changed"), v.null()),
   handler: async (ctx, { caseId }) => {
     const found = await ctx.db.get("cases", caseId);
-    return found ? reviewOutcome(found) : "changed";
+    return found ? outcomeOf(found) : "changed";
   },
 });
 
@@ -583,7 +587,7 @@ export const reviewResult = internalQuery({
 
 /**
  * True once no referral is waiting on the person: none was offered, or they
- * shared the case or declined.
+ * shared the case or rejected the offer.
  */
 export const referralSettled = internalQuery({
   args: { caseId: v.id("cases") },

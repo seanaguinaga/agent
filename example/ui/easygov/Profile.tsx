@@ -368,7 +368,7 @@ export function AskAhead({
   );
 }
 
-/** What finished cases suggest for the profile, for the person to confirm. */
+/** What finished cases suggest for the profile, for the person to accept. */
 export function Proposals({ guestKey }: { guestKey?: string }) {
   const data = useQuery(profile.get, { guestKey });
   const settle = useMutation(profile.settleProposal);

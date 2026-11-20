@@ -37,7 +37,7 @@ const saveFirm = (t: T, firm: object = {}) =>
     ...firm,
   });
 
-/** A wage claim case, approved and shared with a lawyer. */
+/** A wage claim case, accepted and shared with a lawyer. */
 async function shared(pack: object = {}) {
   vi.useFakeTimers();
   const t = initConvexTest();
@@ -55,11 +55,11 @@ async function shared(pack: object = {}) {
     ctx.storage.store(new Blob(["final pay stub"])),
   );
   await send(t, caseId, {
-    type: "document.attach",
+    type: "evidence.add",
     key: "payStub",
     storageId,
   });
-  await send(t, caseId, { type: "review.approve" });
+  await send(t, caseId, { type: "artifact.accept" });
   await send(t, caseId, { type: "referral.share" });
   return { t, caseId };
 }
@@ -83,7 +83,7 @@ describe("previews", () => {
         deadline: "2029-09-29",
         answered: ["amountOwed", "employer", "fullName", "lastWorkDate"],
         attached: ["payStub"],
-        files: 1,
+        evidence: 1,
         priceCents: 5000,
       },
     ]);
@@ -154,7 +154,7 @@ describe("accepting", () => {
       goal: wageClaim.title,
       deadline: "2029-09-29",
       answers: wages,
-      files: [{ key: "payStub", name: "payStub", url: expect.any(String) }],
+      evidence: [{ key: "payStub", name: "payStub", url: expect.any(String) }],
     });
     expect(await t.query(firms.accepted, { firmId: first })).toMatchObject([
       { id: referralId, priceCents: 12000 },
@@ -293,7 +293,7 @@ describe("the person", () => {
       type: "goal.set",
       goal: "Should I sue my former employer?",
     });
-    await send(t, caseId, { type: "processPack.confirm" });
+    await send(t, caseId, { type: "pack.accept" });
     await send(t, caseId, { type: "referral.share" });
     const firmId = await saveFirm(t, {
       coverage: [{ kind: "advice", jurisdiction: "us/ca" }],
@@ -304,7 +304,7 @@ describe("the person", () => {
         jurisdiction: "us/ca",
         answered: [],
         attached: [],
-        files: 0,
+        evidence: 0,
       },
     ]);
     // The goal is the person's own words: it isn't in the preview.

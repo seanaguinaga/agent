@@ -23,21 +23,21 @@ export type CaseView = Infer<typeof vCaseDoc> & {
   deadline: { label: string; date: string } | null;
   suggestions: Record<string, string>;
   profileInputs: Record<string, string>;
-  fileUrls: Record<string, string>;
+  evidenceUrls: Record<string, string>;
 };
 type Pack = NonNullable<ReturnType<typeof definitionOf>>;
 
 export type PilotOptions = {
   /**
    * Where to hand the case back: once it waits for this, once it has been
-   * approved, or ("end") never, so it runs until the case ends.
+   * accepted, or ("end") never, so it runs until the case ends.
    */
-  until: "pack" | "answers" | "approval" | "approved" | "consent" | "end";
+  until: "pack" | "answers" | "review" | "accepted" | "consent" | "end";
   /** The goal to state if the case asks for one. Without it, stop there. */
   goal?: string;
   /** Answer the pack's referral check so that it passes, or so it doesn't. */
   referral: "trigger" | "avoid";
-  consent: "share" | "decline";
+  consent: "share" | "reject";
 };
 
 export type PilotAction = { event: CaseEvent } | { upload: string };
@@ -89,7 +89,7 @@ export function pilot(
 ): PilotAction | "wait" | "stop" {
   if (c.status !== "active" || c.run?.state === "failed") return "stop";
   const { until } = options;
-  if (until === "approved" ? c.approval !== undefined : c.waitingFor === until)
+  if (until === "accepted" ? c.accepted !== undefined : c.waitingFor === until)
     return "stop";
   switch (c.waitingFor) {
     case null:
@@ -99,7 +99,7 @@ export function pilot(
         ? { event: { type: "goal.set", goal: options.goal } }
         : "stop";
     case "pack":
-      return { event: { type: "processPack.confirm" } };
+      return { event: { type: "pack.accept" } };
     case "answers": {
       const pack = definitionOf(c.selection);
       if (!pack) return "stop";
@@ -115,17 +115,17 @@ export function pilot(
         const value = answerFor(pack, key, options.referral, today);
         return { event: { type: "answers.set", key, value } };
       }
-      const file = pack.documents?.find(
+      const file = pack.evidence?.find(
         ({ key, required }) =>
-          required && !c.files.some((attached) => attached.key === key),
+          required && !c.evidence.some((attached) => attached.key === key),
       );
       return file ? { upload: file.key } : "wait";
     }
-    case "approval":
-      return { event: { type: "review.approve" } };
+    case "review":
+      return { event: { type: "artifact.accept" } };
     case "consent":
-      if (options.consent === "decline")
-        return { event: { type: "referral.decline" } };
+      if (options.consent === "reject")
+        return { event: { type: "referral.reject" } };
       // A guest claims the case first; that's the person's call.
       return c.userId.startsWith("guest:")
         ? "stop"

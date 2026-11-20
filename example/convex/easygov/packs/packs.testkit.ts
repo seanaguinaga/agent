@@ -55,7 +55,7 @@ export const wageClaim: PackDefinition = {
   authority: "Labor Commissioner",
   forms: [],
   inputs: ["fullName", "employer", "amountOwed", "lastWorkDate"],
-  documents: [
+  evidence: [
     { key: "payStub", label: "Your last pay stub", required: true },
     { key: "contract", label: "Your offer letter", required: false },
   ],

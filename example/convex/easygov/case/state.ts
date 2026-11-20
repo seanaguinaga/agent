@@ -9,7 +9,7 @@ import {
   chosen,
   definitionOf,
   WAITS,
-  type CaseFile,
+  type Evidence,
   type Phase,
   type WaitingFor,
 } from "./schema";
@@ -38,25 +38,23 @@ export function currentSelection(c: Case) {
   return selection?.goalVersion === c.goal?.version ? selection : undefined;
 }
 
-/** What was proposed or confirmed for the current goal. A rejection is none. */
+/** What was proposed or accepted for the current goal. A rejection is none. */
 export function currentChoice(c: Case) {
   return chosen(currentSelection(c));
 }
 
-/** The input keys the confirmed pack asks for. */
+/** The input keys the accepted pack asks for. */
 export function requiredInputs(c: Case): string[] | undefined {
   const selection = currentSelection(c);
-  return selection?.status === "confirmed"
+  return selection?.status === "accepted"
     ? definitionOf(selection)?.inputs
     : undefined;
 }
 
-/** The confirmed pack, as the case pinned it. */
+/** The accepted pack, as the case pinned it. */
 export function pinnedPack(c: Case) {
   const selection = currentSelection(c);
-  return selection?.status === "confirmed"
-    ? definitionOf(selection)
-    : undefined;
+  return selection?.status === "accepted" ? definitionOf(selection) : undefined;
 }
 
 /**
@@ -69,14 +67,16 @@ export function questionOf(c: Case, key: string): string {
 }
 
 /** What was read from the conversation for the current goal, if started. */
-function currentPrefill(c: Case) {
-  return c.prefill?.goalVersion === c.goal?.version ? c.prefill : undefined;
+function currentChatSuggestions(c: Case) {
+  return c.chatSuggestions?.goalVersion === c.goal?.version
+    ? c.chatSuggestions
+    : undefined;
 }
 
 /** True while the conversation is being read for answers. */
-export function readingConversation(c: Case): boolean {
-  const prefill = currentPrefill(c);
-  return !!prefill && prefill.answers === undefined;
+export function isSuggesting(c: Case): boolean {
+  const suggest = currentChatSuggestions(c);
+  return !!suggest && suggest.answers === undefined;
 }
 
 /**
@@ -86,8 +86,11 @@ export function readingConversation(c: Case): boolean {
 export function suggestions(c: Case): Record<string, string> {
   // What the person said just now outranks what the profile remembers, and
   // what their own paperwork states outranks both.
-  const found = { ...c.profileOffers, ...currentPrefill(c)?.answers };
-  for (const { read } of caseFiles(c)) {
+  const found = {
+    ...c.profileSuggestions,
+    ...currentChatSuggestions(c)?.answers,
+  };
+  for (const { read } of caseEvidence(c)) {
     if (read.status === "read") Object.assign(found, read.answers);
   }
   return Object.fromEntries(
@@ -97,30 +100,30 @@ export function suggestions(c: Case): Record<string, string> {
   );
 }
 
-/** The confirmed pack's inputs the case has no answer for yet. */
+/** The accepted pack's inputs the case has no answer for yet. */
 export function missing(c: Case): string[] {
   return missingInputs(requiredInputs(c) ?? [], c.answers, c.following);
 }
 
 /**
- * The files that are part of what the person approves and shares: all but
+ * The files that are part of what the person accepts and shares: all but
  * the follow-ups, which arrive once the case is done.
  */
-export function caseFiles(c: Pick<Case, "files">): CaseFile[] {
-  return c.files.filter((file) => !file.followUp);
+export function caseEvidence(c: Pick<Case, "evidence">): Evidence[] {
+  return c.evidence.filter((file) => !file.followUp);
 }
 
 /** The keys of the required files the person hasn't attached yet. */
-export function missingDocuments(c: Case): string[] {
-  const attached = new Set(caseFiles(c).map((file) => file.key));
-  return (pinnedPack(c)?.documents ?? [])
+export function missingEvidence(c: Case): string[] {
+  const attached = new Set(caseEvidence(c).map((file) => file.key));
+  return (pinnedPack(c)?.evidence ?? [])
     .filter(({ key, required }) => required && !attached.has(key))
     .map(({ key }) => key);
 }
 
 /** The answers and files as they stand: what a document is built from. */
 export function fingerprintOf(c: Case): string {
-  return fingerprint(c.answers, caseFiles(c));
+  return fingerprint(c.answers, caseEvidence(c));
 }
 
 /** The date to act by, once the answer it's counted from is in. */
@@ -163,11 +166,11 @@ export function isGuest(c: Pick<Case, "userId">): boolean {
   return c.userId.startsWith("guest:");
 }
 
-/** "approved", "changed" (an answer moved on since the artifact), or null. */
-export function reviewOutcome(c: Case): "approved" | "changed" | null {
+/** "accepted", "changed" (an answer moved on since the artifact), or null. */
+export function reviewOutcome(c: Case): "accepted" | "changed" | null {
   const current = fingerprintOf(c);
   if (c.artifact?.fingerprint !== current) return "changed";
-  return c.approval?.fingerprint === current ? "approved" : null;
+  return c.accepted?.fingerprint === current ? "accepted" : null;
 }
 
 /**
@@ -194,16 +197,16 @@ export function phase(c: Case): Phase {
   if (!selection) return "proposing";
   if (selection.status === "proposed") return "pack";
   // A rejection for the current goal leaves no standing goal: not here.
-  if (selection.status !== "confirmed") return "intake";
+  if (selection.status !== "accepted") return "intake";
   // A request for legal advice has no pack: only the referral to agree to.
   if (selection.kind !== "referral") {
     // Not yet: what the person said may already answer some of it.
-    if (readingConversation(c)) return "reading";
-    if (missing(c).length || missingDocuments(c).length) return "answers";
-    // All in: in review once the artifact matches them, until approved.
+    if (isSuggesting(c)) return "suggesting";
+    if (missing(c).length || missingEvidence(c).length) return "answers";
+    // All in: in review once the artifact matches them, until accepted.
     const review = reviewOutcome(c);
     if (review === "changed") return "filling";
-    if (review === null) return "approval";
+    if (review === null) return "review";
   }
   return c.referral?.status === "offered" ? "consent" : "finishing";
 }

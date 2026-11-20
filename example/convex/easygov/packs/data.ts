@@ -130,12 +130,12 @@ function checkDefinition(raw: Definition): Definition {
       `The referral depends on "${referral.when.input}", which isn't an input.`,
     );
   }
-  const { documents = [], deadline, output } = raw;
-  const documentKeys = documents.map(({ key }) => key);
+  const { evidence = [], deadline, output } = raw;
+  const documentKeys = evidence.map(({ key }) => key);
   if (
-    documents.length > 20 ||
+    evidence.length > 20 ||
     new Set(documentKeys).size !== documentKeys.length ||
-    documents.some(({ key, label }) => !key.trim() || !label.trim())
+    evidence.some(({ key, label }) => !key.trim() || !label.trim())
   ) {
     throw new ConvexError(
       "List up to 20 documents, each with a label and its own key.",

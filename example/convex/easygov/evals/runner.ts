@@ -33,7 +33,7 @@ import {
   choosePack,
   draftProcess,
   intakeReply,
-  prefillAnswers,
+  suggestAnswers,
   readRequest,
   research,
   tailorChecklist,
@@ -48,7 +48,7 @@ import {
   gradeIntake,
   gradeMapping,
   gradePipeline,
-  gradePrefill,
+  gradeSuggest,
   gradeRequest,
   gradeResearch,
   gradeTailor,
@@ -280,10 +280,10 @@ const run: Record<
     return { ...graded, output: draft };
   },
 
-  async prefill(ctx, caseId, threadId) {
-    const { questions, said, ...expected } = find(cases.prefill, caseId);
-    const answers = await prefillAnswers(ctx, threadId, questions, said);
-    return { ...gradePrefill(expected, answers), output: answers };
+  async suggest(ctx, caseId, threadId) {
+    const { questions, said, ...expected } = find(cases.suggest, caseId);
+    const answers = await suggestAnswers(ctx, threadId, questions, said);
+    return { ...gradeSuggest(expected, answers), output: answers };
   },
 
   async tailor(ctx, caseId, threadId) {
@@ -498,7 +498,7 @@ export const stepCase = internalAction({
         "event" in next
           ? next.event
           : {
-              type: "document.attach",
+              type: "evidence.add",
               key: next.upload,
               name: `${next.upload}.txt`,
               storageId: await ctx.storage.store(

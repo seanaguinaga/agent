@@ -30,7 +30,7 @@ const vPreview = v.object({
   answered: v.array(v.string()),
   attached: v.array(v.string()),
   /** How many files there are in all, with any other evidence. */
-  files: v.number(),
+  evidence: v.number(),
   priceCents: v.number(),
 });
 
@@ -105,9 +105,11 @@ export const previews = query({
         deadline: referral.deadline,
         answered: Object.keys(referral.answers).sort(),
         attached: [
-          ...new Set(referral.files.flatMap(({ key }) => (key ? [key] : []))),
+          ...new Set(
+            referral.evidence.flatMap(({ key }) => (key ? [key] : [])),
+          ),
         ].sort(),
-        files: referral.files.length,
+        evidence: referral.evidence.length,
         priceCents: referral.priceCents,
       });
     }
@@ -216,7 +218,7 @@ export const packet = query({
     deadline: v.optional(v.string()),
     answers: v.record(v.string(), v.string()),
     /** Each attached file, with a link to it and what reading it found. */
-    files: v.array(
+    evidence: v.array(
       v.object({
         key: v.optional(v.string()),
         name: v.string(),
@@ -236,10 +238,10 @@ export const packet = query({
     const pack = referral.packId
       ? await ctx.db.get("processPacks", referral.packId)
       : null;
-    const files = [];
-    for (const { storageId, ...file } of referral.files) {
+    const evidence = [];
+    for (const { storageId, ...file } of referral.evidence) {
       const url = await ctx.storage.getUrl(storageId);
-      if (url) files.push({ ...file, url });
+      if (url) evidence.push({ ...file, url });
     }
     const { kind, userId, goal, jurisdiction, deadline, answers } = referral;
     return {
@@ -250,7 +252,7 @@ export const packet = query({
       jurisdiction,
       deadline,
       answers,
-      files,
+      evidence,
     };
   },
 });

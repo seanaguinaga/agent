@@ -14,7 +14,7 @@ const base = {
   status: "active",
   seq: 0,
   answers: {},
-  files: [],
+  evidence: [],
 } satisfies Case;
 
 /** A pack asking for `a` and `b`, as a selection holds it. */
@@ -29,13 +29,13 @@ const failed = {
   workflowId: "w" as never,
 } as const;
 
-/** A case with a goal and a confirmed pack asking for `a` and `b`. */
-function confirmed(extra: Partial<Case> = {}): Case {
+/** A case with a goal and an accepted pack asking for `a` and `b`. */
+function withPack(extra: Partial<Case> = {}): Case {
   return {
     ...base,
     goal: { text: "Do it", version: 1 },
     selection: {
-      status: "confirmed",
+      status: "accepted",
       kind: "pack",
       goalVersion: 1,
       definition: { id: packId, inputs: ["a", "b"] },
@@ -47,56 +47,56 @@ function confirmed(extra: Partial<Case> = {}): Case {
 describe("waitingFor", () => {
   test("a goal, until one stands", () => {
     expect(waitingFor(base)).toBe("goal");
-    const rejected = confirmed({
+    const rejected = withPack({
       selection: { status: "rejected", goalVersion: 1, reason: "person" },
     });
     expect(waitingFor(rejected)).toBe("goal");
   });
 
   test("the pack, while one is proposed for the current goal", () => {
-    const proposed = confirmed({
+    const proposed = withPack({
       selection: { ...pack, status: "proposed" },
     });
     expect(waitingFor(proposed)).toBe("pack");
     // Made for an earlier goal: nothing to decide yet; a proposal is coming.
-    const stale = confirmed({
+    const stale = withPack({
       goal: { text: "Something else", version: 2 },
       selection: { ...pack, status: "proposed" },
     });
     expect(waitingFor(stale)).toBeNull();
   });
 
-  test("answers, then approval once the document matches them", () => {
-    expect(waitingFor(confirmed())).toBe("answers");
+  test("answers, then accepted once the document matches them", () => {
+    expect(waitingFor(withPack())).toBe("answers");
     const answers = { a: "1", b: "2" };
     // All answered, document not built yet: the workflow is busy.
-    expect(waitingFor(confirmed({ answers }))).toBeNull();
+    expect(waitingFor(withPack({ answers }))).toBeNull();
     const artifact = { summary: "", fingerprint: fingerprint(answers) };
-    expect(waitingFor(confirmed({ answers, artifact }))).toBe("approval");
-    const approval = { fingerprint: artifact.fingerprint };
-    expect(waitingFor(confirmed({ answers, artifact, approval }))).toBeNull();
+    expect(waitingFor(withPack({ answers, artifact }))).toBe("review");
+    const accepted = { fingerprint: artifact.fingerprint };
+    expect(waitingFor(withPack({ answers, artifact, accepted }))).toBeNull();
     // An answer changed in review: the document is out of date, so busy.
     const edited = { ...answers, b: "3" };
-    expect(waitingFor(confirmed({ answers: edited, artifact }))).toBeNull();
+    expect(waitingFor(withPack({ answers: edited, artifact }))).toBeNull();
   });
 
   test("nothing after a failure, for a referral, or once ended", () => {
-    expect(waitingFor(confirmed({ run: failed }))).toBeNull();
-    expect(waitingFor(confirmed({ status: "done" }))).toBeNull();
+    expect(waitingFor(withPack({ run: failed }))).toBeNull();
+    expect(waitingFor(withPack({ status: "done" }))).toBeNull();
   });
 
   test("a required file, along with the answers", () => {
     const answers = { a: "1", b: "2" };
-    const needsFile = confirmed({
+    const needsFile = withPack({
       answers,
       selection: {
-        status: "confirmed",
+        status: "accepted",
         kind: "pack",
         goalVersion: 1,
         definition: {
           id: packId,
           inputs: ["a", "b"],
-          documents: [
+          evidence: [
             { key: "notice", label: "The notice", required: true },
             { key: "extra", label: "Anything else", required: false },
           ],
@@ -112,40 +112,40 @@ describe("waitingFor", () => {
       read: { status: "reading" as const },
     };
     // Other evidence isn't the notice, and neither is a follow-up.
-    expect(waitingFor({ ...needsFile, files: [file] })).toBe("answers");
+    expect(waitingFor({ ...needsFile, evidence: [file] })).toBe("answers");
     expect(
       waitingFor({
         ...needsFile,
-        files: [{ ...file, key: "notice", followUp: true as const }],
+        evidence: [{ ...file, key: "notice", followUp: true as const }],
       }),
     ).toBe("answers");
     // All in, document not built yet: the workflow is busy.
     expect(
-      waitingFor({ ...needsFile, files: [{ ...file, key: "notice" }] }),
+      waitingFor({ ...needsFile, evidence: [{ ...file, key: "notice" }] }),
     ).toBeNull();
   });
 
   test("consent, while a referral is offered", () => {
     const offered = { kind: "advice", status: "offered" } as const;
-    const advice = confirmed({
-      selection: { status: "confirmed", kind: "referral", goalVersion: 1 },
+    const advice = withPack({
+      selection: { status: "accepted", kind: "referral", goalVersion: 1 },
     });
     expect(waitingFor({ ...advice, referral: offered })).toBe("consent");
     expect(
-      waitingFor({ ...advice, referral: { ...offered, status: "declined" } }),
+      waitingFor({ ...advice, referral: { ...offered, status: "rejected" } }),
     ).toBeNull();
 
-    // With a pack, only once the document is approved.
+    // With a pack, only once the document is accepted.
     const answers = { a: "1", b: "2" };
     const artifact = { summary: "", fingerprint: fingerprint(answers) };
-    const inReview = confirmed({ answers, artifact, referral: offered });
-    expect(waitingFor(inReview)).toBe("approval");
-    const approval = { fingerprint: artifact.fingerprint };
-    expect(waitingFor({ ...inReview, approval })).toBe("consent");
+    const inReview = withPack({ answers, artifact, referral: offered });
+    expect(waitingFor(inReview)).toBe("review");
+    const accepted = { fingerprint: artifact.fingerprint };
+    expect(waitingFor({ ...inReview, accepted })).toBe("consent");
     expect(
       waitingFor({
         ...inReview,
-        approval,
+        accepted,
         referral: { ...offered, status: "shared" },
       }),
     ).toBeNull();
@@ -155,23 +155,23 @@ describe("waitingFor", () => {
 describe("phase", () => {
   const answers = { a: "1", b: "2" };
   const artifact = { summary: "", fingerprint: fingerprint(answers) };
-  const approval = { fingerprint: artifact.fingerprint };
+  const accepted = { fingerprint: artifact.fingerprint };
   const offered = { kind: "advice", status: "offered" } as const;
   /** One case in each phase, in the order a case goes through them. */
   const each: [(typeof PHASES)[number], Case][] = [
     ["intake", base],
     ["proposing", { ...base, goal: { text: "Do it", version: 1 } }],
-    ["pack", confirmed({ selection: { ...pack, status: "proposed" } })],
-    ["reading", confirmed({ prefill: { goalVersion: 1 } })],
-    ["answers", confirmed({ prefill: { goalVersion: 1, answers: {} } })],
-    ["filling", confirmed({ answers })],
-    ["approval", confirmed({ answers, artifact })],
-    ["consent", confirmed({ answers, artifact, approval, referral: offered })],
-    ["finishing", confirmed({ answers, artifact, approval })],
-    ["failed", confirmed({ run: failed })],
-    ["done", confirmed({ status: "done" })],
-    ["stopped", confirmed({ status: "stopped" })],
-    ["canceled", confirmed({ status: "canceled" })],
+    ["pack", withPack({ selection: { ...pack, status: "proposed" } })],
+    ["suggesting", withPack({ chatSuggestions: { goalVersion: 1 } })],
+    ["answers", withPack({ chatSuggestions: { goalVersion: 1, answers: {} } })],
+    ["filling", withPack({ answers })],
+    ["review", withPack({ answers, artifact })],
+    ["consent", withPack({ answers, artifact, accepted, referral: offered })],
+    ["finishing", withPack({ answers, artifact, accepted })],
+    ["failed", withPack({ run: failed })],
+    ["done", withPack({ status: "done" })],
+    ["stopped", withPack({ status: "stopped" })],
+    ["canceled", withPack({ status: "canceled" })],
   ];
 
   test("names every situation, including the ones nobody is asked in", () => {
@@ -186,11 +186,11 @@ describe("phase", () => {
   });
 
   test("goes back: a rejected pack to intake, a changed answer to filling", () => {
-    const rejected = confirmed({
+    const rejected = withPack({
       selection: { status: "rejected", goalVersion: 1, reason: "person" },
     });
     expect(phase(rejected)).toBe("intake");
-    const edited = confirmed({ answers: { ...answers, b: "3" }, artifact });
+    const edited = withPack({ answers: { ...answers, b: "3" }, artifact });
     expect(phase(edited)).toBe("filling");
   });
 });

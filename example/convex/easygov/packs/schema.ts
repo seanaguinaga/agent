@@ -35,7 +35,7 @@ const vProcessPackOutput = v.object({
 });
 
 /** A file the person attaches, e.g. the denial letter they received. */
-export const vPackDocuments = v.array(
+export const vPackEvidence = v.array(
   v.object({ key: v.string(), label: v.string(), required: v.boolean() }),
 );
 
@@ -62,7 +62,7 @@ export const vSignal = v.union(
 export type Signal = Infer<typeof vSignal>;
 
 /**
- * A legal referral to offer once the person approves, e.g. representation
+ * A legal referral to offer once the person accepts, e.g. representation
  * for an appeal. With `when`, only if that answer passes. The person is
  * asked first: nothing is shared unless they say so. The price is fixed: it
  * doesn't depend on what comes of the case.
@@ -99,7 +99,7 @@ export const packDefinition = {
   forms: v.array(v.string()),
   inputs: v.array(v.string()),
   /** Files to attach along with the answers. */
-  documents: v.optional(vPackDocuments),
+  evidence: v.optional(vPackEvidence),
   deadline: v.optional(vPackDeadline),
   referral: v.optional(vPackReferral),
   /**
@@ -107,7 +107,7 @@ export const packDefinition = {
    * offers a reading as the input's starting answer ("your old address" is
    * today's home address). `updates` names the fact the answer becomes once
    * the case is done ("your new address" becomes the home address), which
-   * the person is then asked to confirm.
+   * the person is then asked to accept.
    */
   profile: v.optional(vPackProfileLinks),
   /**
@@ -115,7 +115,7 @@ export const packDefinition = {
    * reviewed mapping. The pack's inputs are what that mapping reads.
    */
   form: v.optional(v.object({ editionId: v.id("formEditions") })),
-  /** How the approved document goes out. Without one, the case just ends. */
+  /** How the accepted document goes out. Without one, the case just ends. */
   delivery: v.optional(v.union(v.literal("mail"), v.literal("online"))),
   inputQuestions: v.optional(vProcessPackQuestions),
   output: v.optional(vProcessPackOutput),

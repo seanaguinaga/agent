@@ -20,7 +20,7 @@ export default {
   /**
    * An answer that isn't a profile fact, kept with where it came from: the
    * pack that asked, in what words. The same pack offers it back next time;
-   * another pack's prefill may suggest it for a similar question.
+   * another pack may suggest it for a similar question.
    */
   rememberedAnswers: defineTable({
     userId: v.string(),

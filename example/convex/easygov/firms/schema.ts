@@ -25,7 +25,7 @@ export const firmFields = {
  * A file as it's shared: the case's own, and what reading it found.
  * Follow-ups aren't shared: they came after the person said yes.
  */
-export const vSharedFile = v.object({
+export const vSharedEvidence = v.object({
   storageId: v.id("_storage"),
   /** The pack's document this is; without one, other evidence. */
   key: v.optional(v.string()),
@@ -37,7 +37,7 @@ export const vSharedFile = v.object({
 
 /**
  * A case the person agreed to share with a lawyer: a copy of what they
- * approved, as it was when they said yes. It never changes after that,
+ * accepted, as it was when they said yes. It never changes after that,
  * except for who took it.
  */
 const referralShared = {
@@ -52,7 +52,7 @@ const referralShared = {
   goal: v.string(),
   packId: v.optional(v.id("processPacks")),
   answers: v.record(v.string(), v.string()),
-  files: v.array(vSharedFile),
+  evidence: v.array(vSharedEvidence),
   /** The date to act by, if the pack has one: YYYY-MM-DD. */
   deadline: v.optional(v.string()),
   /** The answers and files the person saw when they agreed. */

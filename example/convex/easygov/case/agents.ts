@@ -441,7 +441,7 @@ export async function draftProcess(
 }
 
 /**
- * Proposes a process for the case's goal. The person still has to confirm
+ * Proposes a process for the case's goal. The person still has to accept
  * it; this only suggests one. Four model calls at most: read the request,
  * compare the saved candidates, and if none fits, research the process and
  * draft it. Nothing is saved until `recordProposal`, so a retry is safe.
@@ -530,15 +530,15 @@ export const propose = internalAction({
           ? `, from ${pages} official page${pages === 1 ? "" : "s"}. `
           : ". I couldn't check the official website, so it only says what to verify. ") +
         (draft.inputs.length
-          ? "Review it and the questions before confirming."
-          : "Review it before confirming."),
+          ? "Review it and the questions before accepting."
+          : "Review it before accepting."),
       draft,
       research: notes || undefined,
     };
   },
 });
 
-// --- Prefill ----------------------------------------------------------------
+// --- Suggest ----------------------------------------------------------------
 //
 // The person shouldn't be asked twice. What they already said may answer
 // some of the questions; those come back as suggestions for them to accept.
@@ -555,7 +555,7 @@ export type Question = {
  * plainly said: a question they didn't answer is left out, and so is any
  * value that isn't the date or number its question needs.
  */
-export async function prefillAnswers(
+export async function suggestAnswers(
   ctx: ActionCtx,
   threadId: string,
   questions: Question[],
@@ -614,11 +614,11 @@ function usableAnswers(
 }
 
 /**
- * Reads the conversation for answers to the confirmed pack's questions.
+ * Reads the conversation for answers to the accepted pack's questions.
  * A failure here isn't worth failing the case for: the person just types
  * the answers, as they would have.
  */
-export const prefill = internalAction({
+export const suggest = internalAction({
   args: { caseId: v.id("cases") },
   returns: v.object({
     goalVersion: v.number(),
@@ -633,11 +633,11 @@ export const prefill = internalAction({
       threadId: string;
       questions: Question[];
       said: string[];
-    } = await ctx.runQuery(internal.easygov.case.data.prefillInput, { caseId });
+    } = await ctx.runQuery(internal.easygov.case.data.suggestInput, { caseId });
     const { goalVersion, threadId, questions, said } = input;
-    const answers = await prefillAnswers(ctx, threadId, questions, said).catch(
+    const answers = await suggestAnswers(ctx, threadId, questions, said).catch(
       (error) => {
-        console.error("easygov prefill failed", error);
+        console.error("easygov suggesting answers failed", error);
         return {};
       },
     );

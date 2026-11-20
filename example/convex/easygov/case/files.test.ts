@@ -177,7 +177,7 @@ describe("reading", () => {
       type: "text/plain",
     });
     expect(found).toMatchObject({
-      intake: { goal: "Tell the IRS my new address" },
+      goal: { text: "Tell the IRS my new address" },
       waitingFor: "pack",
     });
     expect((await texts(t, caseId)).slice(0, 2)).toEqual([

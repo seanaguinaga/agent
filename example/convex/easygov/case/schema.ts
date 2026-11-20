@@ -52,7 +52,7 @@ export const vCaseFile = v.object({
 export type CaseFile = Infer<typeof vCaseFile>;
 
 /**
- * The `intake.version` a selection was made for. A selection for an earlier
+ * The `goal.version` a selection was made for. A selection for an earlier
  * goal counts as none. A rejected one for the current goal sends the case
  * back to intake for a new goal.
  */
@@ -186,7 +186,7 @@ export const caseFields = {
    * a goal is set, even to the same words, so a selection made for an earlier
    * goal (see `selection.goalVersion`) is out of date on its own.
    */
-  intake: v.optional(v.object({ goal: v.string(), version: v.number() })),
+  goal: v.optional(v.object({ text: v.string(), version: v.number() })),
 
   /**
    * What was chosen for a goal, by `status` and `kind`. A rejection holds
@@ -373,7 +373,7 @@ export type HistoryKind = Infer<typeof vHistoryKind>;
 /** Everything a person can send to a case. */
 export const vCaseEvent = v.union(
   // While waiting for a goal: state it without chatting.
-  v.object({ type: v.literal("intake.submit"), goal: v.string() }),
+  v.object({ type: v.literal("goal.set"), goal: v.string() }),
   // While waiting on a proposed pack.
   v.object({ type: v.literal("processPack.confirm") }),
   v.object({ type: v.literal("processPack.reject") }),

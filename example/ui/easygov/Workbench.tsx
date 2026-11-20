@@ -145,15 +145,13 @@ function Goal({ session }: { session: CaseSession }) {
         className="flex gap-2"
         onSubmit={(event) => {
           event.preventDefault();
-          void act.run(() =>
-            session.send({ type: "intake.submit", goal }, c.seq),
-          );
+          void act.run(() => session.send({ type: "goal.set", goal }, c.seq));
         }}
       >
         <input
           className="input-field"
           aria-label="Goal"
-          placeholder="Or state the goal outright (intake.submit)"
+          placeholder="Or state the goal outright (goal.set)"
           value={goal}
           onChange={(event) => setGoal(event.target.value)}
         />
@@ -219,7 +217,7 @@ function Proposal({ session }: { session: CaseSession }) {
             ? "No process fits: a legal referral instead"
             : "A saved process pack fits this goal"}
       </h2>
-      <p className="text-sm text-gray-600">Goal: {c.intake?.goal}</p>
+      <p className="text-sm text-gray-600">Goal: {c.goal?.text}</p>
       {draft && (
         <div className="space-y-2 text-sm">
           <p className="font-medium">{draft.output?.title ?? draft.title}</p>
@@ -945,7 +943,7 @@ function Busy() {
 // --- Underneath -------------------------------------------------------------
 
 const TEMPLATES: CaseEvent[] = [
-  { type: "intake.submit", goal: "I moved and need to tell the IRS" },
+  { type: "goal.set", goal: "I moved and need to tell the IRS" },
   { type: "processPack.confirm" },
   { type: "processPack.reject" },
   { type: "answers.set", key: "fullName", value: "Ada Lovelace" },

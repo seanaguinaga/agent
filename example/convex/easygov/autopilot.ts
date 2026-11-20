@@ -96,7 +96,7 @@ export function pilot(
       return "wait";
     case "goal":
       return options.goal
-        ? { event: { type: "intake.submit", goal: options.goal } }
+        ? { event: { type: "goal.set", goal: options.goal } }
         : "stop";
     case "pack":
       return { event: { type: "processPack.confirm" } };

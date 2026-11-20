@@ -33,7 +33,7 @@ const failed = {
 function confirmed(extra: Partial<Case> = {}): Case {
   return {
     ...base,
-    intake: { goal: "Do it", version: 1 },
+    goal: { text: "Do it", version: 1 },
     selection: {
       status: "confirmed",
       kind: "pack",
@@ -60,7 +60,7 @@ describe("waitingFor", () => {
     expect(waitingFor(proposed)).toBe("pack");
     // Made for an earlier goal: nothing to decide yet; a proposal is coming.
     const stale = confirmed({
-      intake: { goal: "Something else", version: 2 },
+      goal: { text: "Something else", version: 2 },
       selection: { ...pack, status: "proposed" },
     });
     expect(waitingFor(stale)).toBeNull();
@@ -160,7 +160,7 @@ describe("phase", () => {
   /** One case in each phase, in the order a case goes through them. */
   const each: [(typeof PHASES)[number], Case][] = [
     ["intake", base],
-    ["proposing", { ...base, intake: { goal: "Do it", version: 1 } }],
+    ["proposing", { ...base, goal: { text: "Do it", version: 1 } }],
     ["pack", confirmed({ selection: { ...pack, status: "proposed" } })],
     ["reading", confirmed({ prefill: { goalVersion: 1 } })],
     ["answers", confirmed({ prefill: { goalVersion: 1, answers: {} } })],

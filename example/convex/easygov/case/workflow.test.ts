@@ -40,7 +40,7 @@ describe("agreeing on what to do", () => {
 
     found = await chat(t, caseId, "I moved house");
     expect(found).toMatchObject({
-      intake: { goal: "Tell the IRS my new address" },
+      goal: { text: "Tell the IRS my new address" },
       waitingFor: "pack",
       selection: { status: "proposed" },
     });
@@ -65,19 +65,19 @@ describe("agreeing on what to do", () => {
     });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
     const found = await read(t, caseId);
-    expect(found.intake?.goal).toBe("Renew my license");
+    expect(found.goal?.text).toBe("Renew my license");
     expect(found.pendingMessageId).toBeUndefined();
   });
 
   test("rejecting the pack goes back to intake, and a new goal gets a new proposal", async () => {
     const { t, caseId } = await start();
-    await send(t, caseId, { type: "intake.submit", goal: "Something" });
+    await send(t, caseId, { type: "goal.set", goal: "Something" });
     let found = await send(t, caseId, { type: "processPack.reject" });
     expect(found).toMatchObject({
       waitingFor: "goal",
       selection: { status: "rejected", reason: "person" },
     });
-    found = await send(t, caseId, { type: "intake.submit", goal: "I moved" });
+    found = await send(t, caseId, { type: "goal.set", goal: "I moved" });
     expect(found).toMatchObject({
       waitingFor: "pack",
       selection: { status: "proposed" },
@@ -142,7 +142,7 @@ describe("agreeing on what to do", () => {
       request({ kind: "unclear", message: "Where is the property located?" }),
     );
     const found = await send(t, caseId, {
-      type: "intake.submit",
+      type: "goal.set",
       goal: "Sue my landlord",
     });
     expect(found).toMatchObject({
@@ -172,7 +172,7 @@ describe("agreeing on what to do", () => {
       }),
     );
     let found = await send(t, caseId, {
-      type: "intake.submit",
+      type: "goal.set",
       goal: "Should I sue my former employer?",
     });
     expect(found.selection).toMatchObject({
@@ -202,7 +202,7 @@ describe("answers and review", () => {
 
   test("approval is only taken while the document matches the answers", async () => {
     const { t, caseId } = await start();
-    await send(t, caseId, { type: "intake.submit", goal: "I moved" });
+    await send(t, caseId, { type: "goal.set", goal: "I moved" });
     await send(t, caseId, { type: "processPack.confirm" });
     const found = await answer(t, caseId, address);
     expect(found.waitingFor).toBe("approval");
@@ -227,7 +227,7 @@ describe("a busy person", () => {
 
   test("many edits to the answers don't fail the case", async () => {
     const { t, caseId } = await start();
-    await send(t, caseId, { type: "intake.submit", goal: "I moved" });
+    await send(t, caseId, { type: "goal.set", goal: "I moved" });
     await send(t, caseId, { type: "processPack.confirm" });
     // Far more edits than the workflow has looks to spend on one wait.
     for (let i = 0; i < 120; i++) {
@@ -258,7 +258,7 @@ describe("failures", () => {
     const { t, caseId } = await start();
     model.failing = true;
     let found = await send(t, caseId, {
-      type: "intake.submit",
+      type: "goal.set",
       goal: "I moved",
     });
     expect(found).toMatchObject({ status: "active", waitingFor: null });
@@ -269,7 +269,7 @@ describe("failures", () => {
     await expect(
       t.mutation(api.easygov.case.public.send, {
         caseId,
-        event: { type: "intake.submit", goal: "Again" },
+        event: { type: "goal.set", goal: "Again" },
         expectedSeq: found.seq,
       }),
     ).rejects.toThrow(/isn't expected/);
@@ -279,7 +279,7 @@ describe("failures", () => {
     expect(found.run?.state).toBe("running");
     expect(found).toMatchObject({
       waitingFor: "pack",
-      intake: { goal: "I moved", version: 1 },
+      goal: { text: "I moved", version: 1 },
     });
     await expect(send(t, caseId, { type: "step.retry" })).rejects.toThrow(
       /Nothing has failed/,
@@ -290,7 +290,7 @@ describe("failures", () => {
     for (const type of ["step.cancel", "case.cancel"] as const) {
       const { t, caseId } = await start();
       model.failing = true;
-      await send(t, caseId, { type: "intake.submit", goal: "I moved" });
+      await send(t, caseId, { type: "goal.set", goal: "I moved" });
       const found = await send(t, caseId, { type });
       expect(found.status).toBe(
         type === "step.cancel" ? "stopped" : "canceled",
@@ -303,7 +303,7 @@ describe("failures", () => {
 
   test("a restart mid-case keeps what the person already did", async () => {
     const { t, caseId } = await start();
-    await send(t, caseId, { type: "intake.submit", goal: "I moved" });
+    await send(t, caseId, { type: "goal.set", goal: "I moved" });
     await send(t, caseId, { type: "processPack.confirm" });
     await answer(t, caseId, { fullName: address.fullName });
 

@@ -69,7 +69,7 @@ export const startCase = mutation({
       files: [],
       // Choosing the page is choosing the pack: it starts out confirmed.
       ...(pack && {
-        intake: { goal: pack.title, version: 1 },
+        goal: { text: pack.title, version: 1 },
         selection: {
           status: "confirmed" as const,
           kind: "pack" as const,

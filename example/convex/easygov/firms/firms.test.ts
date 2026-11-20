@@ -290,7 +290,7 @@ describe("the person", () => {
       }),
     );
     await send(t, caseId, {
-      type: "intake.submit",
+      type: "goal.set",
       goal: "Should I sue my former employer?",
     });
     await send(t, caseId, { type: "processPack.confirm" });

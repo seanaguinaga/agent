@@ -455,7 +455,7 @@ export const stepCase = internalAction({
       }
       const goal = goalOf(slice, caseId);
       if (goal && !goalSent) {
-        await sendTo(ctx, c, { type: "intake.submit", goal });
+        await sendTo(ctx, c, { type: "goal.set", goal });
         await ctx.runMutation(internal.easygov.evals.runner.goalSent, {
           trialId,
         });
@@ -859,7 +859,7 @@ export const saveDraftCase = mutation({
     const { draft, research } = selection;
     return await ctx.db.insert("easygovEvalCases", {
       name: name?.trim() || draft.title,
-      process: found.intake?.goal ?? draft.title,
+      process: found.goal?.text ?? draft.title,
       jurisdiction: draft.jurisdiction,
       authority: draft.authority,
       forms: draft.forms,

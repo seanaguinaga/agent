@@ -21,7 +21,7 @@ type Stage = {
 
 const confirmed = (c: CaseView) =>
   c.selection?.status === "confirmed" &&
-  c.selection.goalVersion === c.intake?.version;
+  c.selection.goalVersion === c.goal?.version;
 
 const AGREE: Stage = {
   entered: () => true,

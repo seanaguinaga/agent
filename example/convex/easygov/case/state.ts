@@ -18,25 +18,24 @@ export type Case = Doc<"cases">;
 
 /** The goal, unless the selection made for it was rejected. */
 export function standingGoal(c: Case): string | undefined {
-  const { intake, selection } = c;
+  const { goal, selection } = c;
   const rejected =
-    selection?.status === "rejected" &&
-    selection.goalVersion === intake?.version;
-  return rejected ? undefined : intake?.goal;
+    selection?.status === "rejected" && selection.goalVersion === goal?.version;
+  return rejected ? undefined : goal?.text;
 }
 
 /**
  * A newly stated goal. The version goes up even when the words are the same,
  * so a selection made (or rejected) for the goal before it is out of date.
  */
-export function newGoal(c: Case, goal: string): Case["intake"] {
-  return { goal, version: (c.intake?.version ?? 0) + 1 };
+export function newGoal(c: Case, text: string): Case["goal"] {
+  return { text, version: (c.goal?.version ?? 0) + 1 };
 }
 
 /** The selection made for the current goal. One for an earlier goal is none. */
 export function currentSelection(c: Case) {
   const selection = c.selection;
-  return selection?.goalVersion === c.intake?.version ? selection : undefined;
+  return selection?.goalVersion === c.goal?.version ? selection : undefined;
 }
 
 /** What was proposed or confirmed for the current goal. A rejection is none. */
@@ -71,7 +70,7 @@ export function questionOf(c: Case, key: string): string {
 
 /** What was read from the conversation for the current goal, if started. */
 function currentPrefill(c: Case) {
-  return c.prefill?.goalVersion === c.intake?.version ? c.prefill : undefined;
+  return c.prefill?.goalVersion === c.goal?.version ? c.prefill : undefined;
 }
 
 /** True while the conversation is being read for answers. */

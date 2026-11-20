@@ -19,7 +19,7 @@ describe("IRS 8822", () => {
     let found = await read(t, caseId);
     expect(found).toMatchObject({ status: "active", waitingFor: "goal" });
 
-    found = await send(t, caseId, { type: "intake.submit", goal: "I moved" });
+    found = await send(t, caseId, { type: "goal.set", goal: "I moved" });
     expect(found.waitingFor).toBe("pack");
 
     found = await send(t, caseId, { type: "processPack.confirm" });

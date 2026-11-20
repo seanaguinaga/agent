@@ -248,7 +248,7 @@ describe("saving packs", () => {
       request({ jurisdiction: "us/ca", searchTerms: "renew driver license" }),
       choose(1),
     );
-    await send(t, caseId, { type: "intake.submit", goal: "Renew my CA DL" });
+    await send(t, caseId, { type: "goal.set", goal: "Renew my CA DL" });
     await send(t, caseId, { type: "processPack.confirm" });
 
     await expect(
@@ -310,7 +310,7 @@ describe("selecting a pack for a case", () => {
       choose(1),
     );
     const proposed = await send(t, caseId, {
-      type: "intake.submit",
+      type: "goal.set",
       goal: "Extend my California driving permit.",
     });
     expect(proposed.selection).toMatchObject({
@@ -389,7 +389,7 @@ describe("selecting a pack for a case", () => {
     const nextId = await t.mutation(api.easygov.case.public.startCase, {});
     await t.finishAllScheduledFunctions(vi.runAllTimers);
     model.replies.push(...drafting);
-    const next = await send(t, nextId, { type: "intake.submit", goal });
+    const next = await send(t, nextId, { type: "goal.set", goal });
     expect(definitionOf(next.selection)).toBeUndefined();
     expect(draftOf(next.selection)?.title).toBe(recipe.title);
   });
@@ -403,7 +403,7 @@ describe("selecting a pack for a case", () => {
       JSON.stringify({ ...recipe, output: checklist }),
     );
     const proposed = await send(t, caseId, {
-      type: "intake.submit",
+      type: "goal.set",
       goal: "Garnishment notice",
     });
     expect(draftOf(proposed.selection)).toMatchObject({
@@ -442,7 +442,7 @@ describe("selecting a pack for a case", () => {
       }),
     );
     const proposed = await send(t, caseId, {
-      type: "intake.submit",
+      type: "goal.set",
       goal: "Renew my California license",
     });
     // The situation question is an input because tailoring reads it.
@@ -507,7 +507,7 @@ describe("selecting a pack for a case", () => {
       choose(1),
     );
     const found = await send(t, caseId, {
-      type: "intake.submit",
+      type: "goal.set",
       goal: "Understand a California wage-withholding notice for a credit-card judgment.",
     });
     expect(found.selection).toMatchObject({
@@ -522,7 +522,7 @@ describe("selecting a pack for a case", () => {
     const { t, caseId } = await start();
     model.replies.push(request({ jurisdiction: "California" }));
     const found = await send(t, caseId, {
-      type: "intake.submit",
+      type: "goal.set",
       goal: "Renew my license",
     });
     expect(found).toMatchObject({

@@ -24,7 +24,7 @@ describe("SSA appeal", () => {
         }),
         choose(1),
       );
-      await send(t, caseId, { type: "intake.submit", goal: "Appeal a denial" });
+      await send(t, caseId, { type: "goal.set", goal: "Appeal a denial" });
       await send(t, caseId, { type: "processPack.confirm" });
       await answer(t, caseId, {
         fullName: "Ada Lovelace",

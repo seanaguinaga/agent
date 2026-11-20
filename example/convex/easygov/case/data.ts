@@ -173,7 +173,7 @@ export const recordTurn = internalMutation({
       patch.pendingMessageId = undefined;
     }
     const goalText = goal?.trim();
-    if (goalText) patch.intake = newGoal(found, goalText);
+    if (goalText) patch.goal = newGoal(found, goalText);
     await writeCase(ctx, caseId, patch);
     if (goalText) await logCaseEvent(ctx, caseId, "goal.set", goalText);
     return null;
@@ -200,9 +200,9 @@ export const goalOf = internalQuery({
     workflowId: WorkflowId;
   }> => {
     const found = await ctx.db.get("cases", caseId);
-    if (!found?.intake || found.run?.state !== "running")
+    if (!found?.goal || found.run?.state !== "running")
       throw new Error("The case has no goal or running workflow");
-    const { goal, version: goalVersion } = found.intake;
+    const { text: goal, version: goalVersion } = found.goal;
     return {
       goal,
       goalVersion,
@@ -251,7 +251,7 @@ export const recordProposal = internalMutation({
     if (
       found.run?.state !== "running" ||
       found.run.workflowId !== origin.workflowId ||
-      found.intake?.version !== goalVersion
+      found.goal?.version !== goalVersion
     )
       return false;
     const stored = packId ? await ctx.db.get("processPacks", packId) : null;
@@ -339,7 +339,7 @@ export const prefillInput = internalQuery({
   }),
   handler: async (ctx, { caseId }) => {
     const found = await ctx.db.get("cases", caseId);
-    if (!found?.intake) throw new Error("The case has no goal");
+    if (!found?.goal) throw new Error("The case has no goal");
     const questions = openQuestions(found);
     const { page } = await listMessages(ctx, components.agent, {
       threadId: found.threadId,
@@ -350,7 +350,7 @@ export const prefillInput = internalQuery({
       .filter((message) => message.message?.role === "user" && message.text)
       .map((message) => message.text!);
     // The goal is the person's too: a proposal only follows a stated one.
-    said.push(found.intake.goal);
+    said.push(found.goal.text);
     // So is their paperwork: what each attached file states.
     for (const file of caseFiles(found)) {
       const line = attachedLine(file);
@@ -365,7 +365,7 @@ export const prefillInput = internalQuery({
       );
     }
     return {
-      goalVersion: found.intake.version,
+      goalVersion: found.goal.version,
       threadId: found.threadId,
       questions,
       said,
@@ -418,7 +418,7 @@ export const recordPrefill = internalMutation({
     if (
       !found ||
       found.status !== "active" ||
-      found.intake?.version !== goalVersion ||
+      found.goal?.version !== goalVersion ||
       !readingConversation(found)
     ) {
       return null;

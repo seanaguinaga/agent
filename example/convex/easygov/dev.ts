@@ -183,7 +183,7 @@ export const cases = query({
       phase: phase(row),
       waitingFor: waitingFor(row),
       failed: row.run?.state === "failed",
-      goal: row.intake?.goal,
+      goal: row.goal?.text,
       source: row.source,
     }));
   },

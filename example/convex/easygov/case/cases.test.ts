@@ -18,7 +18,7 @@ describe("the case API", () => {
       t.mutation(api.easygov.case.public.send, { caseId, event, expectedSeq });
 
     await expect(
-      sendAt(seq - 1, { type: "intake.submit", goal: "I moved" }),
+      sendAt(seq - 1, { type: "goal.set", goal: "I moved" }),
     ).rejects.toThrow(/changed/);
     await expect(sendAt(seq, { type: "review.approve" })).rejects.toThrow(
       /isn't expected/,
@@ -26,9 +26,9 @@ describe("the case API", () => {
     await expect(sendAt(seq, { type: "step.retry" })).rejects.toThrow(
       /Nothing has failed/,
     );
-    await expect(
-      sendAt(seq, { type: "intake.submit", goal: "  " }),
-    ).rejects.toThrow(/Say what/);
+    await expect(sendAt(seq, { type: "goal.set", goal: "  " })).rejects.toThrow(
+      /Say what/,
+    );
   });
 
   test("every write bumps seq", async () => {
@@ -82,7 +82,7 @@ describe("the case API", () => {
     await expect(
       t.mutation(api.easygov.case.public.send, {
         caseId,
-        event: { type: "intake.submit", goal: "I moved" },
+        event: { type: "goal.set", goal: "I moved" },
         expectedSeq: found.seq,
       }),
     ).rejects.toThrow(/canceled/);

@@ -48,13 +48,13 @@ type Handler<T extends PersonEvent["type"]> = (
 const EVENTS: {
   [T in PersonEvent["type"]]: { during: WaitingFor[]; handle: Handler<T> };
 } = {
-  "intake.submit": {
+  "goal.set": {
     during: ["goal"],
     handle: async (ctx, c, { goal }) => {
       const text = goal.trim();
       if (!text) throw new ConvexError("Say what you want to get done.");
       await logCaseEvent(ctx, c._id, "goal.set", text);
-      return { intake: newGoal(c, text) };
+      return { goal: newGoal(c, text) };
     },
   },
   "processPack.confirm": {
@@ -66,7 +66,7 @@ const EVENTS: {
     handle: (_ctx, c) => ({
       selection: {
         status: "rejected",
-        goalVersion: c.intake!.version,
+        goalVersion: c.goal!.version,
         reason: "person",
       },
     }),
@@ -216,7 +216,7 @@ async function share(ctx: MutationCtx, c: Case): Promise<Partial<Case>> {
       (selection?.kind === "referral" ? selection.jurisdiction : undefined),
     priceCents: pinned?.referral?.priceCents ?? DEFAULT_PRICE_CENTS,
     source: c.source,
-    goal: c.intake!.goal,
+    goal: c.goal!.text,
     packId: pinned?.id,
     answers: c.answers,
     files: caseFiles(c).map(({ read, ...file }) => ({

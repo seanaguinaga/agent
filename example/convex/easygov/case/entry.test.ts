@@ -61,7 +61,7 @@ describe("starting on a pack", () => {
     expect(await read(t, caseId)).toMatchObject({
       source: "wage-claim-ca",
       waitingFor: "answers",
-      intake: { goal: wageClaim.title },
+      goal: { text: wageClaim.title },
       selection: { status: "confirmed" },
     });
     expect((await read(t, caseId)).run?.state).toBe("running");

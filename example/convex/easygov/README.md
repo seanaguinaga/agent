@@ -77,7 +77,7 @@ retried call can't leave a duplicate in the thread.
 
 **A fact records what it was made from**, so it's out of date on its own:
 
-- `intake.version` goes up each time a goal is set. A pack selection records the
+- `goal.version` goes up each time a goal is set. A pack selection records the
   `goalVersion` it was made for; one for an earlier goal counts as none.
 - `artifact.fingerprint` is a SHA-256 of the answers and files the document was
   built from; `approval.fingerprint` is the one the person approved.
@@ -124,13 +124,13 @@ the case is `waitingFor`.
    `{ "caseId": "<id>", "text": "I moved and need to tell the IRS", "messageKey": "m1" }`
    (a new `messageKey` for each message). Once intake knows the goal, a pack is
    proposed and the case waits for the `pack`. (Or skip the chat: send
-   `intake.submit` below instead.) Chat is for intake only: once a pack is
-   confirmed, `sendMessage` is refused.
+   `goal.set` below instead.) Chat is for intake only: once a pack is confirmed,
+   `sendMessage` is refused.
 4. `easygov/case/public:send` with each of these events in turn, as
    `{ "caseId": "<id>", "expectedSeq": <seq>, "event": <event> }`:
 
    ```json
-   { "type": "intake.submit", "goal": "I moved and need to tell the IRS" }
+   { "type": "goal.set", "goal": "I moved and need to tell the IRS" }
    { "type": "processPack.confirm" }
    { "type": "answers.set", "key": "fullName", "value": "Ada Lovelace" }
    { "type": "answers.set", "key": "oldAddress", "value": "1 Old Road" }

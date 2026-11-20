@@ -42,7 +42,7 @@ function view(fields: Partial<CaseView>): CaseView {
 }
 const onPack = (fields: Partial<CaseView>) =>
   view({
-    intake: { goal: "wages", version: 1 },
+    goal: { text: "wages", version: 1 },
     selection: {
       status: "confirmed",
       kind: "pack",

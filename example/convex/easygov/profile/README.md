@@ -29,9 +29,9 @@ other input is a question about the case itself.
 
 ## Filled in before the form is known
 
-`profile/public:save` needs no case and no pack. A person can give their facts
-while their case is still being researched, and whatever form turns up reads
-them. `profile/public:askAhead` says what's worth asking now:
+`profile/public:setFact` needs no case and no pack. A person can give their
+facts while their case is still being researched, and whatever form turns up
+reads them. `profile/public:askAhead` says what's worth asking now:
 
 - On a case with a confirmed pack: exactly the facts that pack reads.
 - Before that: the facts the saved packs read most often, counted from the
@@ -88,8 +88,8 @@ profile's.
 | `profileProposals`  | What a finished case suggests for the profile                   |
 
 A guest's facts are kept under their guest key and come along when the case is
-claimed. `profile/public:forget` removes everything here for the caller; cases
-keep the answers they were built from.
+claimed. `profile/public:deleteProfile` removes everything here for the caller;
+cases keep the answers they were built from.
 
 ## What isn't here yet
 

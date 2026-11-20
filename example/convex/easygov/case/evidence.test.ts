@@ -31,9 +31,12 @@ const wages = {
 async function startOn() {
   vi.useFakeTimers();
   const t = initConvexTest();
-  const saved = await t.mutation(internal.easygov.packs.data.save, wageClaim);
+  const saved = await t.mutation(
+    internal.easygov.packs.data.createPack,
+    wageClaim,
+  );
   if (saved.kind !== "created") throw new Error("Could not save the pack");
-  const caseId = await t.mutation(api.easygov.case.public.startCase, {
+  const caseId = await t.mutation(api.easygov.case.public.createCase, {
     packId: saved.id,
   });
   await t.finishAllScheduledFunctions(vi.runAllTimers);

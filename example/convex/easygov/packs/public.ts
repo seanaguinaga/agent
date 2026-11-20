@@ -27,7 +27,7 @@ function landingOf(pack: Doc<"processPacks">) {
 }
 
 /** The shared packs, a page at a time: one landing page for each. */
-export const landings = query({
+export const listLandings = query({
   args: { paginationOpts: paginationOptsValidator },
   returns: v.object({
     page: v.array(vLanding),
@@ -47,9 +47,9 @@ export const landings = query({
 
 /**
  * One landing page: what the process is, and what it will ask for. A link to
- * an older version shows the current one; pass its `id` to `startCase`.
+ * an older version shows the current one; pass its `id` to `createCase`.
  */
-export const landing = query({
+export const getLanding = query({
   args: { packId: v.id("processPacks") },
   returns: v.union(
     v.object({

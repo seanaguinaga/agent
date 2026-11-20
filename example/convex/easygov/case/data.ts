@@ -50,7 +50,7 @@ type Draft = Infer<typeof vProcessPackDefinition>;
 
 // --- Writing a case ---------------------------------------------------------
 
-/** The one way to change a case. It bumps `seq`, so a stale `send` is refused. */
+/** The one way to change a case. It bumps `seq`, so a stale `sendEvent` is refused. */
 export async function writeCase(
   ctx: MutationCtx,
   caseId: Id<"cases">,

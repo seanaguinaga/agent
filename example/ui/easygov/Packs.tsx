@@ -13,16 +13,16 @@ import { Chip, Page, Refusal } from "./Workbench";
 
 const dev = api.easygov.dev;
 type PackId = Id<"processPacks">;
-type SaveArgs = FunctionArgs<typeof dev.savePack>;
+type SaveArgs = FunctionArgs<typeof dev.createPack>;
 
 function Landings() {
   const landings = useLandings();
   const [open, setOpen] = useState<PackId>();
   const landing = useQuery(
-    api.easygov.packs.public.landing,
+    api.easygov.packs.public.getLanding,
     open ? { packId: open } : "skip",
   );
-  const startCase = useMutation(api.easygov.case.public.startCase);
+  const startCase = useMutation(api.easygov.case.public.createCase);
   const navigate = useNavigate();
   const act = useAct();
   return (
@@ -120,13 +120,13 @@ function Search() {
 function Save() {
   const fixtures = useQuery(dev.fixtures, {});
   const rows = useQuery(dev.packs, {});
-  const save = useMutation(dev.savePack);
+  const save = useMutation(dev.createPack);
   const [json, setJson] = useState("");
   const [owned, setOwned] = useState(false);
   const [supersedes, setSupersedes] = useState<PackId | "">("");
   const [reviewed, setReviewed] = useState<PackId[]>([]);
   const [result, setResult] =
-    useState<FunctionReturnType<typeof dev.savePack>>();
+    useState<FunctionReturnType<typeof dev.createPack>>();
   const act = useAct();
   function submit(reviewedPackIds: PackId[]) {
     setResult(undefined);

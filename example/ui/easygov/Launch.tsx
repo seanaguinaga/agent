@@ -10,7 +10,7 @@ import { Refusal } from "./Workbench";
 
 /** The shared packs: one landing page each. */
 export function useLandings() {
-  return useQuery(api.easygov.packs.public.landings, {
+  return useQuery(api.easygov.packs.public.listLandings, {
     paginationOpts: { numItems: 50, cursor: null },
   })?.page;
 }
@@ -68,7 +68,7 @@ export function Launcher({
 }) {
   const landings = useLandings();
   const recent = useQuery(api.easygov.dev.cases, {});
-  const startCase = useMutation(api.easygov.case.public.startCase);
+  const startCase = useMutation(api.easygov.case.public.createCase);
   const sendMessage = useMutation(api.easygov.case.public.sendMessage);
   const [packId, setPackId] = useState<Id<"processPacks"> | "">("");
   const [guest, setGuest] = useState(false);

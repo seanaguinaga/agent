@@ -18,14 +18,14 @@ function Packet({
   firmId: Id<"firms">;
   referralId: Id<"referrals">;
 }) {
-  return <Result value={useQuery(firmApi.packet, { firmId, referralId })} />;
+  return <Result value={useQuery(firmApi.getPacket, { firmId, referralId })} />;
 }
 
 function Desk({ firmId }: { firmId: Id<"firms"> }) {
-  const previews = useQuery(firmApi.previews, { firmId });
-  const accepted = useQuery(firmApi.accepted, { firmId });
-  const accept = useMutation(firmApi.accept);
-  const decline = useMutation(firmApi.decline);
+  const previews = useQuery(firmApi.listPreviews, { firmId });
+  const accepted = useQuery(firmApi.listAccepted, { firmId });
+  const accept = useMutation(firmApi.acceptReferral);
+  const reject = useMutation(firmApi.rejectReferral);
   const [reading, setReading] = useState<Id<"referrals">>();
   const act = useAct();
   return (
@@ -71,7 +71,7 @@ function Desk({ firmId }: { firmId: Id<"firms"> }) {
               className="demo-secondary"
               disabled={act.pending}
               onClick={() =>
-                void act.run(() => decline({ firmId, referralId: preview.id }))
+                void act.run(() => reject({ firmId, referralId: preview.id }))
               }
             >
               Pass
@@ -179,7 +179,7 @@ export function AllReferrals({ caseId }: { caseId?: Id<"cases"> }) {
 
 /** Adds a firm for the test user, or changes one's coverage. */
 export function FirmForm() {
-  const save = useMutation(api.easygov.dev.saveFirm);
+  const save = useMutation(api.easygov.dev.createFirm);
   const [name, setName] = useState("Bay Wage Lawyers");
   const [coverage, setCoverage] = useState("employment@us/ca/alameda");
   const act = useAct();

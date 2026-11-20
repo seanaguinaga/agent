@@ -31,7 +31,7 @@ export function isOfficialHost(url: string): boolean {
 }
 
 /** Adds a form to the registry, or changes where one is fetched from. */
-export const register = mutation({
+export const createForm = mutation({
   args: {
     code: v.string(),
     title: v.string(),
@@ -91,7 +91,7 @@ const vEditionSummary = v.object({
 });
 
 /** The registry, each form with its editions, newest first. */
-export const list = query({
+export const listForms = query({
   args: {},
   returns: v.array(
     v.object({
@@ -152,7 +152,7 @@ export const list = query({
 });
 
 /** One edition: its targets, its mapping, and a link to the blank PDF. */
-export const edition = query({
+export const getEdition = query({
   args: { editionId: v.id("formEditions") },
   returns: v.union(
     v.object({
@@ -209,7 +209,7 @@ async function isPublished(
  * checked it against the form: only then is it used to fill a case. Once a
  * pack fills the edition, the mapping can be corrected but not unreviewed.
  */
-export const saveMapping = mutation({
+export const updateMapping = mutation({
   args: {
     editionId: v.id("formEditions"),
     mapping: vMapping,
@@ -278,7 +278,7 @@ export const saveMapping = mutation({
 });
 
 /** The filled PDF for a case, if it has one, as a link. */
-export const documentUrl = query({
+export const getDocumentUrl = query({
   args: { caseId: v.id("cases"), guestKey: v.optional(v.string()) },
   returns: v.union(v.string(), v.null()),
   handler: async (ctx, { caseId, guestKey }) => {
@@ -342,7 +342,7 @@ export const publishPack = mutation({
       return previous._id;
     }
     const saved: { kind: string; id?: Id<"processPacks"> } =
-      await ctx.runMutation(internal.easygov.packs.data.save, {
+      await ctx.runMutation(internal.easygov.packs.data.createPack, {
         title,
         description: `Fill in ${form.code}, ${form.title}, from the official form.`,
         aliases: [],

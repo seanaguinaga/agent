@@ -114,13 +114,16 @@ describe("finding packs", () => {
   test("a request finds packs from its jurisdiction outward, that the case may see", async () => {
     const { t, caseId } = await start();
     const ownerId = await owner(t, caseId);
-    const saved = await t.mutation(processPacks.save, { ownerId, ...renewal });
+    const saved = await t.mutation(processPacks.createPack, {
+      ownerId,
+      ...renewal,
+    });
     if (saved.kind !== "created") throw new Error("Expected a new pack");
-    await t.mutation(processPacks.save, {
+    await t.mutation(processPacks.createPack, {
       ...renewal,
       ownerId: "another owner",
     });
-    await t.mutation(processPacks.save, {
+    await t.mutation(processPacks.createPack, {
       ...renewal,
       ownerId,
       jurisdiction: "us/nv",
@@ -149,7 +152,7 @@ describe("finding packs", () => {
   test("an authority named differently still finds the pack (live run)", async () => {
     const { t, caseId } = await start();
     const ownerId = await owner(t, caseId);
-    const saved = await t.mutation(processPacks.save, {
+    const saved = await t.mutation(processPacks.createPack, {
       ownerId,
       ...garnishment,
     });
@@ -163,7 +166,7 @@ describe("finding packs", () => {
       }),
     ).toMatchObject([{ id: saved.id }]);
     expect(
-      await t.mutation(processPacks.save, {
+      await t.mutation(processPacks.createPack, {
         ownerId,
         ...garnishment,
         authority: "Courts",
@@ -178,8 +181,8 @@ describe("saving packs", () => {
     const { t, caseId } = await start();
     const ownerId = await owner(t, caseId);
     const results = await Promise.all([
-      t.mutation(processPacks.save, { ownerId, ...renewal }),
-      t.mutation(processPacks.save, { ownerId, ...renewal }),
+      t.mutation(processPacks.createPack, { ownerId, ...renewal }),
+      t.mutation(processPacks.createPack, { ownerId, ...renewal }),
     ]);
     const created = results.find(({ kind }) => kind === "created");
     if (created?.kind !== "created") throw new Error("Expected a new pack");
@@ -188,7 +191,7 @@ describe("saving packs", () => {
       packs: [expect.objectContaining({ id: created.id })],
     });
     expect(
-      await t.mutation(processPacks.save, {
+      await t.mutation(processPacks.createPack, {
         ownerId,
         ...renewal,
         title: "Replace a lost driver's license",
@@ -210,12 +213,12 @@ describe("saving packs", () => {
       inputs: ["route"],
     };
     // Only "form" in common with "IRS change of address (Form 8822)".
-    expect(await t.mutation(processPacks.save, petition)).toMatchObject({
+    expect(await t.mutation(processPacks.createPack, petition)).toMatchObject({
       kind: "created",
     });
     // Different words, same form number.
     expect(
-      await t.mutation(processPacks.save, {
+      await t.mutation(processPacks.createPack, {
         ...petition,
         title: "Tell the tax office you moved",
         description: "Update where your tax mail goes.",
@@ -231,18 +234,24 @@ describe("saving packs", () => {
   test("an input nothing reads is refused, unless the pack fills in a form", async () => {
     const { t } = await start();
     const { output: _output, ...unread } = renewal;
-    await expect(t.mutation(processPacks.save, unread)).rejects.toThrow(
+    await expect(t.mutation(processPacks.createPack, unread)).rejects.toThrow(
       /Nothing reads "expirationDate"/,
     );
     expect(
-      await t.mutation(processPacks.save, { ...unread, forms: ["DL 44"] }),
+      await t.mutation(processPacks.createPack, {
+        ...unread,
+        forms: ["DL 44"],
+      }),
     ).toMatchObject({ kind: "created" });
   });
 
   test("a new version replaces the old one, and pinned cases keep theirs", async () => {
     const { t, caseId } = await start();
     const ownerId = await owner(t, caseId);
-    const v1 = await t.mutation(processPacks.save, { ownerId, ...renewal });
+    const v1 = await t.mutation(processPacks.createPack, {
+      ownerId,
+      ...renewal,
+    });
     if (v1.kind !== "created") throw new Error("Expected a new pack");
     model.replies.push(
       request({ jurisdiction: "us/ca", searchTerms: "renew driver license" }),
@@ -252,13 +261,13 @@ describe("saving packs", () => {
     await send(t, caseId, { type: "pack.accept" });
 
     await expect(
-      t.mutation(processPacks.save, {
+      t.mutation(processPacks.createPack, {
         ...renewal,
         ownerId: "another owner",
         supersedes: v1.id,
       }),
     ).rejects.toThrow(/Only the pack's owner/);
-    const v2 = await t.mutation(processPacks.save, {
+    const v2 = await t.mutation(processPacks.createPack, {
       ...renewal,
       ownerId,
       inputs: ["expirationDate", "licenseClass"],
@@ -267,7 +276,11 @@ describe("saving packs", () => {
     });
     if (v2.kind !== "created") throw new Error("Expected a new version");
     await expect(
-      t.mutation(processPacks.save, { ...renewal, ownerId, supersedes: v1.id }),
+      t.mutation(processPacks.createPack, {
+        ...renewal,
+        ownerId,
+        supersedes: v1.id,
+      }),
     ).rejects.toThrow(/already been replaced/);
 
     expect(
@@ -288,13 +301,16 @@ describe("saving packs", () => {
   test("save rejects a referral on a missing input, or a bad jurisdiction", async () => {
     const { t } = await start();
     await expect(
-      t.mutation(processPacks.save, {
+      t.mutation(processPacks.createPack, {
         ...renewal,
         referral: { kind: "advice", when: { input: "nope", equals: "yes" } },
       }),
     ).rejects.toThrow(/isn't an input/);
     await expect(
-      t.mutation(processPacks.save, { ...renewal, jurisdiction: "California" }),
+      t.mutation(processPacks.createPack, {
+        ...renewal,
+        jurisdiction: "California",
+      }),
     ).rejects.toThrow(/jurisdiction path/);
   });
 });
@@ -303,7 +319,10 @@ describe("selecting a pack for a case", () => {
   test("the model compares the candidates and the case pins its choice", async () => {
     const { t, caseId } = await start();
     const ownerId = await owner(t, caseId);
-    const saved = await t.mutation(processPacks.save, { ownerId, ...renewal });
+    const saved = await t.mutation(processPacks.createPack, {
+      ownerId,
+      ...renewal,
+    });
     if (saved.kind !== "created") throw new Error("Expected a new pack");
     model.replies.push(
       request({ jurisdiction: "us/ca", searchTerms: "extend driving permit" }),
@@ -355,7 +374,7 @@ describe("selecting a pack for a case", () => {
       },
     });
     await expect(
-      t.mutation(api.easygov.case.public.send, {
+      t.mutation(api.easygov.case.public.sendEvent, {
         caseId,
         expectedSeq: before.seq,
         event: { type: "pack.accept" },
@@ -386,7 +405,7 @@ describe("selecting a pack for a case", () => {
 
     // The same request again finds nothing saved, and is drafted afresh.
     expect(await ownPacks(t, before.userId)).toHaveLength(0);
-    const nextId = await t.mutation(api.easygov.case.public.startCase, {});
+    const nextId = await t.mutation(api.easygov.case.public.createCase, {});
     await t.finishAllScheduledFunctions(vi.runAllTimers);
     model.replies.push(...drafting);
     const next = await send(t, nextId, { type: "goal.set", goal });
@@ -474,14 +493,14 @@ describe("selecting a pack for a case", () => {
   test("a pack can't be tailored by something it doesn't ask", async () => {
     const { t } = await start();
     await expect(
-      t.mutation(processPacks.save, {
+      t.mutation(processPacks.createPack, {
         ...renewal,
         output: { ...renewal.output, tailorBy: ["method"] },
       }),
     ).rejects.toThrow(/tailored by "method"/);
     // Tailoring is a reader: an input it uses needs no letter or form.
     expect(
-      await t.mutation(processPacks.save, {
+      await t.mutation(processPacks.createPack, {
         ...renewal,
         inputs: ["expirationDate", "method"],
         output: { ...renewal.output, tailorBy: ["method"] },
@@ -492,7 +511,7 @@ describe("selecting a pack for a case", () => {
   test("a borderline referral still reuses a saved pack for the same task (live replay)", async () => {
     const { t, caseId } = await start();
     const ownerId = await owner(t, caseId);
-    const saved = await t.mutation(processPacks.save, {
+    const saved = await t.mutation(processPacks.createPack, {
       ownerId,
       ...garnishment,
     });

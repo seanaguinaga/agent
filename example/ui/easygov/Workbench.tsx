@@ -641,7 +641,7 @@ function FilledForm({
   session: CaseSession;
   document: NonNullable<NonNullable<CaseView["artifact"]>["document"]>;
 }) {
-  const url = useQuery(api.easygov.forms.data.documentUrl, {
+  const url = useQuery(api.easygov.forms.data.getDocumentUrl, {
     caseId: session.c!._id,
     guestKey: session.guestKey,
   });

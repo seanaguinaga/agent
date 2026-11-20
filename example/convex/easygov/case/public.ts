@@ -44,7 +44,7 @@ import { nudgeCase, nudgeIfMoved, workflow } from "./workflow";
  * client makes up (a UUID or longer) and keeps: it's the only way back to
  * the case until `claimCase` moves it to an account.
  */
-export const startCase = mutation({
+export const createCase = mutation({
   args: {
     packId: v.optional(v.id("processPacks")),
     source: v.optional(v.string()),
@@ -117,7 +117,7 @@ export const getCase = query({
     suggestions: v.record(v.string(), v.string()),
     /**
      * The profile fact behind each input that reads one, by input key. To
-     * answer such an input, save the fact (`profile/public:save`).
+     * answer such an input, save the fact (`profile/public:setFact`).
      */
     profileInputs: v.record(v.string(), v.string()),
     /** A link to each attached file, by its storage id. */
@@ -210,7 +210,7 @@ export const withdrawReferral = mutation({
  * media type as the `Content-Type`, then send `evidence.add` with the
  * storage id it returns. A done case takes files too: what came afterwards.
  */
-export const uploadUrl = mutation({
+export const createUploadUrl = mutation({
   args: { caseId: v.id("cases"), guestKey: v.optional(v.string()) },
   returns: v.string(),
   handler: async (ctx, { caseId, guestKey }) => {
@@ -281,7 +281,7 @@ const DATA_ENTRY = new Set<CaseEvent["type"]>([
  * so a decision based on a stale view of the case is refused. An answer or
  * a file is taken either way.
  */
-export const send = mutation({
+export const sendEvent = mutation({
   args: {
     caseId: v.id("cases"),
     event: vCaseEvent,

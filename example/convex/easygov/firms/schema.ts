@@ -87,7 +87,7 @@ export default {
     ])
     .index("by_firmId", ["firmId"]),
   /** A referral a firm passed on, so it isn't shown to that firm again. */
-  referralDeclines: defineTable({
+  referralRejections: defineTable({
     firmId: v.id("firms"),
     referralId: v.id("referrals"),
   }).index("by_firmId_and_referralId", ["firmId", "referralId"]),

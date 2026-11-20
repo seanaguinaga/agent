@@ -81,7 +81,7 @@ export async function seedPacks(t: T) {
   // The fixtures are distinct processes, so each acknowledges the ones before.
   const reviewedPackIds: Id<"processPacks">[] = [];
   for (const pack of [irs8822, ssaAppeal]) {
-    const saved = await t.mutation(internal.easygov.packs.data.save, {
+    const saved = await t.mutation(internal.easygov.packs.data.createPack, {
       ...pack,
       reviewedPackIds,
     });

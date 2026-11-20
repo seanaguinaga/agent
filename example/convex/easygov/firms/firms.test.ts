@@ -29,8 +29,8 @@ const wages = {
 const firms = api.easygov.firms.public;
 
 /** A reviewed firm. The signed-in account ("test user") acts for it. */
-const saveFirm = (t: T, firm: object = {}) =>
-  t.mutation(internal.easygov.firms.data.save, {
+const createFirm = (t: T, firm: object = {}) =>
+  t.mutation(internal.easygov.firms.data.createFirm, {
     name: "Babbage & Co",
     userId: "test user",
     coverage: [{ kind: "employment", jurisdiction: "us/ca" }],
@@ -41,12 +41,12 @@ const saveFirm = (t: T, firm: object = {}) =>
 async function shared(pack: object = {}) {
   vi.useFakeTimers();
   const t = initConvexTest();
-  const saved = await t.mutation(internal.easygov.packs.data.save, {
+  const saved = await t.mutation(internal.easygov.packs.data.createPack, {
     ...wageClaim,
     ...pack,
   });
   if (saved.kind !== "created") throw new Error("Could not save the pack");
-  const caseId = await t.mutation(api.easygov.case.public.startCase, {
+  const caseId = await t.mutation(api.easygov.case.public.createCase, {
     packId: saved.id,
   });
   await t.finishAllScheduledFunctions(vi.runAllTimers);
@@ -65,14 +65,14 @@ async function shared(pack: object = {}) {
 }
 
 const previews = (t: T, firmId: Id<"firms">) =>
-  t.query(firms.previews, { firmId });
+  t.query(firms.listPreviews, { firmId });
 
 describe("previews", () => {
   afterEach(resetCases);
 
   test("show what a referral is about, and nothing the person wrote", async () => {
     const { t } = await shared();
-    const firmId = await saveFirm(t);
+    const firmId = await createFirm(t);
     const found = await previews(t, firmId);
     expect(found).toEqual([
       {
@@ -93,14 +93,14 @@ describe("previews", () => {
 
   test("go only to firms that cover the kind and the place", async () => {
     const { t } = await shared({ jurisdiction: "us/ca/alameda" });
-    const state = await saveFirm(t);
-    const federal = await saveFirm(t, {
+    const state = await createFirm(t);
+    const federal = await createFirm(t, {
       coverage: [{ kind: "employment", jurisdiction: "us" }],
     });
-    const elsewhere = await saveFirm(t, {
+    const elsewhere = await createFirm(t, {
       coverage: [{ kind: "employment", jurisdiction: "us/ny" }],
     });
-    const otherKind = await saveFirm(t, {
+    const otherKind = await createFirm(t, {
       coverage: [{ kind: "immigration", jurisdiction: "us/ca" }],
     });
     expect(await previews(t, state)).toHaveLength(1);
@@ -129,25 +129,28 @@ describe("accepting", () => {
     const { t, caseId } = await shared({
       referral: { ...wageClaim.referral!, priceCents: 12000 },
     });
-    const first = await saveFirm(t);
-    const second = await saveFirm(t, { name: "Second & Sons" });
+    const first = await createFirm(t);
+    const second = await createFirm(t, { name: "Second & Sons" });
     const [{ id: referralId }] = await previews(t, first);
 
     // Nothing to read before accepting.
     await expect(
-      t.query(firms.packet, { firmId: first, referralId }),
+      t.query(firms.getPacket, { firmId: first, referralId }),
     ).rejects.toThrow(/not found/);
 
-    await t.mutation(firms.accept, { firmId: first, referralId });
+    await t.mutation(firms.acceptReferral, { firmId: first, referralId });
     await expect(
-      t.mutation(firms.accept, { firmId: second, referralId }),
+      t.mutation(firms.acceptReferral, { firmId: second, referralId }),
     ).rejects.toThrow(/no longer available/);
     expect(await previews(t, second)).toEqual([]);
     await expect(
-      t.query(firms.packet, { firmId: second, referralId }),
+      t.query(firms.getPacket, { firmId: second, referralId }),
     ).rejects.toThrow(/not found/);
 
-    const packet = await t.query(firms.packet, { firmId: first, referralId });
+    const packet = await t.query(firms.getPacket, {
+      firmId: first,
+      referralId,
+    });
     expect(packet).toMatchObject({
       kind: "employment",
       userId: "test user",
@@ -156,7 +159,7 @@ describe("accepting", () => {
       answers: wages,
       evidence: [{ key: "payStub", name: "payStub", url: expect.any(String) }],
     });
-    expect(await t.query(firms.accepted, { firmId: first })).toMatchObject([
+    expect(await t.query(firms.listAccepted, { firmId: first })).toMatchObject([
       { id: referralId, priceCents: 12000 },
     ]);
     const charges = await t.run((ctx) =>
@@ -179,18 +182,18 @@ describe("accepting", () => {
 
   test("a firm that passes isn't shown the referral again", async () => {
     const { t } = await shared();
-    const firmId = await saveFirm(t);
-    const other = await saveFirm(t, { name: "Second & Sons" });
+    const firmId = await createFirm(t);
+    const other = await createFirm(t, { name: "Second & Sons" });
     const [{ id: referralId }] = await previews(t, firmId);
-    await t.mutation(firms.decline, { firmId, referralId });
-    await t.mutation(firms.decline, { firmId, referralId });
+    await t.mutation(firms.rejectReferral, { firmId, referralId });
+    await t.mutation(firms.rejectReferral, { firmId, referralId });
     expect(await previews(t, firmId)).toEqual([]);
     expect(await previews(t, other)).toHaveLength(1);
   });
 
   test("a firm that passed on many still sees the ones after them", async () => {
     const { t } = await shared();
-    const firmId = await saveFirm(t);
+    const firmId = await createFirm(t);
     const [{ id: first }] = await previews(t, firmId);
     // Fifty it passed on, then one it hasn't seen.
     const unseen = await t.run(async (ctx) => {
@@ -200,7 +203,7 @@ describe("accepting", () => {
       ))!;
       let referralId = first;
       for (let i = 0; i < 50; i++) {
-        await ctx.db.insert("referralDeclines", { firmId, referralId });
+        await ctx.db.insert("referralRejections", { firmId, referralId });
         referralId = await ctx.db.insert("referrals", referral);
       }
       return referralId;
@@ -211,37 +214,37 @@ describe("accepting", () => {
 
   test("a firm that passed can still accept, and a taken referral can't be passed on", async () => {
     const { t } = await shared();
-    const firmId = await saveFirm(t);
-    const other = await saveFirm(t, { name: "Second & Sons" });
+    const firmId = await createFirm(t);
+    const other = await createFirm(t, { name: "Second & Sons" });
     const [{ id: referralId }] = await previews(t, firmId);
-    await t.mutation(firms.decline, { firmId, referralId });
-    await t.mutation(firms.accept, { firmId, referralId });
+    await t.mutation(firms.rejectReferral, { firmId, referralId });
+    await t.mutation(firms.acceptReferral, { firmId, referralId });
     // Accepting undoes the pass: the firm isn't on record as both.
     expect(
-      await t.run((ctx) => ctx.db.query("referralDeclines").collect()),
+      await t.run((ctx) => ctx.db.query("referralRejections").collect()),
     ).toEqual([]);
     for (const firm of [firmId, other]) {
       await expect(
-        t.mutation(firms.decline, { firmId: firm, referralId }),
+        t.mutation(firms.rejectReferral, { firmId: firm, referralId }),
       ).rejects.toThrow(/no longer available/);
     }
   });
 
   test("only the firm's account acts for it, and only on what it covers", async () => {
     const { t } = await shared();
-    const mine = await saveFirm(t);
-    const theirs = await saveFirm(t, { userId: "someone else" });
+    const mine = await createFirm(t);
+    const theirs = await createFirm(t, { userId: "someone else" });
     const [{ id: referralId }] = await previews(t, mine);
     await expect(previews(t, theirs)).rejects.toThrow(/Firm not found/);
     await expect(
-      t.mutation(firms.accept, { firmId: theirs, referralId }),
+      t.mutation(firms.acceptReferral, { firmId: theirs, referralId }),
     ).rejects.toThrow(/Firm not found/);
 
-    const elsewhere = await saveFirm(t, {
+    const elsewhere = await createFirm(t, {
       coverage: [{ kind: "employment", jurisdiction: "us/ny" }],
     });
     await expect(
-      t.mutation(firms.accept, { firmId: elsewhere, referralId }),
+      t.mutation(firms.acceptReferral, { firmId: elsewhere, referralId }),
     ).rejects.toThrow(/Referral not found/);
   });
 });
@@ -251,7 +254,7 @@ describe("the person", () => {
 
   test("can take a shared case back until a firm accepts it", async () => {
     const { t, caseId } = await shared();
-    const firmId = await saveFirm(t);
+    const firmId = await createFirm(t);
     const [{ id: referralId }] = await previews(t, firmId);
     const { withdrawReferral } = api.easygov.case.public;
     expect(await t.mutation(withdrawReferral, { caseId })).toBe(true);
@@ -262,19 +265,19 @@ describe("the person", () => {
     });
     expect(await previews(t, firmId)).toEqual([]);
     await expect(
-      t.mutation(firms.accept, { firmId, referralId }),
+      t.mutation(firms.acceptReferral, { firmId, referralId }),
     ).rejects.toThrow(/no longer available/);
     await expect(
-      t.mutation(firms.decline, { firmId, referralId }),
+      t.mutation(firms.rejectReferral, { firmId, referralId }),
     ).rejects.toThrow(/no longer available/);
     expect(await t.mutation(withdrawReferral, { caseId })).toBe(false);
   });
 
   test("can't take it back once a firm has it", async () => {
     const { t, caseId } = await shared();
-    const firmId = await saveFirm(t);
+    const firmId = await createFirm(t);
     const [{ id: referralId }] = await previews(t, firmId);
-    await t.mutation(firms.accept, { firmId, referralId });
+    await t.mutation(firms.acceptReferral, { firmId, referralId });
     expect(
       await t.mutation(api.easygov.case.public.withdrawReferral, { caseId }),
     ).toBe(false);
@@ -295,7 +298,7 @@ describe("the person", () => {
     });
     await send(t, caseId, { type: "pack.accept" });
     await send(t, caseId, { type: "referral.share" });
-    const firmId = await saveFirm(t, {
+    const firmId = await createFirm(t, {
       coverage: [{ kind: "advice", jurisdiction: "us/ca" }],
     });
     expect(await previews(t, firmId)).toMatchObject([
@@ -315,16 +318,18 @@ describe("the person", () => {
 describe("saving a firm", () => {
   test("needs a name, an account and real places", async () => {
     const t = initConvexTest();
-    await expect(saveFirm(t, { name: " " })).rejects.toThrow(/name/);
-    await expect(saveFirm(t, { coverage: [] })).rejects.toThrow(/1 to 20/);
+    await expect(createFirm(t, { name: " " })).rejects.toThrow(/name/);
+    await expect(createFirm(t, { coverage: [] })).rejects.toThrow(/1 to 20/);
     await expect(
-      saveFirm(t, {
+      createFirm(t, {
         coverage: [{ kind: "employment", jurisdiction: "California" }],
       }),
     ).rejects.toThrow(/jurisdiction path/);
-    const firmId = await saveFirm(t);
-    await saveFirm(t, {
+    const firmId = await createFirm(t);
+    await t.mutation(internal.easygov.firms.data.updateFirm, {
       firmId,
+      name: "Babbage & Co",
+      userId: "test user",
       coverage: [{ kind: "employment", jurisdiction: "US/NY" }],
     });
     const firm = await t.run((ctx) => ctx.db.get("firms", firmId));

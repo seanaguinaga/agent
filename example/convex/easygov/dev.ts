@@ -65,10 +65,13 @@ export const seed = mutation({
       // "reviewed". Each round can surface more, so go around a few times.
       const reviewedPackIds: Id<"processPacks">[] = [];
       for (let round = 0; !packs[name]; round++) {
-        const saved = await ctx.runMutation(internal.easygov.packs.data.save, {
-          ...definition,
-          reviewedPackIds,
-        });
+        const saved = await ctx.runMutation(
+          internal.easygov.packs.data.createPack,
+          {
+            ...definition,
+            reviewedPackIds,
+          },
+        );
         if (saved.kind === "created") packs[name] = saved.id;
         else if (round === 5) throw new Error(`Could not seed ${name}`);
         else reviewedPackIds.push(...saved.packs.map((pack) => pack.id));
@@ -81,7 +84,7 @@ export const seed = mutation({
       .first();
     const firmId: Id<"firms"> =
       firm?._id ??
-      (await ctx.runMutation(internal.easygov.firms.data.save, {
+      (await ctx.runMutation(internal.easygov.firms.data.createFirm, {
         name: "Test & Partners",
         userId,
         coverage: SEED_COVERAGE,
@@ -139,8 +142,8 @@ export const searchPacks = query({
   },
 });
 
-/** `packs/data:save` as it is, for trying duplicates and new versions. */
-export const savePack = mutation({
+/** `packs/data:createPack` as it is, for trying duplicates and new versions. */
+export const createPack = mutation({
   args: {
     ownerId: v.optional(v.string()),
     ...packDefinition,
@@ -149,7 +152,7 @@ export const savePack = mutation({
   },
   returns: vSaveResult,
   handler: async (ctx, args): Promise<typeof vSaveResult.type> =>
-    await ctx.runMutation(internal.easygov.packs.data.save, args),
+    await ctx.runMutation(internal.easygov.packs.data.createPack, args),
 });
 
 // --- Cases ------------------------------------------------------------------
@@ -234,16 +237,15 @@ export const firms = query({
   },
 });
 
-/** `firms/data:save` for the test user: a new firm, or new coverage for one. */
-export const saveFirm = mutation({
+/** `firms/data:createFirm` for the test user. */
+export const createFirm = mutation({
   args: {
-    firmId: v.optional(v.id("firms")),
     name: v.string(),
     coverage: v.array(vCoverage),
   },
   returns: v.id("firms"),
   handler: async (ctx, args): Promise<Id<"firms">> =>
-    await ctx.runMutation(internal.easygov.firms.data.save, {
+    await ctx.runMutation(internal.easygov.firms.data.createFirm, {
       ...args,
       userId: await getAuthUserId(ctx),
     }),

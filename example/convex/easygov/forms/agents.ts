@@ -146,7 +146,7 @@ export const draftMapping = action({
   args: { editionId: v.id("formEditions") },
   returns: v.number(),
   handler: async (ctx, { editionId }): Promise<number> => {
-    const found = await ctx.runQuery(api.easygov.forms.data.edition, {
+    const found = await ctx.runQuery(api.easygov.forms.data.getEdition, {
       editionId,
     });
     if (!found) throw new ConvexError("Edition not found.");
@@ -160,7 +160,7 @@ export const draftMapping = action({
         group: option !== undefined ? field : undefined,
       })),
     );
-    await ctx.runMutation(api.easygov.forms.data.saveMapping, {
+    await ctx.runMutation(api.easygov.forms.data.updateMapping, {
       editionId,
       mapping,
       reviewed: false,

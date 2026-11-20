@@ -27,7 +27,7 @@ function factKey(key: string): FactKey {
 }
 
 /** The person's facts, every reading of them, and what cases suggest. */
-export const get = query({
+export const getProfile = query({
   args: { guestKey: v.optional(v.string()) },
   returns: v.object({
     facts: v.array(
@@ -96,7 +96,7 @@ export const get = query({
 });
 
 /** Saves one fact. The person's open cases pick it up at once. */
-export const save = mutation({
+export const setFact = mutation({
   args: { key: vFactKey, value: vFactValue, guestKey: v.optional(v.string()) },
   returns: v.null(),
   handler: async (ctx, { key, value, guestKey }) => {
@@ -178,7 +178,7 @@ export const askAhead = query({
 
 /**
  * Settles what a finished case suggested. Accepting doesn't save anything by
- * itself: the person confirms the fact's parts with `save` first, since the
+ * itself: the person confirms the fact's parts with `setFact` first, since the
  * case only has what they typed there.
  */
 export const settleProposal = mutation({
@@ -209,7 +209,7 @@ const FORGET_BATCH = 200;
  * remembered answers, and suggestions. Returns true if there's more to
  * remove. Cases keep the answers they were built from.
  */
-export const forget = mutation({
+export const deleteProfile = mutation({
   args: { guestKey: v.optional(v.string()) },
   returns: v.boolean(),
   handler: async (ctx, { guestKey }) => {

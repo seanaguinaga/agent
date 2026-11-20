@@ -334,7 +334,7 @@ const CASE_TIMEOUT_MS = 6 * 60 * 1000;
 const read = (ctx: ActionCtx, caseId: Id<"cases">): Promise<CaseView> =>
   ctx.runQuery(api.easygov.case.public.getCase, { caseId });
 const sendTo = (ctx: ActionCtx, c: CaseView, event: CaseEvent): Promise<null> =>
-  ctx.runMutation(api.easygov.case.public.send, {
+  ctx.runMutation(api.easygov.case.public.sendEvent, {
     caseId: c._id,
     expectedSeq: c.seq,
     event,
@@ -358,7 +358,7 @@ async function formPack(
 ): Promise<Id<"processPacks">> {
   const { code, title, jurisdiction, sourceUrl, delivery } = form;
   const formId: Id<"forms"> = await ctx.runMutation(
-    api.easygov.forms.data.register,
+    api.easygov.forms.data.createForm,
     { code, title, jurisdiction, sourceUrl },
   );
   const { editionId }: { editionId: Id<"formEditions"> } = await ctx.runAction(
@@ -366,14 +366,14 @@ async function formPack(
     { formId },
   );
   const edition: { targets: { id: string; label: string }[] } | null =
-    await ctx.runQuery(api.easygov.forms.data.edition, { editionId });
+    await ctx.runQuery(api.easygov.forms.data.getEdition, { editionId });
   if (!edition) throw new Error("The fetched edition is missing");
   const mapping = form.mapping.map(({ label, entry }) => {
     const target = edition.targets.find((t) => new RegExp(label).test(t.label));
     if (!target) throw new Error(`No place on the form matches /${label}/`);
     return { target: target.id, ...entry };
   });
-  await ctx.runMutation(api.easygov.forms.data.saveMapping, {
+  await ctx.runMutation(api.easygov.forms.data.updateMapping, {
     editionId,
     mapping,
     reviewed: true,
@@ -397,7 +397,7 @@ async function startCase(ctx: ActionCtx, slice: Slice, caseId: string) {
     packId = packs[start.pack];
   }
   const id: Id<"cases"> = await ctx.runMutation(
-    api.easygov.case.public.startCase,
+    api.easygov.case.public.createCase,
     { packId, source: `eval:${slice}` },
   );
   return id;
@@ -723,7 +723,7 @@ export const expireTrial = internalMutation({
     const c = trial.realCase && (await ctx.db.get("cases", trial.realCase.id));
     // Don't leave the case's workflow waiting on a person who has left.
     if (c?.status === "active") {
-      await ctx.runMutation(api.easygov.case.public.send, {
+      await ctx.runMutation(api.easygov.case.public.sendEvent, {
         caseId: c._id,
         expectedSeq: c.seq,
         event: { type: "case.cancel" },

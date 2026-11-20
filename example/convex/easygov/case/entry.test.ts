@@ -22,7 +22,7 @@ const wages = {
 };
 
 async function savePack(t: T, pack: object, extra: object = {}) {
-  const saved = await t.mutation(internal.easygov.packs.data.save, {
+  const saved = await t.mutation(internal.easygov.packs.data.createPack, {
     ...wageClaim,
     ...pack,
     ...extra,
@@ -36,7 +36,7 @@ async function startOn(pack: object = {}, args: object = {}) {
   vi.useFakeTimers();
   const t = initConvexTest();
   const packId = await savePack(t, pack);
-  const caseId = await t.mutation(api.easygov.case.public.startCase, {
+  const caseId = await t.mutation(api.easygov.case.public.createCase, {
     packId,
     ...args,
   });
@@ -76,7 +76,7 @@ describe("starting on a pack", () => {
       { inputs: [...wageClaim.inputs, "state"], forms: ["DLSE-1"] },
       { supersedes: first },
     );
-    const caseId = await t.mutation(api.easygov.case.public.startCase, {
+    const caseId = await t.mutation(api.easygov.case.public.createCase, {
       packId: first,
     });
     expect(definitionOf((await read(t, caseId)).selection)?.id).toBe(second);
@@ -87,7 +87,7 @@ describe("starting on a pack", () => {
       { ownerId: "someone", reviewedPackIds: [second] },
     );
     await expect(
-      t.mutation(api.easygov.case.public.startCase, { packId: mine }),
+      t.mutation(api.easygov.case.public.createCase, { packId: mine }),
     ).rejects.toThrow(/not found/);
   });
 });
@@ -211,13 +211,17 @@ describe("a guest", () => {
 
   test("reaches the case only with the key, and claims it before sharing", async () => {
     const { t, caseId } = await startOn({}, { guestKey });
-    const { getCase, send: sendEvent, claimCase } = api.easygov.case.public;
+    const {
+      getCase,
+      sendEvent: sendEvent,
+      claimCase,
+    } = api.easygov.case.public;
     await expect(t.query(getCase, { caseId })).rejects.toThrow(/not found/);
     await expect(
       t.query(getCase, { caseId, guestKey: `${guestKey}-wrong` }),
     ).rejects.toThrow(/not found/);
     await expect(
-      t.mutation(api.easygov.case.public.startCase, { guestKey: "short" }),
+      t.mutation(api.easygov.case.public.createCase, { guestKey: "short" }),
     ).rejects.toThrow(/too short/);
 
     const guestSend = async (event: Parameters<typeof send>[2]) => {
@@ -264,12 +268,14 @@ describe("landing pages", () => {
       },
       { ownerId: "someone", reviewedPackIds: [packId] },
     );
-    const { page } = await t.query(api.easygov.packs.public.landings, {
+    const { page } = await t.query(api.easygov.packs.public.listLandings, {
       paginationOpts: { cursor: null, numItems: 10 },
     });
     expect(page).toMatchObject([{ id: packId, title: wageClaim.title }]);
 
-    const landing = await t.query(api.easygov.packs.public.landing, { packId });
+    const landing = await t.query(api.easygov.packs.public.getLanding, {
+      packId,
+    });
     expect(landing).toMatchObject({
       id: packId,
       deadline: "File a wage claim",
@@ -308,7 +314,10 @@ describe("a pack's checks", () => {
   test("a pack that names an input it doesn't have is refused", async () => {
     const t = initConvexTest();
     const save = (pack: object) =>
-      t.mutation(internal.easygov.packs.data.save, { ...wageClaim, ...pack });
+      t.mutation(internal.easygov.packs.data.createPack, {
+        ...wageClaim,
+        ...pack,
+      });
     await expect(
       save({ deadline: { label: "File", fromInput: "nope", days: 30 } }),
     ).rejects.toThrow(/isn't an input/);

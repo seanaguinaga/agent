@@ -23,8 +23,8 @@ const home = {
 };
 
 /** Saves a fact, and lets the person's open cases pick it up. */
-async function save(t: T, args: FunctionArgs<typeof profile.save>) {
-  await t.mutation(profile.save, args);
+async function save(t: T, args: FunctionArgs<typeof profile.setFact>) {
+  await t.mutation(profile.setFact, args);
   await t.finishAllScheduledFunctions(vi.runAllTimers);
 }
 
@@ -37,7 +37,7 @@ async function setup() {
 }
 
 async function startOn(t: T, packId: Id<"processPacks">) {
-  const caseId = await t.mutation(api.easygov.case.public.startCase, {
+  const caseId = await t.mutation(api.easygov.case.public.createCase, {
     packId,
   });
   await t.finishAllScheduledFunctions(vi.runAllTimers);
@@ -64,13 +64,13 @@ describe("a profile filled in before the form is known", () => {
   test("a bad value is refused in words for the person", async () => {
     const { t } = await setup();
     await expect(
-      t.mutation(profile.save, {
+      t.mutation(profile.setFact, {
         key: "homeAddress",
         value: { ...home, state: "California" },
       }),
     ).rejects.toThrow(/two-letter state code/);
     await expect(
-      t.mutation(profile.save, { key: "shoeSize", value: "9" }),
+      t.mutation(profile.setFact, { key: "shoeSize", value: "9" }),
     ).rejects.toThrow(/isn't a profile fact/);
   });
 });
@@ -126,7 +126,7 @@ describe("a case and the profile", () => {
       value: { given: "Ada", family: "Byron" },
     });
     expect((await read(t, caseId)).answers.fullName).toBe("A. Lovelace");
-    expect((await t.query(profile.get, {})).readings.fullName).toBe(
+    expect((await t.query(profile.getProfile, {})).readings.fullName).toBe(
       "Ada Byron",
     );
   });
@@ -155,7 +155,9 @@ describe("what a person answers on a form", () => {
       key: "fullName",
       value: "Ada King Lovelace",
     });
-    expect((await t.query(profile.get, {})).readings.fullName).toBeUndefined();
+    expect(
+      (await t.query(profile.getProfile, {})).readings.fullName,
+    ).toBeUndefined();
   });
 
   test("anything else is remembered, and offered when the same pack asks again", async () => {
@@ -202,7 +204,9 @@ test("an old address is offered back, not filled in; a yes confirms it", async (
     suggestions: { homeCity: "Oakland" },
   });
   expect(
-    (await t.query(profile.get, {})).facts.find((f) => f.key === "homeAddress"),
+    (await t.query(profile.getProfile, {})).facts.find(
+      (f) => f.key === "homeAddress",
+    ),
   ).toMatchObject({ stale: true });
   const accepted = await send(t, caseId, { type: "answers.accept" });
   expect(accepted).toMatchObject({
@@ -210,7 +214,9 @@ test("an old address is offered back, not filled in; a yes confirms it", async (
     following: ["fullName", "homeCity"],
   });
   expect(
-    (await t.query(profile.get, {})).facts.find((f) => f.key === "homeAddress"),
+    (await t.query(profile.getProfile, {})).facts.find(
+      (f) => f.key === "homeAddress",
+    ),
   ).toMatchObject({ stale: false });
 });
 
@@ -226,7 +232,7 @@ test("a finished change of address suggests the new home address", async () => {
     value: "2 New Street, Berkeley, CA 94704",
   });
   await send(t, caseId, { type: "artifact.accept" });
-  const { proposals } = await t.query(profile.get, {});
+  const { proposals } = await t.query(profile.getProfile, {});
   expect(proposals).toMatchObject([
     {
       fact: "homeAddress",
@@ -235,12 +241,14 @@ test("a finished change of address suggests the new home address", async () => {
     },
   ]);
   // The profile isn't changed until the person confirms the parts.
-  expect((await t.query(profile.get, {})).readings.homeCity).toBe("Oakland");
+  expect((await t.query(profile.getProfile, {})).readings.homeCity).toBe(
+    "Oakland",
+  );
   await t.mutation(profile.settleProposal, {
     id: proposals[0].id,
     accept: true,
   });
-  expect((await t.query(profile.get, {})).proposals).toEqual([]);
+  expect((await t.query(profile.getProfile, {})).proposals).toEqual([]);
 });
 
 describe("what to ask before the form is known", () => {
@@ -265,15 +273,15 @@ test("a guest's facts come along when the case is claimed", async () => {
   const { t, packs } = await setup();
   const guestKey = "g".repeat(40);
   await save(t, { key: "name", value: name, guestKey });
-  const caseId = await t.mutation(api.easygov.case.public.startCase, {
+  const caseId = await t.mutation(api.easygov.case.public.createCase, {
     packId: packs.irs8822,
     guestKey,
   });
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   // The account's own profile knows nothing yet.
-  expect((await t.query(profile.get, {})).readings).toEqual({});
+  expect((await t.query(profile.getProfile, {})).readings).toEqual({});
   await t.mutation(api.easygov.case.public.claimCase, { caseId, guestKey });
-  expect((await t.query(profile.get, {})).readings.fullName).toBe(
+  expect((await t.query(profile.getProfile, {})).readings.fullName).toBe(
     "Ada Lovelace",
   );
   expect((await read(t, caseId)).answers.fullName).toBe("Ada Lovelace");
@@ -288,8 +296,8 @@ test("forgetting removes what's kept apart from the cases", async () => {
     key: "reasonForAppeal",
     value: "x",
   });
-  expect(await t.mutation(profile.forget, {})).toBe(false);
-  expect((await t.query(profile.get, {})).readings).toEqual({});
+  expect(await t.mutation(profile.deleteProfile, {})).toBe(false);
+  expect((await t.query(profile.getProfile, {})).readings).toEqual({});
   const again = await startOn(t, packs.ssaAppeal);
   expect(await read(t, again)).toMatchObject({ answers: {}, suggestions: {} });
   // The case that used them keeps what it was built from... until it's

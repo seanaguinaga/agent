@@ -1,6 +1,6 @@
 // A case's evidence: the letter that started it, the evidence behind it, and
 // what comes back once it's filed. A file is uploaded to storage first
-// (`uploadUrl`), then attached here, and read once by a model: what it
+// (`createUploadUrl`), then attached here, and read once by a model: what it
 // states is offered as answers, and is all any later step sees of it.
 import { saveMessage } from "@convex-dev/agent";
 import { ConvexError, v, type Infer } from "convex/values";

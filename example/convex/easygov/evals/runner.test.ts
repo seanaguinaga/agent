@@ -73,7 +73,7 @@ test("a crashed trial is an error, not a failure", async () => {
 test("a trial that never reports back is ended, and its case canceled", async () => {
   vi.useFakeTimers();
   const t = initConvexTest();
-  const caseId = await t.mutation(api.easygov.case.public.startCase, {});
+  const caseId = await t.mutation(api.easygov.case.public.createCase, {});
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   // A trial whose action died after starting its case.
   const { runId, trialId } = await t.run(async (ctx) => {
@@ -114,7 +114,7 @@ test("a trial that never reports back is ended, and its case canceled", async ()
 test("a real draft is saved as a case, and joins the draft slice", async () => {
   vi.useFakeTimers();
   const t = initConvexTest();
-  const caseId = await t.mutation(api.easygov.case.public.startCase, {});
+  const caseId = await t.mutation(api.easygov.case.public.createCase, {});
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   await expect(t.mutation(runner.saveDraftCase, { caseId })).rejects.toThrow(
     /no draft/,

@@ -47,9 +47,9 @@ export function useCaseSession(
   guestKey?: string,
 ) {
   const c = useQuery(cases.getCase, caseId ? { caseId, guestKey } : "skip");
-  const sendEvent = useMutation(cases.send);
+  const sendEvent = useMutation(cases.sendEvent);
   const sendMessage = useMutation(cases.sendMessage);
-  const uploadUrl = useMutation(cases.uploadUrl);
+  const uploadUrl = useMutation(cases.createUploadUrl);
   return useMemo(() => {
     const id = caseId!;
     const send = (event: CaseEvent, expectedSeq: number) =>

@@ -15,32 +15,32 @@ reads top to bottom, like `workflows/chaining.ts`:
 Read `case/workflow.ts` first: that is the whole flow. There is no UI and no PDF
 filling here.
 
-A case can also **start on a pack**, from a landing page: `startCase` with a
+A case can also **start on a pack**, from a landing page: `createCase` with a
 `packId` skips step 1 and makes no model call. See
 [Starting from a landing page](#starting-from-a-landing-page).
 
 ## The files
 
-| File               | Job                                                                    |
-| ------------------ | ---------------------------------------------------------------------- |
-| `case/workflow.ts` | The case's workflow, and how it waits for a person                     |
-| `case/data.ts`     | The queries and mutations the workflow calls, and its `onComplete`     |
-| `case/state.ts`    | Pure: what the case's fields mean, including `phase` and `waitingFor`  |
-| `case/events.ts`   | What a person can send, when it's taken, and what it writes            |
-| `case/files.ts`    | Attached files: adding, removing, and reading each with a model        |
-| `case/public.ts`   | What a client calls: `startCase`, `getCase`, `sendMessage`, `send`     |
-| `packs/public.ts`  | What a landing page reads: the shared packs, one page each             |
-| `case/agents.ts`   | The intake and selection agents                                        |
-| `case/schema.ts`   | Every case field and every event                                       |
-| `case/answers.ts`  | Pure helpers over the answers                                          |
-| `packs/`           | The process pack library: search, save, versions (see its README)      |
-| `firms/`           | The law firms, and the cases shared with them (see its README)         |
-| `schema.ts`        | The tables                                                             |
-| `forms/`           | Official forms: fetched, mapped, filled and read back (see its README) |
-| `profile/`         | The person's own facts, read by every form (see its README)            |
-| `evals/`           | How often the models get each step right (see its README)              |
-| `dev.ts`           | Seeding and inspection for the test pages; not for production          |
-| `autopilot.ts`     | Pure: plays the person's part, for the test pages and the evals        |
+| File               | Job                                                                      |
+| ------------------ | ------------------------------------------------------------------------ |
+| `case/workflow.ts` | The case's workflow, and how it waits for a person                       |
+| `case/data.ts`     | The queries and mutations the workflow calls, and its `onComplete`       |
+| `case/state.ts`    | Pure: what the case's fields mean, including `phase` and `waitingFor`    |
+| `case/events.ts`   | What a person can send, when it's taken, and what it writes              |
+| `case/files.ts`    | Attached files: adding, removing, and reading each with a model          |
+| `case/public.ts`   | What a client calls: `createCase`, `getCase`, `sendMessage`, `sendEvent` |
+| `packs/public.ts`  | What a landing page reads: the shared packs, one page each               |
+| `case/agents.ts`   | The intake and selection agents                                          |
+| `case/schema.ts`   | Every case field and every event                                         |
+| `case/answers.ts`  | Pure helpers over the answers                                            |
+| `packs/`           | The process pack library: search, save, versions (see its README)        |
+| `firms/`           | The law firms, and the cases shared with them (see its README)           |
+| `schema.ts`        | The tables                                                               |
+| `forms/`           | Official forms: fetched, mapped, filled and read back (see its README)   |
+| `profile/`         | The person's own facts, read by every form (see its README)              |
+| `evals/`           | How often the models get each step right (see its README)                |
+| `dev.ts`           | Seeding and inspection for the test pages; not for production            |
+| `autopilot.ts`     | Pure: plays the person's part, for the test pages and the evals          |
 
 ## How it fits together
 
@@ -50,9 +50,9 @@ case and nudges the workflow to look again (unless the case still waits for the
 same thing: an answer that leaves others missing isn't news). Nothing lives only
 in the workflow's history, so:
 
-- `send` and the workflow can't disagree about where the case is. `send` accepts
-  an event only while `waitingFor(case)` says the case waits for it, and the
-  workflow's waits are worked out from the same fields.
+- `sendEvent` and the workflow can't disagree about where the case is.
+  `sendEvent` accepts an event only while `waitingFor(case)` says the case waits
+  for it, and the workflow's waits are worked out from the same fields.
 - A retry restarts the workflow from the top. It finds the goal, the pack and
   the answers already there, and carries on from where the case is. That's also
   how to recover a case whose workflow a code change broke.
@@ -81,8 +81,8 @@ retried call can't leave a duplicate in the thread.
   `goalVersion` it was made for; one for an earlier goal counts as none.
 - `artifact.fingerprint` is a SHA-256 of the answers and files the document was
   built from; `accepted.fingerprint` is the one the person accepted.
-- `seq` goes up on every write. `send` takes the `expectedSeq` the sender last
-  saw, so a decision made on an out-of-date screen (accepting, sharing) is
+- `seq` goes up on every write. `sendEvent` takes the `expectedSeq` the sender
+  last saw, so a decision made on an out-of-date screen (accepting, sharing) is
   refused. An answer or a file is taken either way: it writes its own key.
 
 **The person isn't asked twice.** When a proposal is accepted, the workflow
@@ -107,16 +107,17 @@ works at any time.
 
 ## Try it from the dashboard
 
-First seed a pack. Run `easygov/packs/data:save` with the `irs8822` definition
-from `packs/packs.testkit.ts` (it has no `ownerId`, so it's shared). The agent
-proposes it when the goal matches; without a seeded match it drafts a one-off
-process for you to review instead, which runs on that case and isn't saved.
+First seed a pack. Run `easygov/packs/data:createPack` with the `irs8822`
+definition from `packs/packs.testkit.ts` (it has no `ownerId`, so it's shared).
+The agent proposes it when the goal matches; without a seeded match it drafts a
+one-off process for you to review instead, which runs on that case and isn't
+saved.
 
-Run each function from the dashboard's Functions page. Every `send` needs the
-case's current `seq`, so read it with `getCase` first. `getCase` also says what
-the case is `waitingFor`.
+Run each function from the dashboard's Functions page. Every `sendEvent` needs
+the case's current `seq`, so read it with `getCase` first. `getCase` also says
+what the case is `waitingFor`.
 
-1. `easygov/case/public:startCase` with `{}`. Copy the returned id.
+1. `easygov/case/public:createCase` with `{}`. Copy the returned id.
 2. `easygov/case/public:getCase` with `{ "caseId": "<id>" }`. It's waiting for a
    `goal`.
 3. Chat with intake: `easygov/case/public:sendMessage` with
@@ -125,7 +126,7 @@ the case is `waitingFor`.
    proposed and the case waits for the `pack`. (Or skip the chat: send
    `goal.set` below instead.) Chat is for intake only: once a pack is accepted,
    `sendMessage` is refused.
-4. `easygov/case/public:send` with each of these events in turn, as
+4. `easygov/case/public:sendEvent` with each of these events in turn, as
    `{ "caseId": "<id>", "expectedSeq": <seq>, "event": <event> }`:
 
    ```json
@@ -152,15 +153,16 @@ A shared pack is a page people can land on: a form, a letter, a complaint.
    `easygov/packs/public:landing` describes one: its questions, the files it
    asks for, and its deadline. Neither needs a sign-in. A link to an older
    version of a pack shows the current one.
-2. `startCase` with `{ "packId": "<id>", "source": "<page name>" }` starts a
+2. `createCase` with `{ "packId": "<id>", "source": "<page name>" }` starts a
    case on that pack. It waits for `answers` straight away. `source` is kept on
    the case, and on any referral, to tell which pages lead to which.
 3. Add `"guestKey": "<a long random string>"` to start without an account. Pass
-   the same key to `getCase`, `send`, `sendMessage` and `uploadUrl`. It's the
-   only way back to the case until `claimCase` moves it to the signed-in
-   account. A guest can't share a case with a lawyer; they claim it first.
-4. For each file the pack asks for, call `uploadUrl`, post the file to it, and
-   send `{ "type": "evidence.add", "key": "<key>", "storageId": "<id>" }`.
+   the same key to `getCase`, `sendEvent`, `sendMessage` and `createUploadUrl`.
+   It's the only way back to the case until `claimCase` moves it to the
+   signed-in account. A guest can't share a case with a lawyer; they claim it
+   first.
+4. For each file the pack asks for, call `createUploadUrl`, post the file to it,
+   and send `{ "type": "evidence.add", "key": "<key>", "storageId": "<id>" }`.
 5. `getCase` returns the `deadline` once the answer it's counted from is in, and
    `artifact.letter` once the document is built, if the pack writes one.
 
@@ -169,9 +171,9 @@ The `wageClaim` definition in `packs/packs.testkit.ts` uses all of it.
 ## Files
 
 A person attaches files in three situations. All use the same two calls:
-`uploadUrl`, then `evidence.add` with the storage id the upload returns. The
-file goes from the browser straight to storage, so its size isn't bound by a
-function's arguments, and `uploadUrl` checks who's asking.
+`createUploadUrl`, then `evidence.add` with the storage id the upload returns.
+The file goes from the browser straight to storage, so its size isn't bound by a
+function's arguments, and `createUploadUrl` checks who's asking.
 
 - **To start the case.** While the case waits for a goal, attach the letter or
   notice with no `key`. A model reads it, what it states goes into the

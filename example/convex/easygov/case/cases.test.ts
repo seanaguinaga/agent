@@ -15,7 +15,11 @@ describe("the case API", () => {
     const { t, caseId } = await start();
     const { seq } = await read(t, caseId);
     const sendAt = (expectedSeq: number, event: CaseEvent) =>
-      t.mutation(api.easygov.case.public.send, { caseId, event, expectedSeq });
+      t.mutation(api.easygov.case.public.sendEvent, {
+        caseId,
+        event,
+        expectedSeq,
+      });
 
     await expect(
       sendAt(seq - 1, { type: "goal.set", goal: "I moved" }),
@@ -80,7 +84,7 @@ describe("the case API", () => {
     const status = await t.run((ctx) => workflow.status(ctx, run!.workflowId));
     expect(status.type).toBe("canceled");
     await expect(
-      t.mutation(api.easygov.case.public.send, {
+      t.mutation(api.easygov.case.public.sendEvent, {
         caseId,
         event: { type: "goal.set", goal: "I moved" },
         expectedSeq: found.seq,

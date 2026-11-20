@@ -1,5 +1,5 @@
 // What a case's fields mean. Pure: no ctx and no I/O, so these are tested
-// with plain values. The workflow waits on them, and `send` checks them, so
+// with plain values. The workflow waits on them, and `sendEvent` checks them, so
 // both always agree on where the case is.
 import type { Doc } from "../../_generated/dataModel";
 import { addDays } from "../dates";

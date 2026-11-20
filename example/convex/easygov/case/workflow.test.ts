@@ -56,7 +56,7 @@ describe("agreeing on what to do", () => {
   test("a message sent before the workflow starts is answered when it does", async () => {
     vi.useFakeTimers();
     const t = initConvexTest();
-    const caseId = await t.mutation(api.easygov.case.public.startCase, {});
+    const caseId = await t.mutation(api.easygov.case.public.createCase, {});
     model.replies.push('{"reply":"Got it.","goal":"Renew my license"}');
     await t.mutation(api.easygov.case.public.sendMessage, {
       caseId,
@@ -213,7 +213,7 @@ describe("answers and review", () => {
       }),
     );
     await expect(
-      t.mutation(api.easygov.case.public.send, {
+      t.mutation(api.easygov.case.public.sendEvent, {
         caseId,
         event: { type: "artifact.accept" },
         expectedSeq: found.seq,
@@ -231,7 +231,7 @@ describe("a busy person", () => {
     await send(t, caseId, { type: "pack.accept" });
     // Far more edits than the workflow has looks to spend on one wait.
     for (let i = 0; i < 120; i++) {
-      await t.mutation(api.easygov.case.public.send, {
+      await t.mutation(api.easygov.case.public.sendEvent, {
         caseId,
         event: { type: "answers.set", key: "oldAddress", value: `${i} Old Rd` },
         expectedSeq: 0,
@@ -267,7 +267,7 @@ describe("failures", () => {
       run: { state: "failed", error: expect.stringMatching(/model is down/) },
     });
     await expect(
-      t.mutation(api.easygov.case.public.send, {
+      t.mutation(api.easygov.case.public.sendEvent, {
         caseId,
         event: { type: "goal.set", goal: "Again" },
         expectedSeq: found.seq,

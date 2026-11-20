@@ -72,7 +72,7 @@ export async function start() {
   vi.useFakeTimers();
   const t = initConvexTest();
   await seedPacks(t);
-  const caseId = await t.mutation(api.easygov.case.public.startCase, {});
+  const caseId = await t.mutation(api.easygov.case.public.createCase, {});
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   return { t, caseId };
 }
@@ -83,7 +83,7 @@ export const read = (t: T, caseId: Id<"cases">) =>
 /** Sends an event with the current seq, then lets the workflows settle. */
 export async function send(t: T, caseId: Id<"cases">, event: CaseEvent) {
   const { seq } = await read(t, caseId);
-  await t.mutation(api.easygov.case.public.send, {
+  await t.mutation(api.easygov.case.public.sendEvent, {
     caseId,
     event,
     expectedSeq: seq,

@@ -23,7 +23,7 @@ const original = new Uint8Array(
 
 /** Records the fixture as a fetched edition, as `fetchForm` would. */
 async function recorded(t: T, bytes = original) {
-  const formId = await t.mutation(forms.register, {
+  const formId = await t.mutation(forms.createForm, {
     code: "IRS-8822",
     title: "Change of Address",
     jurisdiction: "us",
@@ -89,7 +89,7 @@ describe("an edition", () => {
         sha256: "a".repeat(64),
       }),
     ).toBe(editionId);
-    expect(await t.query(forms.list, {})).toMatchObject([
+    expect(await t.query(forms.listForms, {})).toMatchObject([
       {
         code: "IRS-8822",
         editions: [
@@ -109,14 +109,14 @@ describe("an edition", () => {
     const t = initConvexTest();
     const { editionId, mapping } = await recorded(t);
     await expect(
-      t.mutation(forms.saveMapping, {
+      t.mutation(forms.updateMapping, {
         editionId,
         reviewed: false,
         mapping: [{ target: "p9.f9", input: "fullName" }],
       }),
     ).rejects.toThrow(/isn't a target/);
     await expect(
-      t.mutation(forms.saveMapping, {
+      t.mutation(forms.updateMapping, {
         editionId,
         reviewed: false,
         mapping: [
@@ -128,7 +128,7 @@ describe("an edition", () => {
         ],
       }),
     ).rejects.toThrow(/exactly one/);
-    await t.mutation(forms.saveMapping, {
+    await t.mutation(forms.updateMapping, {
       editionId,
       mapping,
       reviewed: false,
@@ -143,16 +143,16 @@ test("a case on the form's pack is filled from the profile, and read back", asyn
   vi.useFakeTimers();
   const t = initConvexTest();
   const { editionId, mapping } = await recorded(t);
-  await t.mutation(forms.saveMapping, { editionId, mapping, reviewed: true });
+  await t.mutation(forms.updateMapping, { editionId, mapping, reviewed: true });
   const packId = await t.mutation(forms.publishPack, {
     editionId,
     profile: [{ input: "newAddress", updates: "homeAddress" }],
   });
-  await t.mutation(api.easygov.profile.public.save, {
+  await t.mutation(api.easygov.profile.public.setFact, {
     key: "name",
     value: { given: "Ada", family: "Lovelace" },
   });
-  await t.mutation(api.easygov.profile.public.save, {
+  await t.mutation(api.easygov.profile.public.setFact, {
     key: "homeAddress",
     value: {
       street: "1 Old Road",
@@ -162,7 +162,7 @@ test("a case on the form's pack is filled from the profile, and read back", asyn
       country: "US",
     },
   });
-  const caseId = await t.mutation(api.easygov.case.public.startCase, {
+  const caseId = await t.mutation(api.easygov.case.public.createCase, {
     packId,
   });
   await t.finishAllScheduledFunctions(vi.runAllTimers);
@@ -211,7 +211,7 @@ test("a case on the form's pack is filled from the profile, and read back", asyn
     "1 Old Road, Oakland, CA 94612",
     "2 New Street, Berkeley, CA 94704",
   ]);
-  expect(await t.query(forms.documentUrl, { caseId })).toMatch(/^https?:/);
+  expect(await t.query(forms.getDocumentUrl, { caseId })).toMatch(/^https?:/);
 
   // A form filled from answers that have since moved on (a profile save
   // reaches a case at any time) is behind them: it isn't put up for review.
@@ -231,7 +231,7 @@ test("a case on the form's pack is filled from the profile, and read back", asyn
   // A pack fills this edition now, so its mapping can be corrected but not
   // taken back to unreviewed, and its targets can't be read again.
   await expect(
-    t.mutation(forms.saveMapping, { editionId, mapping, reviewed: false }),
+    t.mutation(forms.updateMapping, { editionId, mapping, reviewed: false }),
   ).rejects.toThrow(/stays reviewed/);
   await expect(
     t.mutation(internal.easygov.forms.data.replaceTargets, {
@@ -239,7 +239,7 @@ test("a case on the form's pack is filled from the profile, and read back", asyn
       targets: [],
     }),
   ).rejects.toThrow(/can't be read again/);
-  await t.mutation(forms.saveMapping, { editionId, mapping, reviewed: true });
+  await t.mutation(forms.updateMapping, { editionId, mapping, reviewed: true });
 
   expect(await send(t, caseId, { type: "artifact.accept" })).toMatchObject({
     status: "done",
@@ -264,7 +264,7 @@ test("a group of boxes is asked as one question, and typing isn't refused for a 
   ];
   // One question can't be both pick-one and check-all-that-apply.
   await expect(
-    t.mutation(forms.saveMapping, {
+    t.mutation(forms.updateMapping, {
       editionId,
       reviewed: true,
       mapping: [
@@ -273,9 +273,9 @@ test("a group of boxes is asked as one question, and typing isn't refused for a 
       ],
     }),
   ).rejects.toThrow(/mix "equals" and "includes"/);
-  await t.mutation(forms.saveMapping, { editionId, mapping, reviewed: true });
+  await t.mutation(forms.updateMapping, { editionId, mapping, reviewed: true });
   const packId = await t.mutation(forms.publishPack, { editionId });
-  const caseId = await t.mutation(api.easygov.case.public.startCase, {
+  const caseId = await t.mutation(api.easygov.case.public.createCase, {
     packId,
   });
   await t.finishAllScheduledFunctions(vi.runAllTimers);
@@ -309,7 +309,7 @@ test("a group of boxes is asked as one question, and typing isn't refused for a 
 
   // An answer typed against an old view is still taken: it writes its own
   // key. A decision isn't.
-  await t.mutation(api.easygov.case.public.send, {
+  await t.mutation(api.easygov.case.public.sendEvent, {
     caseId,
     expectedSeq: started.seq,
     event: { type: "answers.set", key: "newAddress", value: "2 New Street" },
@@ -318,7 +318,7 @@ test("a group of boxes is asked as one question, and typing isn't refused for a 
   const review = await read(t, caseId);
   expect(review.waitingFor).toBe("review");
   await expect(
-    t.mutation(api.easygov.case.public.send, {
+    t.mutation(api.easygov.case.public.sendEvent, {
       caseId,
       expectedSeq: started.seq,
       event: { type: "artifact.accept" },

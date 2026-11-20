@@ -284,13 +284,13 @@ export const vSaveResult = v.union(
  * Saves a reviewed pack. A saved row never changes, so the cases that pinned
  * it keep running it. Without an `ownerId` the pack is shared: every case can
  * find it. That's how packs are seeded, e.g.
- * `npx convex run easygov/packs/data:save '{...}'`.
+ * `npx convex run easygov/packs/data:createPack '{...}'`.
  *
  * With `supersedes`, the pack is the next version of that one, which stops
  * being found. Otherwise, similar packs come back for review first; list them
  * in `reviewedPackIds` to save anyway.
  */
-export const save = internalMutation({
+export const createPack = internalMutation({
   args: {
     ownerId: v.optional(v.string()),
     ...packDefinition,

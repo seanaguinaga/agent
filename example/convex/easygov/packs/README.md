@@ -12,7 +12,7 @@ write, a legal referral to offer, and a delivery channel (see
 | File                | Touches the database? | Job                                                 |
 | ------------------- | --------------------- | --------------------------------------------------- |
 | `schema.ts`         | no                    | The table, and jurisdiction and form-number helpers |
-| `data.ts`           | yes                   | `findMatch` (search) and `save`                     |
+| `data.ts`           | yes                   | `findMatch` (search) and `createPack`               |
 | `public.ts`         | yes                   | What a landing page reads: the shared packs         |
 | `packs.testkit.ts`  | (tests)               | Example packs (IRS 8822, SSA appeal, wage claim)    |
 | `packs.test.ts`     | (tests)               | Search, saving, duplicates, versions                |
@@ -42,17 +42,17 @@ candidates. Selection is three model calls:
 
 ## Saving a pack
 
-Use the internal `easygov/packs/data:save` mutation with a title, description,
-aliases, a `jurisdiction` path, an optional `authority`, any official `forms`,
-the inputs, and optionally a `referral` (with a `when` on one answer) and a
-`delivery` channel.
+Use the internal `easygov/packs/data:createPack` mutation with a title,
+description, aliases, a `jurisdiction` path, an optional `authority`, any
+official `forms`, the inputs, and optionally a `referral` (with a `when` on one
+answer) and a `delivery` channel.
 
 - Leave out `ownerId` to save a shared pack every case can find. With one, only
   that person's cases find it.
-- `save` searches for similar current packs first: ones that name the same form,
-  or share at least two telling words. If it returns `reviewDuplicates`, reuse
-  one of them, or list their ids in `reviewedPackIds` and save again to say this
-  one is different.
+- `createPack` searches for similar current packs first: ones that name the same
+  form, or share at least two telling words. If it returns `reviewDuplicates`,
+  reuse one of them, or list their ids in `reviewedPackIds` and save again to
+  say this one is different.
 - A saved row never changes, and cases keep the id they pinned. To fix or update
   one, save the next version with `supersedes: <id>`. The old version stops
   being found, and cases already running on it keep it.
@@ -66,7 +66,7 @@ are kept in `output.sources`. If the search fails, the checklist only says what
 to verify, and has no sources. A draft is one model's unreviewed guess, so it is
 **never saved as a pack**. It runs on the case that asked for it and stays there
 (`selection.draft`), where it also records what people asked for that no pack
-covers. A person turns a good one into a shared pack with `save`.
+covers. A person turns a good one into a shared pack with `createPack`.
 
 1. After intake, read `getCase.selection.draft` to review the checklist and the
    questions.
@@ -101,10 +101,10 @@ checklist.
   person is asked whether to share the case. Without `when` they're always
   asked.
 
-`save` refuses a pack whose deadline, referral or letter names an input the pack
-doesn't have. It also refuses an input nothing reads: each one must appear in
-the letter, the deadline or the referral check, unless the pack names the
-`forms` it fills in.
+`createPack` refuses a pack whose deadline, referral or letter names an input
+the pack doesn't have. It also refuses an input nothing reads: each one must
+appear in the letter, the deadline or the referral check, unless the pack names
+the `forms` it fills in.
 
 ## The parts that are hard to follow
 

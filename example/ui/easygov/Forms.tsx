@@ -14,7 +14,7 @@ type EditionId = Id<"formEditions">;
 type Filled = FunctionReturnType<typeof api.easygov.forms.actions.testFill>;
 
 function Register() {
-  const register = useMutation(forms.register);
+  const register = useMutation(forms.createForm);
   const [code, setCode] = useState("IRS-8822");
   const [title, setTitle] = useState("Change of Address");
   const [jurisdiction, setJurisdiction] = useState("us");
@@ -75,7 +75,7 @@ function Registry({
   open?: EditionId;
   onOpen: (id: EditionId) => void;
 }) {
-  const list = useQuery(forms.list, {});
+  const list = useQuery(forms.listForms, {});
   const fetchForm = useAction(api.easygov.forms.actions.fetchForm);
   const act = useAct();
   return (
@@ -180,10 +180,10 @@ function Registry({
 }
 
 function Edition({ editionId }: { editionId: EditionId }) {
-  const edition = useQuery(forms.edition, { editionId });
-  const profile = useQuery(api.easygov.profile.public.get, {});
+  const edition = useQuery(forms.getEdition, { editionId });
+  const profile = useQuery(api.easygov.profile.public.getProfile, {});
   const draft = useAction(api.easygov.forms.agents.draftMapping);
-  const save = useMutation(forms.saveMapping);
+  const save = useMutation(forms.updateMapping);
   const fill = useAction(api.easygov.forms.actions.testFill);
   const publish = useMutation(forms.publishPack);
   const [json, setJson] = useState<string>();

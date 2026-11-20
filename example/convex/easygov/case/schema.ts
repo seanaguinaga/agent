@@ -152,7 +152,7 @@ export const caseFields = {
     v.literal("canceled"),
   ),
   endReason: v.optional(v.string()),
-  /** Bumped by every write to the case, so a stale `send` is refused. */
+  /** Bumped by every write to the case, so a stale `sendEvent` is refused. */
   seq: v.number(),
   /**
    * The case's workflow, by `state`: `running`, or `failed` while it waits

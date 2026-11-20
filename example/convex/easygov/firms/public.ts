@@ -46,13 +46,13 @@ async function authorizeFirm(
 }
 
 /** The record that the firm passed on the referral, if it did. */
-async function declined(
+async function rejected(
   ctx: QueryCtx,
   firmId: Id<"firms">,
   referralId: Id<"referrals">,
-): Promise<Doc<"referralDeclines"> | null> {
+): Promise<Doc<"referralRejections"> | null> {
   return await ctx.db
-    .query("referralDeclines")
+    .query("referralRejections")
     .withIndex("by_firmId_and_referralId", (q) =>
       q.eq("firmId", firmId).eq("referralId", referralId),
     )
@@ -60,7 +60,7 @@ async function declined(
 }
 
 /** The open referrals the firm covers and hasn't passed on, oldest first. */
-export const previews = query({
+export const listPreviews = query({
   args: { firmId: v.id("firms") },
   returns: v.array(vPreview),
   handler: async (ctx, { firmId }) => {
@@ -84,7 +84,7 @@ export const previews = query({
       for await (const row of rows) {
         if (kept === MAX_PREVIEWS || ++scanned > MAX_SCANNED) break;
         if (found.has(row._id) || !covers(firm.coverage, row)) continue;
-        if (await declined(ctx, firmId, row._id)) continue;
+        if (await rejected(ctx, firmId, row._id)) continue;
         found.set(row._id, row);
         kept++;
       }
@@ -119,9 +119,9 @@ export const previews = query({
 
 /**
  * Takes a referral. The first firm to accept gets it, owes its price, and
- * can then read it with `packet`.
+ * can then read it with `getPacket`.
  */
-export const accept = mutation({
+export const acceptReferral = mutation({
   args: { firmId: v.id("firms"), referralId: v.id("referrals") },
   returns: v.null(),
   handler: async (ctx, { firmId, referralId }) => {
@@ -140,8 +140,8 @@ export const accept = mutation({
       firmId,
     });
     // A firm that passed and now accepts changed its mind: it didn't pass.
-    const passed = await declined(ctx, firmId, referralId);
-    if (passed) await ctx.db.delete("referralDeclines", passed._id);
+    const passed = await rejected(ctx, firmId, referralId);
+    if (passed) await ctx.db.delete("referralRejections", passed._id);
     await ctx.db.insert("referralCharges", {
       firmId,
       referralId,
@@ -155,7 +155,7 @@ export const accept = mutation({
 });
 
 /** Passes on a referral, so it isn't shown to this firm again. */
-export const decline = mutation({
+export const rejectReferral = mutation({
   args: { firmId: v.id("firms"), referralId: v.id("referrals") },
   returns: v.null(),
   handler: async (ctx, { firmId, referralId }) => {
@@ -169,15 +169,15 @@ export const decline = mutation({
     if (referral.status !== "open") {
       throw new ConvexError("This referral is no longer available.");
     }
-    if (!(await declined(ctx, firmId, referralId))) {
-      await ctx.db.insert("referralDeclines", { firmId, referralId });
+    if (!(await rejected(ctx, firmId, referralId))) {
+      await ctx.db.insert("referralRejections", { firmId, referralId });
     }
     return null;
   },
 });
 
 /** The referrals the firm accepted, newest first. */
-export const accepted = query({
+export const listAccepted = query({
   args: { firmId: v.id("firms") },
   returns: v.array(
     v.object({
@@ -207,7 +207,7 @@ export const accepted = query({
  * Everything the person agreed to share, for the firm that accepted it:
  * their goal, answers, files and the date to act by.
  */
-export const packet = query({
+export const getPacket = query({
   args: { firmId: v.id("firms"), referralId: v.id("referrals") },
   returns: v.object({
     kind: v.string(),

@@ -15,7 +15,7 @@ import { useAct } from "./session";
 import { Chip, Page, Refusal } from "./Workbench";
 
 const profile = api.easygov.profile.public;
-type Profile = FunctionReturnType<typeof profile.get>;
+type Profile = FunctionReturnType<typeof profile.getProfile>;
 type FactRow = Profile["facts"][number];
 
 function Field({
@@ -273,8 +273,8 @@ export function FactEditor({
   onSaved?: () => void;
   note?: ReactNode;
 }) {
-  const data = useQuery(profile.get, { guestKey });
-  const save = useMutation(profile.save);
+  const data = useQuery(profile.getProfile, { guestKey });
+  const save = useMutation(profile.setFact);
   const [open, setOpen] = useState(startOpen ?? false);
   const act = useAct();
   const fact = data?.facts.find((row) => row.key === factKey);
@@ -370,7 +370,7 @@ export function AskAhead({
 
 /** What finished cases suggest for the profile, for the person to accept. */
 export function Proposals({ guestKey }: { guestKey?: string }) {
-  const data = useQuery(profile.get, { guestKey });
+  const data = useQuery(profile.getProfile, { guestKey });
   const settle = useMutation(profile.settleProposal);
   if (!data?.proposals.length) return null;
   return (
@@ -406,8 +406,8 @@ export function Proposals({ guestKey }: { guestKey?: string }) {
 }
 
 export default function ProfilePage() {
-  const data = useQuery(profile.get, {});
-  const forget = useMutation(profile.forget);
+  const data = useQuery(profile.getProfile, {});
+  const forget = useMutation(profile.deleteProfile);
   const act = useAct();
   return (
     <Page

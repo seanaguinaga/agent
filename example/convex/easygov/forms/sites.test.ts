@@ -145,3 +145,24 @@ test("a host is looked up by the domain it is registered under", async () => {
     await t.query(internal.easygov.forms.sites.sitesOf, { hosts: ["va.gov"] }),
   ).toEqual([]);
 });
+
+test("a government's site kept by hand is looked up as the register would list it", async () => {
+  const t = initConvexTest();
+  const [row] = await t.query(internal.easygov.forms.sites.sitesOf, {
+    hosts: ["www.acgov.org", "www.dmv.org"],
+  });
+  expect(row).toEqual({
+    host: "www.acgov.org",
+    domain: "acgov.org",
+    kind: "County",
+    organization: "Alameda County",
+    state: "CA",
+  });
+  const alameda = domainOf(row.host, row);
+  expect(
+    ownSite({ jurisdiction: "us/ca/alameda", code: "X-1" }, alameda, alameda),
+  ).toBe(true);
+  expect(
+    ownSite({ jurisdiction: "us/tx/travis", code: "X-1" }, alameda, alameda),
+  ).toBe(false);
+});

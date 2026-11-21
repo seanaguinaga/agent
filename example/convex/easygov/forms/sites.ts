@@ -12,6 +12,7 @@ import {
   internalQuery,
   type QueryCtx,
 } from "../../_generated/server";
+import { unregisteredFor } from "./sources";
 
 const REGISTER =
   "https://raw.githubusercontent.com/cisagov/dotgov-data/main/current-full.csv";
@@ -178,13 +179,19 @@ async function registeredFor(ctx: QueryCtx, host: string) {
 /** As many hosts as are looked up at once. */
 const MAX_HOSTS = 50;
 
-/** The register's row for each of these hosts. A host not in the register is left out. */
+/**
+ * The register's row for each of these hosts, or its hand-kept entry (see
+ * `UNREGISTERED`). A host in neither is left out.
+ */
 export const sitesOf = internalQuery({
   args: { hosts: v.array(v.string()) },
   returns: v.array(v.object({ host: v.string(), ...vRegistered.fields })),
   handler: async (ctx, { hosts }) => {
     const found = await Promise.all(
       [...new Set(hosts)].slice(0, MAX_HOSTS).map(async (host) => {
+        // A site kept by hand is taken as the register would list it.
+        const listed = unregisteredFor(host);
+        if (listed) return [{ host, ...listed }];
         const registered = await registeredFor(ctx, host);
         if (!registered) return [];
         const { _id, _creationTime, at: _at, ...row } = registered;

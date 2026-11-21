@@ -42,3 +42,10 @@ test("only a .gov or .mil host is a government's own: an open name like .us is n
   expect(isOfficialHost("http://www.ssa.gov/forms")).toBe(false);
   expect(isOfficialHost("https://ssa.gov.example.com/")).toBe(false);
 });
+
+test("a government's site outside .gov counts only if it is kept by hand", () => {
+  expect(isOfficialHost("https://www.acgov.org/forms/a.pdf")).toBe(true);
+  expect(isOfficialHost("https://notacgov.org/a.pdf")).toBe(false);
+  expect(isOfficialHost("https://acgov.org.example.com/a.pdf")).toBe(false);
+  expect(isOfficialHost("https://www.dmv.org/forms/a.pdf")).toBe(false);
+});

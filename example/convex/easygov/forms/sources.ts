@@ -347,10 +347,34 @@ export function sameFormCode(a: string, b: string): boolean {
 }
 
 /**
+ * Governments' own sites outside .gov and .mil. No register lists these, so
+ * each is added here by hand, once someone has checked that the government
+ * itself publishes from it, and is read as the register would list it (see
+ * `sites.ts`). Never a site that only looks official, such as dmv.org.
+ */
+const UNREGISTERED = [
+  {
+    domain: "acgov.org",
+    kind: "County",
+    organization: "Alameda County",
+    state: "CA",
+  },
+];
+
+/** The hand-kept entry a host is under, if it is one of `UNREGISTERED`. */
+export function unregisteredFor(host: string) {
+  const name = host.toLowerCase();
+  return UNREGISTERED.find(
+    ({ domain }) => name === domain || name.endsWith(`.${domain}`),
+  );
+}
+
+/**
  * Whether an address is on a government's own site: https, on a .gov or
- * .mil host. Those names are only ever registered to verified US
- * government bodies, so the name is the proof; an open name such as .us is
- * not. Which government's site it is, is `sites.ts`'s to say.
+ * .mil host, or on one of the few kept by hand (`UNREGISTERED`). .gov and
+ * .mil are only ever registered to verified US government bodies, so the
+ * name is the proof; an open name such as .us or .org is not. Which
+ * government's site it is, is `sites.ts`'s to say.
  */
 export function isOfficialHost(url: string): boolean {
   try {
@@ -360,7 +384,7 @@ export function isOfficialHost(url: string): boolean {
       !username &&
       !password &&
       (!port || port === "443") &&
-      /\.(?:gov|mil)$/.test(hostname)
+      (/\.(?:gov|mil)$/.test(hostname) || !!unregisteredFor(hostname))
     );
   } catch {
     return false;

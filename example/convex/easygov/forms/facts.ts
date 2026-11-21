@@ -135,18 +135,24 @@ const LANGUAGE_ORDER: Record<Language, number> = {
 /**
  * Candidates for one form, best first: a file with places to write in before
  * one without, English (or bilingual) before a translation, a current file
- * before one that prints an expiry that has passed, the file the
- * authority's own link gives before any other, then the latest revision
- * printed. Ties keep the order they came in, which is the order the sources
+ * before one that prints an expiry that has passed, and a file on the
+ * authority's own site (see `ownSite`) before any other. Among the
+ * authority's own, the latest revision printed comes first, even before the
+ * file its page links: a page can go on linking an edition the authority has
+ * replaced, and only the linked file is confirmed (see `backs`). Among the
+ * rest, the file the authority's link gives comes first, then the latest
+ * revision. Ties keep the order they came in, which is the order the sources
  * can be trusted in.
  */
-export function rankForms<T extends { facts: FormFacts; designated?: boolean }>(
-  candidates: T[],
-): T[] {
-  const key = ({ facts, designated }: T) => [
+export function rankForms<
+  T extends { facts: FormFacts; designated?: boolean; own?: boolean },
+>(candidates: T[]): T[] {
+  const key = ({ facts, designated, own }: T) => [
     facts.places > 0 ? 0 : 1,
     LANGUAGE_ORDER[facts.language],
     facts.expired ? 1 : 0,
+    own ? 0 : 1,
+    own ? -(facts.revision ?? 0) : 0,
     designated ? 0 : 1,
     -(facts.revision ?? 0),
   ];
@@ -154,11 +160,7 @@ export function rankForms<T extends { facts: FormFacts; designated?: boolean }>(
     .map((candidate, index) => ({ candidate, index, key: key(candidate) }))
     .sort(
       (a, b) =>
-        a.key[0] - b.key[0] ||
-        a.key[1] - b.key[1] ||
-        a.key[2] - b.key[2] ||
-        a.key[3] - b.key[3] ||
-        a.key[4] - b.key[4] ||
+        a.key.reduce((order, k, i) => order || k - b.key[i], 0) ||
         a.index - b.index,
     )
     .map(({ candidate }) => candidate);

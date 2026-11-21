@@ -61,9 +61,11 @@ describe("rankForms", () => {
     name: string,
     facts: Partial<FormFacts>,
     designated = false,
+    own = false,
   ) => ({
     name,
     designated,
+    own,
     facts: { pages: 2, places: 10, language: "en" as const, ...facts },
   });
   const order = (files: ReturnType<typeof file>[]) =>
@@ -112,6 +114,26 @@ describe("rankForms", () => {
         file("the authority's link, 2016", { revision: 201601 }, true),
       ]),
     ).toEqual(["the authority's link, 2016", "typed, 2020"]);
+  });
+
+  test("among the authority's own files, a later revision before the one its page links", () => {
+    // Seen in the references: SSA's SSA-3441 page still links the 2016
+    // SSA-561-U2, which the 2025 SSA-561 replaced.
+    expect(
+      order([
+        file("linked, own, 2016", { revision: 201605 }, true, true),
+        file("given, own, 2025", { revision: 202508 }, false, true),
+      ]),
+    ).toEqual(["given, own, 2025", "linked, own, 2016"]);
+  });
+
+  test("a file on the authority's own sites before a newer one elsewhere", () => {
+    expect(
+      order([
+        file("a county's copy, 2026", { revision: 202601 }),
+        file("own, 2024", { revision: 202407 }, false, true),
+      ]),
+    ).toEqual(["own, 2024", "a county's copy, 2026"]);
   });
 
   test("a current file before an expired one, even the one the authority links", () => {

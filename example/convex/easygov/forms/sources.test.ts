@@ -19,6 +19,10 @@ describe("getting a form's bytes", () => {
     expect(
       namesForm("IRS-8822", "Form 8821 Tax Information Authorization"),
     ).toBe(false);
+    // A word after the code labels the authority's copy of the same form.
+    expect(namesForm("PVO-0100", "PVO-0100-online (Rev. 02.5.2024)")).toBe(
+      true,
+    );
   });
 
   test.each([
@@ -26,6 +30,7 @@ describe("getting a form's bytes", () => {
     ["I-864", "Form I-864A Contract Between Sponsor and Household Member"],
     ["IRS-8822", "Form 8822-B Change of Address or Responsible Party"],
     ["SSA-561", "Form SSA-561-U2 (12-2016)"],
+    ["IRS-1040", "Form 1040-ES Estimated Tax"],
     ["DL 410 FO", "DL 410 ID"],
   ])(
     "%s is not named by %j: a stray number or a suffix is another form",
@@ -41,4 +46,11 @@ test("only a .gov or .mil host is a government's own: an open name like .us is n
   expect(isOfficialHost("https://forms-irs.us/f8822.pdf")).toBe(false);
   expect(isOfficialHost("http://www.ssa.gov/forms")).toBe(false);
   expect(isOfficialHost("https://ssa.gov.example.com/")).toBe(false);
+});
+
+test("a government's site outside .gov counts only if it is kept by hand", () => {
+  expect(isOfficialHost("https://www.acgov.org/forms/a.pdf")).toBe(true);
+  expect(isOfficialHost("https://notacgov.org/a.pdf")).toBe(false);
+  expect(isOfficialHost("https://acgov.org.example.com/a.pdf")).toBe(false);
+  expect(isOfficialHost("https://www.dmv.org/forms/a.pdf")).toBe(false);
 });

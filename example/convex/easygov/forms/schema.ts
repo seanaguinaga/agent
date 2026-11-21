@@ -241,6 +241,8 @@ export default {
     kind: v.string(),
     organization: v.string(),
     suborganization: v.optional(v.string()),
+    /** Absent until the weekly import next reads the register. */
+    state: v.optional(v.string()),
     /** When the register last listed it. */
     at: v.number(),
   })

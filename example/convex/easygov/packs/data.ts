@@ -4,6 +4,7 @@
 // "state-court"), so a pack is found by search within its jurisdiction and
 // the ones containing it, and a model compares the candidates.
 import { ConvexError, type Infer, v } from "convex/values";
+import { internal } from "../../_generated/api";
 import type { Doc, Id } from "../../_generated/dataModel";
 import {
   internalMutation,
@@ -359,5 +360,37 @@ export const createPack = internalMutation({
         status: "superseded",
       });
     return { kind: "created", id };
+  },
+});
+
+/**
+ * Clears `backed` on every current pack's forms, a batch at a time: they
+ * were marked under older rules than `backs` (see `case/locate.ts`), and a
+ * form says nothing until it is found again. Run once per deployment:
+ *   npx convex run easygov/packs/data:clearBacked '{"cursor":null}'
+ */
+export const clearBacked = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
+  returns: v.null(),
+  handler: async (ctx, { cursor }) => {
+    const { page, isDone, continueCursor } = await ctx.db
+      .query("processPacks")
+      .paginate({ numItems: 100, cursor });
+    for (const pack of page) {
+      if (
+        pack.status === "current" &&
+        pack.packetForms?.some(({ backed }) => backed !== undefined)
+      ) {
+        await ctx.db.patch("processPacks", pack._id, {
+          packetForms: pack.packetForms.map(({ backed: _, ...form }) => form),
+        });
+      }
+    }
+    if (!isDone) {
+      await ctx.scheduler.runAfter(0, internal.easygov.packs.data.clearBacked, {
+        cursor: continueCursor,
+      });
+    }
+    return null;
   },
 });

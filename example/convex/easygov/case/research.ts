@@ -95,9 +95,16 @@ const pdf = (url: string) =>
  */
 export function codeIn(text: string): string {
   const line = oneLine(text);
-  // Two spellings of one code ("SSA-561-U2 / SSA-561") are the first.
-  const lead = line.split(/\s*[,:;–—]\s*|\s+[-/]\s+/)[0];
-  if (/\d/.test(lead.replace(/\([^()]*\)/g, ""))) return lead;
+  // Two spellings of one code ("SSA-561-U2 / SSA-561") are the first. A
+  // comma inside brackets doesn't end it: "SF 180 (Standard Form 180,
+  // Military Records Requests)" is one entry.
+  const outside = line.replace(/\([^()]*\)/g, (b) => "_".repeat(b.length));
+  const cut = outside.search(/\s*[,:;–—]\s*|\s+[-/]\s+/);
+  const lead = cut < 0 ? line : line.slice(0, cut);
+  if (/\d/.test(lead.replace(/\([^()]*\)/g, ""))) {
+    // The code's title in brackets after it: "SF 180 (Standard Form 180)".
+    return lead.replace(/\s+\([^()]*\)$/, "");
+  }
   // Only a title outside the brackets: the code is what they hold, unless
   // that is a revision date.
   const bracketed = line.match(/\(([^()]*\d[^()]*)\)/)?.[1].trim();

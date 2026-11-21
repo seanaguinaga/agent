@@ -121,6 +121,7 @@ describe("gradeForms", () => {
       verified: true,
       warnedIfWrong: true,
       "~sameEdition": true,
+      "~backed": false,
       "~noExtras": false,
     });
     // A form beyond the list is recorded, and isn't a failure.
@@ -223,6 +224,7 @@ describe("gradeForms", () => {
       located: false,
       warnedIfWrong: false,
       "~sameEdition": false,
+      "~backed": false,
     });
     expect(graded.detail).toBe(
       "not located: E-500; not verified: F-600; other edition: C-300; other edition, no warning: D-400",

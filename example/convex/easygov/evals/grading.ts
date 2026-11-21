@@ -138,6 +138,8 @@ export function gradeForms(
     code: string;
     editionId?: string;
     facts?: Edition;
+    /** Why the published file couldn't be fetched, when it couldn't. */
+    unfetched?: string;
   }[] = [],
 ): Graded & { forms: FormGrade[] } {
   // The same edition served from another address, or as an accessible copy,
@@ -212,6 +214,8 @@ export function gradeForms(
       // Advisory: the published file can itself have moved on since the
       // corpus was checked.
       "~sameEdition": codes("wrongWarned", "wrongUnwarned").length === 0,
+      // Advisory: the right file, and the person is still asked to check it.
+      "~backed": codes("rightWarned").length === 0,
       // The corpus doesn't list every form a case could need.
       "~noExtras": extra.length === 0,
     },
@@ -228,6 +232,14 @@ export function gradeForms(
         list(
           "extra",
           extra.map((f) => f.code),
+        ),
+        // Without the published file, a form found only by title can't be
+        // matched to it.
+        list(
+          "published file not fetched",
+          published.flatMap((p) =>
+            p.unfetched ? [`${p.code} (${p.unfetched})`] : [],
+          ),
         ),
       ]
         .filter(Boolean)

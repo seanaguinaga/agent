@@ -7,7 +7,8 @@ export type Via = "request" | "browser";
 /**
  * Whether words carry a form's number: the longest number in its code,
  * standing alone. A number under three digits is on every page, and says
- * nothing.
+ * nothing. A letter glued to it makes another form: "I-864A" doesn't carry
+ * I-864's number.
  */
 export function carriesNumber(code: string, text: string): boolean {
   const [number] = (code.match(/\d+/g) ?? []).sort(
@@ -16,7 +17,7 @@ export function carriesNumber(code: string, text: string): boolean {
   return (
     !!number &&
     number.length >= 3 &&
-    new RegExp(`(?<!\\d)${number}(?!\\d)`).test(text)
+    new RegExp(`(?<![\\dA-Z])${number}(?![\\dA-Z])`, "i").test(text)
   );
 }
 
@@ -44,9 +45,37 @@ export function isTheForm(
 /** Larger than any form we'd fill, small enough to hold in memory. */
 export const MAX_BYTES = 20 * 1024 * 1024;
 
+/**
+ * A response's body, up to `limit` bytes, and whether it was longer and cut
+ * there. No more than `limit` is ever held.
+ */
+export async function readUpTo(
+  response: Response,
+  limit: number,
+): Promise<{ bytes: Uint8Array; cut: boolean }> {
+  const reader = response.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  let cut = false;
+  while (reader) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const room = limit - length;
+    chunks.push(value.subarray(0, room));
+    length += Math.min(value.length, room);
+    if (value.length > room) {
+      cut = true;
+      await reader.cancel();
+      break;
+    }
+  }
+  const bytes = new Uint8Array(length);
+  chunks.reduce((at, chunk) => (bytes.set(chunk, at), at + chunk.length), 0);
+  return { bytes, cut };
+}
+
 /** Why these bytes aren't a usable PDF, or null if they are. */
 export function notAPdf(bytes: Uint8Array): string | null {
-  if (bytes.length > MAX_BYTES) return "The file is too large.";
   if (new TextDecoder().decode(bytes.slice(0, 5)) !== "%PDF-") {
     return "It isn't a PDF.";
   }
@@ -54,17 +83,33 @@ export function notAPdf(bytes: Uint8Array): string | null {
 }
 
 /**
- * Whether a form's text names the form: "IRS-8822" is found as "8822",
- * "SS-5" as "SS5". Guards against a site answering with some other document.
+ * Whether text prints a form's code: every part of it, in order, standing
+ * alone. "SS-5" is found as "SS 5" or "SS5", never as a stray "5"; and a
+ * suffix makes another form, so "Form 8822-B" doesn't name 8822, nor
+ * "I-864A" I-864. A leading agency the form may not print ("IRS-8822" as
+ * "Form 8822") can be missing, but only where what is left still says
+ * which form it is: a series ("SSA SS-5" as "SS-5") or a long number. A
+ * form known only by its title is named by the whole title.
  */
 export function namesForm(code: string, text: string): boolean {
-  const squash = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  const parts = code.split(/[\s-]+/).filter(Boolean);
-  // Drop a leading agency name ("IRS", "SSA"): the form doesn't print it so.
-  const own =
-    parts.length > 1 && /^[A-Za-z]+$/.test(parts[0]) ? parts.slice(1) : parts;
-  const wanted = squash(own.join(""));
-  return wanted.length > 0 && squash(text).includes(wanted);
+  const parts = codeParts(code);
+  if (!parts.length) return false;
+  const [rest] = withoutAgency(parts);
+  // A form known by its title alone is named by that title, word for word.
+  const sep = parts.some((part) => /\d/.test(part))
+    ? "[^A-Z0-9]{0,3}"
+    : "[^A-Z0-9]+";
+  const spelled = (each: string[]) => each.join(sep);
+  const optional =
+    rest &&
+    /\d/.test(rest.join("")) &&
+    (/^[A-Z]/.test(rest[0]) || /\d{3,}/.test(rest.join("")));
+  const pattern = optional
+    ? `(?:${parts[0]}${sep})?${spelled(rest)}`
+    : spelled(parts);
+  return new RegExp(`(?<![A-Z0-9])${pattern}(?![A-Z0-9]|[-–][A-Z0-9])`).test(
+    text.toUpperCase(),
+  );
 }
 
 const LANGUAGE = /[-_](?:SP|SPA|SPAN|SPANISH|ES|ESP)(?=[-_.])/i;
@@ -301,7 +346,12 @@ export function sameFormCode(a: string, b: string): boolean {
   );
 }
 
-/** Hosts a form may be fetched from: the authority's own. */
+/**
+ * Whether an address is on a government's own site: https, on a .gov or
+ * .mil host. Those names are only ever registered to verified US
+ * government bodies, so the name is the proof; an open name such as .us is
+ * not. Which government's site it is, is `sites.ts`'s to say.
+ */
 export function isOfficialHost(url: string): boolean {
   try {
     const { protocol, hostname, username, password, port } = new URL(url);
@@ -310,7 +360,7 @@ export function isOfficialHost(url: string): boolean {
       !username &&
       !password &&
       (!port || port === "443") &&
-      /(?:^|\.)(?:gov|mil)$|\.(?:gov|us)$|(?:^|\.)ca\.gov$/.test(hostname)
+      /\.(?:gov|mil)$/.test(hostname)
     );
   } catch {
     return false;

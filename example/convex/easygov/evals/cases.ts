@@ -330,8 +330,8 @@ export const forms: {
     id: "ssdi-reconsideration-001",
     goal: "SSA denied my disability claim. Please identify what you need and prepare the correct appeal packet.",
     expect: [
-      { code: "SSA-561-U2", url: "https://www.ssa.gov/forms/ssa-561-u2.pdf" },
-      { code: "SSA-3441-BK", url: "https://www.ssa.gov/forms/ssa-3441.pdf" },
+      { code: "SSA-561", url: "https://www.ssa.gov/forms/ssa-561-u2.pdf" },
+      { code: "SSA-3441", url: "https://www.ssa.gov/forms/ssa-3441.pdf" },
       { code: "SSA-827", url: "https://www.ssa.gov/forms/ssa-827.pdf" },
     ],
   },
@@ -341,7 +341,7 @@ export const forms: {
     expect: [
       {
         code: "VA-21-526EZ",
-        url: "https://www.va.gov/find-forms/about-form-21-526ez/",
+        url: "https://www.vba.va.gov/pubs/forms/VBA-21-526EZ-ARE.pdf",
       },
     ],
   },
@@ -480,7 +480,10 @@ export const forms: {
     id: "ca-court-fee-waiver",
     goal: "I'm filing a civil case in California superior court and can't afford the filing fee. I receive CalFresh. I want to ask the court to waive its fees.",
     expect: [
-      { code: "FW-001", url: "https://www.courts.ca.gov/documents/fw001.pdf" },
+      {
+        code: "FW-001",
+        url: "https://courts.ca.gov/sites/default/files/courts/default/2024-11/fw001.pdf",
+      },
       {
         code: "FW-003",
         url: "https://courts.ca.gov/sites/default/files/courts/default/2024-11/fw003.pdf",

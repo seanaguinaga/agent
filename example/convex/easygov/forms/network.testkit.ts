@@ -19,6 +19,8 @@ export type FakeBrowser = {
   sessions?: number;
   /** The file the browser downloads, if it downloads one. */
   download?: Uint8Array;
+  /** The page the browser shows, if it shows one, and where it ends up. */
+  page?: { html: string; at: string };
 };
 
 /**
@@ -73,7 +75,7 @@ export function fakeNetwork(
     return serve ? await serve(asked) : new Response(null, { status: 404 });
   });
   vi.stubGlobal("fetch", fetchMock);
-  vi.stubGlobal("WebSocket", OpeningSocket);
+  vi.stubGlobal("WebSocket", browserSocket(browser));
   return {
     routes,
     /** Requests to the authority's sites, in order. */
@@ -87,14 +89,54 @@ export function fakeNetwork(
   };
 }
 
-/** A browser connection that opens and then says nothing. */
-class OpeningSocket {
-  constructor(public url: string) {}
-  addEventListener(type: string, listener: () => void) {
-    if (type === "open") setTimeout(listener, 0);
-  }
-  send() {}
-  close() {}
+/**
+ * A browser connection that opens, answers each command, and shows
+ * `browser.page` once asked what is loaded: a blank tab if there is none.
+ */
+function browserSocket({ page }: FakeBrowser) {
+  return class {
+    private listeners: Record<string, ((event: { data?: string }) => void)[]> =
+      {};
+    constructor(public url: string) {
+      setTimeout(() => this.emit("open", {}), 0);
+    }
+    addEventListener(
+      type: string,
+      listener: (event: { data?: string }) => void,
+    ) {
+      (this.listeners[type] ??= []).push(listener);
+    }
+    private emit(type: string, event: { data?: string }) {
+      for (const listener of this.listeners[type] ?? []) listener(event);
+    }
+    send(raw: string) {
+      const { id, method, params } = JSON.parse(raw) as {
+        id: number;
+        method: string;
+        params: { expression?: string };
+      };
+      const value = !params.expression
+        ? undefined
+        : params.expression.startsWith("JSON.stringify")
+          ? JSON.stringify(
+              page
+                ? [page.at, "complete", "text/html"]
+                : ["about:blank", "complete", "text/html"],
+            )
+          : page?.html;
+      const result =
+        method === "Target.createTarget"
+          ? { targetId: "t1" }
+          : method === "Target.attachToTarget"
+            ? { sessionId: "p1" }
+            : { result: { value } };
+      setTimeout(
+        () => this.emit("message", { data: JSON.stringify({ id, result }) }),
+        0,
+      );
+    }
+    close() {}
+  };
 }
 
 /** Undoes `fakeNetwork`. Call from `afterEach`. */

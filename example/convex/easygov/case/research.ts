@@ -113,7 +113,10 @@ export function bareResearch(notes: string): Research {
  * Two entries for one form: the same code however each is written ("VA Form
  * 21-526EZ", "VA-21-526EZ"), the same title, or the same PDF.
  */
-export function sameForm(a: ResearchForm, b: ResearchForm) {
+export function sameForm(
+  a: Pick<ResearchForm, "code" | "pdfUrl">,
+  b: Pick<ResearchForm, "code" | "pdfUrl">,
+) {
   const key = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, "");
   return (
     key(a.code) === key(b.code) ||

@@ -1,6 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { downloadViaBrowser } from "./browser";
-import { namesForm, notAPdf } from "./sources";
+import { isOfficialHost, namesForm, notAPdf } from "./sources";
 
 const pdf = new TextEncoder().encode("%PDF-1.7 a form");
 const page = new TextEncoder().encode("<html>Access denied</html>");
@@ -21,99 +20,25 @@ describe("getting a form's bytes", () => {
       namesForm("IRS-8822", "Form 8821 Tax Information Authorization"),
     ).toBe(false);
   });
+
+  test.each([
+    ["SS-5", "Form W-9 (Rev. 2015)"],
+    ["I-864", "Form I-864A Contract Between Sponsor and Household Member"],
+    ["IRS-8822", "Form 8822-B Change of Address or Responsible Party"],
+    ["SSA-561", "Form SSA-561-U2 (12-2016)"],
+    ["DL 410 FO", "DL 410 ID"],
+  ])(
+    "%s is not named by %j: a stray number or a suffix is another form",
+    (code, text) => {
+      expect(namesForm(code, text)).toBe(false);
+    },
+  );
 });
 
-describe("a hosted browser", () => {
-  /** A stand-in for the browser service: records what it's asked. */
-  function service(downloadsAfter: number) {
-    const calls: { method: string; url: string; body?: unknown }[] = [];
-    const sent: { method: string; params: unknown }[] = [];
-    let lists = 0;
-    const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = init?.method ?? "GET";
-      calls.push({
-        method,
-        url,
-        body: init?.body && JSON.parse(String(init.body)),
-      });
-      const json = (value: unknown) => new Response(JSON.stringify(value));
-      if (method === "POST" && url.endsWith("/sessions")) {
-        return json({ id: "s1", connectUrl: "wss://browser/s1" });
-      }
-      if (url.includes("/downloads?")) {
-        return json({
-          downloads: ++lists > downloadsAfter ? [{ id: "d1" }] : [],
-        });
-      }
-      if (url.endsWith("/downloads/d1")) return new Response(pdf);
-      return json({});
-    }) as typeof globalThis.fetch;
-    class Socket {
-      constructor(public url: string) {}
-      addEventListener(type: string, listener: () => void) {
-        if (type === "open") queueMicrotask(listener);
-      }
-      send(message: string) {
-        const { method, params } = JSON.parse(message);
-        sent.push({ method, params });
-      }
-      close() {
-        sent.push({ method: "close", params: null });
-      }
-    }
-    return {
-      calls,
-      sent,
-      options: {
-        apiKey: "key",
-        projectId: "p1",
-        pollMs: 1,
-        timeoutMs: 50,
-        fetch,
-        WebSocket: Socket as unknown as typeof WebSocket,
-      },
-    };
-  }
-
-  test("uses EasyGov's proxy and CAPTCHA settings, collects the download, and releases the session", async () => {
-    const { calls, sent, options } = service(1);
-    const bytes = await downloadViaBrowser("https://a.gov/f.pdf", options);
-    expect(new TextDecoder().decode(bytes)).toBe("%PDF-1.7 a form");
-    expect(calls[0]).toEqual({
-      method: "POST",
-      url: "https://api.browserbase.com/v1/sessions",
-      body: {
-        projectId: "p1",
-        browserSettings: { blockAds: true, solveCaptchas: true },
-        proxies: true,
-        timeout: 90,
-      },
-    });
-    expect(sent).toEqual([
-      {
-        method: "Browser.setDownloadBehavior",
-        params: {
-          behavior: "allow",
-          downloadPath: "downloads",
-          eventsEnabled: true,
-        },
-      },
-      { method: "Target.createTarget", params: { url: "https://a.gov/f.pdf" } },
-      { method: "close", params: null },
-    ]);
-    expect(calls.at(-1)).toEqual({
-      method: "POST",
-      url: "https://api.browserbase.com/v1/sessions/s1",
-      body: { projectId: "p1", status: "REQUEST_RELEASE" },
-    });
-  });
-
-  test("gives up when nothing downloads, and still lets the browser go", async () => {
-    const { calls, options } = service(Infinity);
-    await expect(
-      downloadViaBrowser("https://a.gov/page", options),
-    ).rejects.toThrow(/downloaded nothing/);
-    expect(calls.at(-1)?.body).toMatchObject({ status: "REQUEST_RELEASE" });
-  });
+test("only a .gov or .mil host is a government's own: an open name like .us is not", () => {
+  expect(isOfficialHost("https://www.ssa.gov/forms/ssa-561.pdf")).toBe(true);
+  expect(isOfficialHost("https://www.army.mil/forms")).toBe(true);
+  expect(isOfficialHost("https://forms-irs.us/f8822.pdf")).toBe(false);
+  expect(isOfficialHost("http://www.ssa.gov/forms")).toBe(false);
+  expect(isOfficialHost("https://ssa.gov.example.com/")).toBe(false);
 });

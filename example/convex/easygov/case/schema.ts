@@ -152,22 +152,11 @@ export function draftOf(selection: Selection | undefined) {
   return choice?.kind === "draft" ? choice.draft : undefined;
 }
 
-/**
- * A packet form, filled in. `backed` is the form's own, copied from the
- * pinned pack when the packet is built: false means a file was found under
- * the form's name that no official page links as this form, so the person
- * is told to check it. Absent: not known, and nothing is said.
- */
-export const vPacketDocument = v.object({
-  ...vPacketPdf.fields,
-  backed: v.optional(v.boolean()),
-});
-
 export const vArtifact = v.object({
   filingOrder: v.optional(v.array(v.string())),
   sources: v.optional(v.array(v.string())),
   revision: v.optional(v.number()),
-  documents: v.optional(v.array(vPacketDocument)),
+  documents: v.optional(v.array(vPacketPdf)),
   openItems: v.optional(v.array(v.string())),
   eligibility: v.optional(
     v.array(

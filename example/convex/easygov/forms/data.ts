@@ -18,11 +18,11 @@ import { parseJurisdiction, vPackProfileLinks } from "../packs/schema";
 import { isReading, READINGS } from "../profile/vocabulary";
 import { mappingInputs, mappingQuestions } from "./mapping";
 import {
-  vAddressOutcome,
+  vAddressAnswer,
   vAttempt,
-  vFormFacts,
+  vHeldAddress,
   vMapping,
-  vPageLink,
+  vReadFacts,
   vTarget,
   vVia,
 } from "./schema";
@@ -461,22 +461,6 @@ export const editionOfCase = internalQuery({
 
 // --- What official addresses answered ----------------------------------------
 
-const vHeld = v.object({
-  url: v.string(),
-  checkedAt: v.number(),
-  outcome: vAddressOutcome,
-  note: v.optional(v.string()),
-  failures: v.number(),
-  packet: v.optional(v.string()),
-  sha256: v.optional(v.string()),
-  opening: v.optional(v.string()),
-  facts: v.optional(vFormFacts),
-  editionId: v.optional(v.id("formEditions")),
-  etag: v.optional(v.string()),
-  lastModified: v.optional(v.string()),
-  links: v.optional(v.array(vPageLink)),
-});
-
 const addressRow = (ctx: QueryCtx, key: string) =>
   ctx.db
     .query("formAddresses")
@@ -486,7 +470,7 @@ const addressRow = (ctx: QueryCtx, key: string) =>
 /** How an address last answered, if it has been asked. */
 export const addressOf = internalQuery({
   args: { key: v.string() },
-  returns: v.union(vHeld, v.null()),
+  returns: v.union(vHeldAddress, v.null()),
   handler: async (ctx, { key }) => {
     const row = await addressRow(ctx, key);
     if (!row) return null;
@@ -499,20 +483,25 @@ export const addressOf = internalQuery({
 export const recordAddress = internalMutation({
   args: {
     key: v.string(),
-    ...vHeld.omit("checkedAt", "failures").fields,
+    url: v.string(),
+    packet: v.optional(v.string()),
+    answer: vAddressAnswer,
   },
   returns: v.null(),
-  handler: async (ctx, args) => {
-    const row = await addressRow(ctx, args.key);
-    const failed = args.outcome !== "file" && args.outcome !== "page";
-    const answer = {
-      ...args,
+  handler: async (ctx, { key, url, packet, answer }) => {
+    const row = await addressRow(ctx, key);
+    const failed = answer.outcome !== "file" && answer.outcome !== "page";
+    const held = {
+      key,
+      url,
+      packet,
+      ...answer,
       checkedAt: Date.now(),
       failures: failed ? (row?.failures ?? 0) + 1 : 0,
       chosen: row?.chosen,
     };
-    if (row) await ctx.db.replace("formAddresses", row._id, answer);
-    else await ctx.db.insert("formAddresses", answer);
+    if (row) await ctx.db.replace("formAddresses", row._id, held);
+    else await ctx.db.insert("formAddresses", held);
     return null;
   },
 });
@@ -550,7 +539,7 @@ export const keepFile = internalMutation({
     /** True if this call kept it: otherwise the caller's copy isn't needed. */
     kept: v.boolean(),
     opening: v.optional(v.string()),
-    facts: v.optional(vFormFacts),
+    facts: v.optional(vReadFacts),
   }),
   handler: async (ctx, { sha256, fresh }) => {
     const existing = await ctx.db
@@ -561,7 +550,11 @@ export const keepFile = internalMutation({
       .query("formAddresses")
       .withIndex("by_sha256", (q) => q.eq("sha256", sha256))
       .first();
-    const known = { opening: read?.opening, facts: read?.facts };
+    // Only a file is held by its hash.
+    const known =
+      read?.outcome === "file"
+        ? { opening: read.opening, facts: read.facts }
+        : {};
     if (existing || !fresh) {
       return { editionId: existing?._id, kept: false, ...known };
     }
@@ -600,7 +593,7 @@ const MAX_REMEMBERED = 3;
 async function chosenFor(ctx: QueryCtx, jurisdiction: string, code: string) {
   const rows = await ctx.db
     .query("formAddresses")
-    .withIndex("by_chosen", (q) =>
+    .withIndex("by_chosen_jurisdiction_and_chosen_bare", (q) =>
       q
         .eq("chosen.jurisdiction", jurisdiction)
         .eq("chosen.bare", bareCode(code)),
@@ -641,11 +634,14 @@ export const rememberChosen = internalMutation({
     const others = (await chosenFor(ctx, jurisdiction, code)).filter(
       (other) => other._id !== row._id,
     );
-    const revision = row.facts?.revision;
+    const file = row.outcome === "file" ? row : undefined;
+    const revision = file?.facts.revision;
+    // Another address of the same file, or an earlier revision of the form.
     const redundant = (other: (typeof others)[number]) =>
-      other.sha256 === row.sha256 ||
-      (revision !== undefined &&
-        (other.facts?.revision ?? revision) < revision);
+      other.outcome === "file" &&
+      (other.sha256 === file?.sha256 ||
+        (revision !== undefined &&
+          (other.facts.revision ?? revision) < revision));
     const kept = others.filter((other) => !redundant(other));
     for (const other of others) {
       if (kept.indexOf(other) >= MAX_REMEMBERED - 1 || redundant(other)) {
@@ -655,6 +651,36 @@ export const rememberChosen = internalMutation({
     await ctx.db.patch("formAddresses", row._id, {
       chosen: { jurisdiction, bare: bareCode(code), code, at: Date.now() },
     });
+    return null;
+  },
+});
+
+/**
+ * Clears the old `forms.chosenAt` field, a batch at a time, so the schema
+ * can drop it. Run once per deployment:
+ *   npx convex run easygov/forms/data:clearChosenAt '{"cursor":null}'
+ */
+export const clearChosenAt = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
+  returns: v.null(),
+  handler: async (ctx, { cursor }) => {
+    const { page, isDone, continueCursor } = await ctx.db
+      .query("forms")
+      .paginate({ numItems: 100, cursor });
+    for (const form of page) {
+      if (form.chosenAt !== undefined) {
+        await ctx.db.patch("forms", form._id, { chosenAt: undefined });
+      }
+    }
+    if (!isDone) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.easygov.forms.data.clearChosenAt,
+        {
+          cursor: continueCursor,
+        },
+      );
+    }
     return null;
   },
 });
@@ -749,5 +775,3 @@ export const latestBlueprint = internalQuery({
       : null;
   },
 });
-
-export { isOfficialHost };

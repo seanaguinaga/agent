@@ -7,7 +7,7 @@ import evalTables from "./evals/tables";
 import firmTables from "./firms/schema";
 import formTables from "./forms/schema";
 import profileTables from "./profile/schema";
-import { processPacks } from "./packs/schema";
+import { packChecks, processPacks } from "./packs/schema";
 
 export const vCaseDoc = v.object({
   _id: v.id("cases"),
@@ -22,6 +22,7 @@ export default {
     artifact: vArtifact,
   }).index("by_caseId", ["caseId"]),
   processPacks,
+  packChecks,
   /** The history of a case: what happened, in order. */
   caseEvents: defineTable({
     caseId: v.id("cases"),

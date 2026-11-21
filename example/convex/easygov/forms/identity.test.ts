@@ -177,6 +177,8 @@ describe("a file the authority links as the form", () => {
 
   test("a short number says nothing: the whole code has to be printed", () => {
     expect(carriesNumber("DWC 1", "page 1 of 4")).toBe(false);
+    // A letter glued to the number is another form.
+    expect(carriesNumber("I-864", "Form I-864A")).toBe(false);
     expect(isTheForm("DWC 1", "DWC 1 (Rev. 1/2016)", "Claim form")).toBe(true);
   });
 

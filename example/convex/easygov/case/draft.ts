@@ -312,11 +312,7 @@ export function researchedPack(
         })),
       citedFormPdfs(subject.forms, [...cited]),
     ),
-    (a, b) =>
-      sameForm(
-        { code: a.code, pdfUrl: a.sourceUrl, requiredBy: "" },
-        { code: b.code, pdfUrl: b.sourceUrl, requiredBy: "" },
-      ),
+    sameEntry,
   );
 
   const routes = [
@@ -434,6 +430,28 @@ function redactConfidential(
   );
 }
 
+/** Items in groups: each joins the first group holding one `same` as it. */
+export function groupsOf<T>(items: T[], same: (a: T, b: T) => boolean): T[][] {
+  return items.reduce<T[][]>((groups, item) => {
+    const at = groups.findIndex((group) =>
+      group.some((other) => same(other, item)),
+    );
+    return at < 0
+      ? [...groups, [item]]
+      : groups.map((group, i) => (i === at ? [...group, item] : group));
+  }, []);
+}
+
+/** Two packet entries for one form: see `sameForm`. */
+export const sameEntry = (
+  a: { code: string; sourceUrl: string },
+  b: { code: string; sourceUrl: string },
+) =>
+  sameForm(
+    { code: a.code, pdfUrl: a.sourceUrl },
+    { code: b.code, pdfUrl: b.sourceUrl },
+  );
+
 /**
  * One entry for each form. Entries that are the same form (`same`) become
  * one: the one with a printed code, where only some have one. A form needed
@@ -444,15 +462,7 @@ export function onePerForm<T extends { code: string; when?: RouteCondition }>(
   forms: T[],
   same: (a: T, b: T) => boolean,
 ): T[] {
-  const groups: T[][] = [];
-  for (const form of forms) {
-    const group = groups.find((members) =>
-      members.some((other) => same(other, form)),
-    );
-    if (group) group.push(form);
-    else groups.push([form]);
-  }
-  return groups.flatMap((group) => {
+  return groupsOf(forms, same).flatMap((group) => {
     const coded = group.filter(({ code }) => /\d/.test(code));
     const named = coded.length ? coded : group;
     if (group.some(({ when }) => !when)) {

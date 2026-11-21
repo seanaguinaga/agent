@@ -75,8 +75,8 @@ export const vAttempt = v.object({
   note: v.string(),
 });
 
-/** What a form's file says about itself. See `facts.ts`. */
-export const vFormFacts = v.object({
+/** What a form's file says about itself, as read from it once. */
+export const vReadFacts = v.object({
   pages: v.number(),
   places: v.number(),
   language: v.union(
@@ -87,6 +87,14 @@ export const vFormFacts = v.object({
     v.literal("unknown"),
   ),
   revision: v.optional(v.number()),
+});
+
+/**
+ * What a form's file says about itself, now: what was read from it, and
+ * whether an expiry it prints has passed. See `facts.ts`.
+ */
+export const vFormFacts = v.object({
+  ...vReadFacts.fields,
   expired: v.optional(v.boolean()),
 });
 
@@ -100,18 +108,66 @@ export const vPageLink = v.object({
 });
 
 /**
- * How an address last answered a request for a file. "file": it served a
- * PDF. "gone": it isn't there. "page": it is a web page, not a file.
- * "unreachable": no way of asking got an answer. "unusable": what it served
- * can't be read as a form.
+ * How an address last answered. "file": it served a PDF, known by its hash
+ * and what it prints; `editionId` is set where the file was kept as a form.
+ * "page": it is a web page, and these are its links. Otherwise it gave
+ * neither: "gone", it isn't there; "unreachable", no way of asking got an
+ * answer; "unusable", what it served can't be read as a form.
  */
-export const vAddressOutcome = v.union(
-  v.literal("file"),
-  v.literal("gone"),
-  v.literal("page"),
-  v.literal("unreachable"),
-  v.literal("unusable"),
+const fileAnswer = {
+  outcome: v.literal("file"),
+  sha256: v.string(),
+  opening: v.string(),
+  facts: vReadFacts,
+  editionId: v.optional(v.id("formEditions")),
+  etag: v.optional(v.string()),
+  lastModified: v.optional(v.string()),
+};
+const pageAnswer = { outcome: v.literal("page"), links: v.array(vPageLink) };
+const failedAnswer = {
+  outcome: v.union(
+    v.literal("gone"),
+    v.literal("unreachable"),
+    v.literal("unusable"),
+  ),
+  note: v.string(),
+};
+export const vAddressAnswer = v.union(
+  v.object(fileAnswer),
+  v.object(pageAnswer),
+  v.object(failedAnswer),
 );
+
+/** When an address answered, how many failures in a row, and who asked. */
+const asked = {
+  url: v.string(),
+  checkedAt: v.number(),
+  /** How many times in a row it gave neither a file nor a page. */
+  failures: v.number(),
+  /** The packet that last asked, which needn't ask again. */
+  packet: v.optional(v.string()),
+};
+export const vHeldAddress = v.union(
+  v.object({ ...asked, ...fileAnswer }),
+  v.object({ ...asked, ...pageAnswer }),
+  v.object({ ...asked, ...failedAnswer }),
+);
+
+/** An address's row: how it answered, and the form chosen at it, if any. */
+const addressRow = {
+  key: v.string(),
+  ...asked,
+  /** The form a case chose this address for, remembered for the next. */
+  chosen: v.optional(
+    v.object({
+      jurisdiction: v.string(),
+      /** The code without its agency, to look the form up by. */
+      bare: v.string(),
+      code: v.string(),
+      at: v.number(),
+    }),
+  ),
+};
 
 export const vPacketPdf = v.object({
   code: v.string(),
@@ -136,6 +192,12 @@ export default {
     /** Other places the same authority publishes the same file. */
     alternateUrls: v.optional(v.array(v.string())),
     /**
+     * No longer written: a chosen address is now remembered on its
+     * `formAddresses` row. Kept so documents that still carry it deploy;
+     * remove it once `clearChosenAt` has run everywhere.
+     */
+    chosenAt: v.optional(v.number()),
+    /**
      * The last fetch: every way and address tried, in order. A form that
      * can't be reached says so here, with why.
      */
@@ -156,39 +218,34 @@ export default {
    * leads to it shares what is known. See `stands` for when it is asked
    * again.
    */
-  formAddresses: defineTable({
-    key: v.string(),
-    url: v.string(),
-    checkedAt: v.number(),
-    outcome: vAddressOutcome,
-    note: v.optional(v.string()),
-    /** How many times in a row it gave neither a file nor a page. */
-    failures: v.number(),
-    /** The packet that last asked, which needn't ask again. */
-    packet: v.optional(v.string()),
-    /** A file: its hash, what it says about itself, and the copy kept. */
-    sha256: v.optional(v.string()),
-    opening: v.optional(v.string()),
-    facts: v.optional(vFormFacts),
-    editionId: v.optional(v.id("formEditions")),
-    etag: v.optional(v.string()),
-    lastModified: v.optional(v.string()),
-    /** A page: the links it carried. */
-    links: v.optional(v.array(vPageLink)),
-    /** The form a case chose this address for, remembered for the next. */
-    chosen: v.optional(
-      v.object({
-        jurisdiction: v.string(),
-        /** The code without its agency, to look the form up by. */
-        bare: v.string(),
-        code: v.string(),
-        at: v.number(),
-      }),
+  formAddresses: defineTable(
+    v.union(
+      v.object({ ...addressRow, ...fileAnswer }),
+      v.object({ ...addressRow, ...pageAnswer }),
+      v.object({ ...addressRow, ...failedAnswer }),
     ),
-  })
+  )
     .index("by_key", ["key"])
     .index("by_sha256", ["sha256"])
-    .index("by_chosen", ["chosen.jurisdiction", "chosen.bare"]),
+    .index("by_chosen_jurisdiction_and_chosen_bare", [
+      "chosen.jurisdiction",
+      "chosen.bare",
+    ]),
+
+  /**
+   * Who each .gov domain belongs to, from CISA's register (see `sites.ts`):
+   * what decides whether a page or a file is on an authority's own site.
+   */
+  officialSites: defineTable({
+    domain: v.string(),
+    kind: v.string(),
+    organization: v.string(),
+    suborganization: v.optional(v.string()),
+    /** When the register last listed it. */
+    at: v.number(),
+  })
+    .index("by_domain", ["domain"])
+    .index("by_at", ["at"]),
 
   /** A hosted browser in use. Expires on its own if its work died. */
   browserLeases: defineTable({ expiresAt: v.number() }).index("by_expiresAt", [

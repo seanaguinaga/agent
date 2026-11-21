@@ -14,10 +14,12 @@ const served = (t: T, name: string, sha256 = name, revision = 201601) =>
   t.mutation(data.recordAddress, {
     key: `www.dir.ca.gov/dwc/${name}.pdf`,
     url: `${dir}/${name}.pdf`,
-    outcome: "file",
-    sha256,
-    opening: "DWC 1",
-    facts: { pages: 1, places: 3, language: "en", revision },
+    answer: {
+      outcome: "file",
+      sha256,
+      opening: "DWC 1",
+      facts: { pages: 1, places: 3, language: "en", revision },
+    },
   });
 const choose = (t: T, name: string, code = "DWC-1") =>
   t.mutation(data.rememberChosen, {
@@ -68,7 +70,11 @@ test("a different file of the same revision stays, but only a few are kept", asy
 test("how an address answered is kept once, and failures are counted in a row", async () => {
   const t = initConvexTest();
   const key = "www.dir.ca.gov/dwc/a.pdf";
-  const gone = { key, url: `${dir}/a.pdf`, outcome: "gone" as const };
+  const gone = {
+    key,
+    url: `${dir}/a.pdf`,
+    answer: { outcome: "gone" as const, note: "The source answered 404." },
+  };
   await t.mutation(data.recordAddress, gone);
   await t.mutation(data.recordAddress, gone);
   expect(await t.query(data.addressOf, { key })).toMatchObject({
@@ -79,7 +85,10 @@ test("how an address answered is kept once, and failures are counted in a row", 
   await choose(t, "a");
   // A page of links is not a failure, and the choice outlives a new answer.
   const links = [{ url: `${dir}/b.pdf`, label: "DWC 1", pdf: true }];
-  await t.mutation(data.recordAddress, { ...gone, outcome: "page", links });
+  await t.mutation(data.recordAddress, {
+    ...gone,
+    answer: { outcome: "page", links },
+  });
   expect(await t.query(data.addressOf, { key })).toMatchObject({
     outcome: "page",
     failures: 0,

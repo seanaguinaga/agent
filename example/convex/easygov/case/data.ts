@@ -22,7 +22,9 @@ import {
   type HistoryKind,
 } from "./schema";
 import { vPacketPdf, vFilledDocument } from "../forms/schema";
-import { intakeAgent, proposalFields, selectionAgent } from "./agents";
+import { intakeAgent, proposalFields } from "./agents";
+import { selectionAgent } from "./selection";
+import { stalenessOf } from "../packs/freshness";
 import { renderLetter } from "./answers";
 import { offerFact, syncCase, rememberedElsewhere } from "../profile/data";
 import {
@@ -546,19 +548,10 @@ export const recordArtifact = internalMutation({
       ),
       ...(packet?.openItems ?? []),
       ...unbackedForms(found).map(editionCheck),
+      // What the pack's last check found changed at the authority.
+      ...(await stalenessOf(ctx, pinnedPack(found)?.id)),
       ...(assessment?.openItems ?? []),
     ];
-    // Each filled form says whether an official page links its file, as the
-    // pinned pack recorded it for that form and that file.
-    const forms = activeForms(found);
-    const documents = packet?.documents.map((filledForm) => {
-      const backed = forms.find(
-        (form) =>
-          form.code === filledForm.code &&
-          form.sourceUrl === filledForm.sourceUrl,
-      )?.backed;
-      return backed === undefined ? filledForm : { ...filledForm, backed };
-    });
     if (found.artifact)
       await ctx.db.insert("packetRevisions", {
         caseId,
@@ -573,7 +566,7 @@ export const recordArtifact = internalMutation({
         filingOrder: pack?.output?.filingOrder,
         sources: pack?.output?.sources,
         revision: (found.artifact?.revision ?? 0) + 1,
-        documents,
+        documents: packet?.documents,
         openItems: openItems.length ? [...new Set(openItems)] : undefined,
         eligibility: pack?.eligibility?.map((rule) => ({
           condition: rule.condition,

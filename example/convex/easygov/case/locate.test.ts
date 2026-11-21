@@ -18,7 +18,13 @@ import {
   servePdf,
   serveStatus,
 } from "../forms/network.testkit";
-import { fileAt, locateForm, locateForms, newFinder } from "./agents";
+import {
+  compilePacketForms,
+  fileAt,
+  locateForm,
+  locateForms,
+  newFinder,
+} from "./locate";
 import type { T } from "./cases.testkit";
 
 vi.mock("../../modelsForDemo", async () =>
@@ -64,6 +70,25 @@ const ctxOf = (t: T) =>
     runAction: t.action,
   }) as unknown as ActionCtx;
 
+/** A test deployment whose register knows who owns ssa.gov. */
+async function withSites() {
+  const t = initConvexTest();
+  await t.mutation(internal.easygov.forms.sites.putSites, {
+    sites: [
+      {
+        domain: "ssa.gov",
+        kind: "Federal - Executive",
+        organization: "Social Security Administration",
+      },
+    ],
+    at: 0,
+  });
+  return t;
+}
+
+/** The authority's own sites, for a form looked up alone. */
+const ssaOwn = async () => new Set(["ssa.gov"]);
+
 /** A finder that may not search, so the search model is never called. */
 const finderWith = (limits: Parameters<typeof newFinder>[0] = {}) =>
   newFinder({ searches: 0, ...limits });
@@ -94,7 +119,7 @@ const offered = () =>
   );
 
 test("a packet's allowance is never exceeded: what can't be paid for goes without and is counted", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const leads = ["a", "b", "c"].map((name) => `${ssa}/${name}/ssa-561.pdf`);
   const net = fakeNetwork(
     Object.fromEntries(leads.map((url) => [url, servePdf(ssa561)])),
@@ -112,7 +137,7 @@ test("a packet's allowance is never exceeded: what can't be paid for goes withou
   // One address was asked; the other two were not requested at all.
   expect(net.requests.map(({ url }) => url)).toEqual([leads[0]]);
   expect(finder.spend.spent).toMatchObject({ downloads: 1, refused: 2 });
-  expect(located).toMatchObject({ url: leads[0], via: "given" });
+  expect(located.file).toMatchObject({ url: leads[0], via: "given" });
   expect(located.failed).toMatchObject([
     { url: leads[1], why: "unspent" },
     { url: leads[2], why: "unspent" },
@@ -120,7 +145,7 @@ test("a packet's allowance is never exceeded: what can't be paid for goes withou
 });
 
 test("an allowance spent on one form is spent for the packet's other forms too", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const [first, second] = [`${ssa}/ssa-561.pdf`, `${ssa}/ssa-827.pdf`];
   const net = fakeNetwork({
     [first]: servePdf(ssa561),
@@ -143,14 +168,14 @@ test("an allowance spent on one form is spent for the packet's other forms too",
   expect(net.requests).toHaveLength(1);
   // Two went without: the second form's file, and the search for it.
   expect(finder.spend.spent).toMatchObject({ downloads: 1, refused: 2 });
-  expect(found.map(({ located }) => !!located.editionId)).toEqual([
+  expect(found.map(({ located }) => !!located.file?.editionId)).toEqual([
     true,
     false,
   ]);
 });
 
 test("a decision that can't be paid for isn't asked, and the other leads are still used", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const given = `${ssa}/ssa-561.pdf`;
   fakeNetwork({
     [index]: servePage(`<a href="ssa-561.pdf">Form SSA-561</a>`),
@@ -169,11 +194,15 @@ test("a decision that can't be paid for isn't asked, and the other leads are sti
 
   expect(decideMock).not.toHaveBeenCalled();
   expect(finder.spend.spent).toMatchObject({ decisions: 0, refused: 1 });
-  expect(located).toMatchObject({ url: given, via: "given", backed: false });
+  expect(located.file).toMatchObject({
+    url: given,
+    via: "given",
+    backed: false,
+  });
 });
 
 test("two entries for one form are looked up once and come back as one entry", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const [a, b] = [`${ssa}/ssa-561.pdf`, `${ssa}/SSA-561-U2.pdf`];
   const net = fakeNetwork({
     [index]: servePage(`<h2>Form SSA-561</h2><a href="ssa-561.pdf">PDF</a>`),
@@ -197,7 +226,7 @@ test("two entries for one form are looked up once and come back as one entry", a
 
   expect(found).toHaveLength(1);
   expect(found[0].form.code).toBe("SSA-561");
-  expect(found[0].located).toMatchObject({ url: a, backed: true });
+  expect(found[0].located.file).toMatchObject({ url: a, backed: true });
   // One lookup: one decision, and the page and each address asked once.
   expect(decideMock).toHaveBeenCalledTimes(1);
   expect(net.asked(index)).toBe(1);
@@ -207,7 +236,7 @@ test("two entries for one form are looked up once and come back as one entry", a
 });
 
 test("a title and a code that turn out to be one file are one entry, under the code", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const [a, b] = [`${ssa}/reconsideration.pdf`, `${ssa}/ssa-561.pdf`];
   const net = fakeNetwork({ [a]: servePdf(ssa561), [b]: servePdf(ssa561) });
   // An earlier case kept the file. (Two addresses serving a file nobody has
@@ -235,12 +264,12 @@ test("a title and a code that turn out to be one file are one entry, under the c
   );
 
   expect(found.map(({ form }) => form.code)).toEqual(["SSA-561", "SSA-827"]);
-  expect(found[0].located.editionId).toBeDefined();
+  expect(found[0].located.file?.editionId).toBeDefined();
   // The third form's address is gone: it has an entry, and no file.
   expect(found[1].located).toMatchObject({
     failed: [{ url: `${ssa}/ssa-827.pdf`, why: "gone" }],
   });
-  expect(found[1].located.url).toBeUndefined();
+  expect(found[1].located.file).toBeUndefined();
   expect(net.asked(a)).toBe(1);
   expect(net.asked(b)).toBe(1);
   const after = await kept(t);
@@ -249,7 +278,7 @@ test("a title and a code that turn out to be one file are one entry, under the c
 });
 
 test("a form two ways of filing need is one lookup, and one entry for each way", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const a = `${ssa}/ssa-561.pdf`;
   const net = fakeNetwork({ [a]: servePdf(ssa561) });
   const mail = { key: "filingMethod", equals: "mail" };
@@ -276,7 +305,7 @@ test("a form two ways of filing need is one lookup, and one entry for each way",
 });
 
 test("the authority's own link to a fillable English file settles the form: no other lead is requested", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const linked = `${ssa}/ssa-561.pdf`;
   const given = `${ssa}/old/ssa-561-2019.pdf`;
   const earlier = `${ssa}/archive/ssa-561.pdf`;
@@ -319,23 +348,24 @@ test("the authority's own link to a fillable English file settles the form: no o
   );
 
   expect(located).toMatchObject({
-    url: linked,
-    via: "linked",
-    backed: true,
-    facts: { places: 1, language: "en", revision: 202508 },
+    file: {
+      url: linked,
+      via: "linked",
+      backed: true,
+      facts: { places: 1, language: "en", revision: 202508 },
+    },
     designated: {
       url: linked,
       label: "English PDF",
       under: "Form SSA-561 | Request for Reconsideration",
       confidence: 0.9,
-      by: "decision",
     },
     links: { onPages: 2, chose: "a link", further: 0 },
     others: [],
   });
   // The decision was offered the page's words and heading for each link.
   expect(offered()[0].link1).toBe(
-    'English PDF, under the heading "Form SSA-561 | Request for Reconsideration" [www.ssa.gov/…/ssa-561.pdf, linked from a page of www.ssa.gov]',
+    'English PDF, under the heading "Form SSA-561 | Request for Reconsideration" [a file of Social Security Administration (www.ssa.gov): …/ssa-561.pdf, linked from a page of Social Security Administration (www.ssa.gov)]',
   );
   // Neither the address research gave nor the remembered one was asked.
   expect(net.addresses()).toEqual([index, linked]);
@@ -348,7 +378,7 @@ test("the authority's own link to a fillable English file settles the form: no o
 });
 
 test("a linked file with nowhere to write doesn't settle the form: the other leads are asked, and the fillable one is chosen", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const linked = `${ssa}/ssa-561-print.pdf`;
   const given = `${ssa}/ssa-561.pdf`;
   const net = fakeNetwork({
@@ -372,9 +402,7 @@ test("a linked file with nowhere to write doesn't settle the form: the other lea
   expect(net.asked(linked)).toBe(1);
   expect(net.asked(given)).toBe(1);
   expect(located).toMatchObject({
-    url: given,
-    via: "given",
-    backed: false,
+    file: { url: given, via: "given", backed: false },
     designated: { url: linked },
     others: [{ url: linked, via: "linked" }],
   });
@@ -391,7 +419,7 @@ async function readIndex(t: T) {
 }
 
 test("an unsure choice of link isn't acted on: the other leads are used and the choice is reported", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const linked = `${ssa}/ssa-561-sp.pdf`;
   const given = `${ssa}/ssa-561.pdf`;
   const net = fakeNetwork({
@@ -411,7 +439,11 @@ test("an unsure choice of link isn't acted on: the other leads are used and the 
   );
 
   expect(net.asked(linked)).toBe(0);
-  expect(located).toMatchObject({ url: given, via: "given", backed: false });
+  expect(located.file).toMatchObject({
+    url: given,
+    via: "given",
+    backed: false,
+  });
   expect(located.designated).toBeUndefined();
   expect(located.links).toMatchObject({
     shortlisted: 1,
@@ -420,14 +452,10 @@ test("an unsure choice of link isn't acted on: the other leads are used and the 
   });
 });
 
-// A bug, left failing on purpose. `fileAt` remembers what it asked under the
-// address AND the form's code (`exact` and `loose` in `case/agents.ts`), so
-// an address that two forms of one packet lead to is requested once for
-// each form: here a second request, where rule 3 of "Finding a packet's
-// forms" says an address is asked once in a packet. Remove `.fails` when
-// the second form is answered from the first form's ask.
+// Rule 3 of "Finding a packet's forms": an address two forms lead to is
+// requested once. The second form is answered from what the first kept.
 test("an address two forms of one packet lead to is requested once", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   // One file holds both forms, and each form has it as a lead.
   const both = `${ssa}/ssa-561.pdf`;
   const net = fakeNetwork({
@@ -447,7 +475,7 @@ test("an address two forms of one packet lead to is requested once", async () =>
 });
 
 test("an address asked twice for one form in a packet is requested once, whatever the host's letter case", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const a = `${ssa}/ssa-561.pdf`;
   const net = fakeNetwork({ [a]: servePdf(ssa561) });
   const finder = finderWith();
@@ -465,7 +493,7 @@ test("an address asked twice for one form in a packet is requested once, whateve
 });
 
 test("an address that differs only in the path's letter case is asked only if the first served no file", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const [lower, upper] = [`${ssa}/ssa-561.pdf`, `${ssa}/SSA-561.pdf`];
   const net = fakeNetwork({
     [lower]: servePdf(ssa561),
@@ -483,7 +511,7 @@ test("an address that differs only in the path's letter case is asked only if th
   // Where the first spelling is gone, the second is asked.
   const other = finderWith();
   net.routes[lower] = serveStatus(404);
-  const t2 = initConvexTest();
+  const t2 = await withSites();
   await fileAt(ctxOf(t2), other, asForm, lower);
   expect(await fileAt(ctxOf(t2), other, asForm, upper)).toMatchObject({
     ok: true,
@@ -492,7 +520,7 @@ test("an address that differs only in the path's letter case is asked only if th
 });
 
 test("a refused request is tried through the browser, and with none set up the lead fails as busy", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const a = `${ssa}/ssa-561.pdf`;
   const net = fakeNetwork({ [a]: serveStatus(403) });
   const finder = finderWith();
@@ -516,7 +544,7 @@ test("a refused request is tried through the browser, and with none set up the l
 test("a refused request is collected through the browser when one is set up", async () => {
   restoreKey();
   restoreKey = browserKey("key");
-  const t = initConvexTest();
+  const t = await withSites();
   const a = `${ssa}/ssa-561.pdf`;
   const net = fakeNetwork({ [a]: serveStatus(403) }, { download: ssa561 });
   const finder = finderWith();
@@ -529,7 +557,7 @@ test("a refused request is collected through the browser when one is set up", as
     finder,
   );
 
-  expect(located).toMatchObject({ url: a, via: "given" });
+  expect(located.file).toMatchObject({ url: a, via: "given" });
   expect(net.asked(a)).toBe(1);
   expect(finder.spend.spent).toMatchObject({
     downloads: 1,
@@ -539,7 +567,7 @@ test("a refused request is collected through the browser when one is set up", as
 });
 
 test("a lead that turns out to be a page is read one link further on, without being requested again", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const page = `${ssa}/ssa-561.html`;
   const file = `${ssa}/ssa-561.pdf`;
   const net = fakeNetwork({
@@ -558,13 +586,12 @@ test("a lead that turns out to be a page is read one link further on, without be
     { code: "SSA-561", leads: [page] },
     subject,
     finder,
+    { authority: ssaOwn },
   );
 
   expect(located).toMatchObject({
-    url: file,
-    via: "linked",
-    backed: true,
-    designated: { url: file, further: true, by: "decision" },
+    file: { url: file, via: "linked", backed: true },
+    designated: { url: file, further: true },
     links: { onPages: 0, further: 1, chose: "a link" },
     failed: [{ url: page, why: "page" }],
   });
@@ -578,7 +605,7 @@ test("a lead that turns out to be a page is read one link further on, without be
 });
 
 test("the link chosen is followed one page further, and no further", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const further = ["a", "b", "c"].map((name) => `${ssa}/ssa-561-${name}.html`);
   const deeper = `${ssa}/ssa-561-deeper.html`;
   const file = `${ssa}/ssa-561.pdf`;
@@ -620,7 +647,7 @@ test("the link chosen is followed one page further, and no further", async () =>
   expect(net.asked(further[1])).toBe(0);
   expect(net.asked(further[2])).toBe(0);
   expect(net.asked(file)).toBe(0);
-  expect(located.url).toBeUndefined();
+  expect(located.file).toBeUndefined();
   expect(located.designated).toBeUndefined();
   expect(located.links).toMatchObject({
     further: 1,
@@ -630,7 +657,7 @@ test("the link chosen is followed one page further, and no further", async () =>
 });
 
 test("the form's own page one link further on gives the file, and the link is the binding", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const own = `${ssa}/ssa-561.html`;
   const file = `${ssa}/ssa-561.pdf`;
   const net = fakeNetwork({
@@ -659,9 +686,7 @@ test("the form's own page one link further on gives the file, and the link is th
 
   expect(net.addresses()).toEqual([index, own, file]);
   expect(located).toMatchObject({
-    url: file,
-    via: "linked",
-    backed: true,
+    file: { url: file, via: "linked", backed: true },
     designated: {
       url: file,
       label: "Download PDF",
@@ -673,7 +698,7 @@ test("the form's own page one link further on gives the file, and the link is th
 });
 
 test("a renamed form is found through the page's words for its link", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const file = `${ssa}/ssa-561.pdf`;
   fakeNetwork({
     [index]: servePage(`<html><body>
@@ -694,11 +719,15 @@ test("a renamed form is found through the page's words for its link", async () =
     finderWith(),
   );
 
-  expect(located).toMatchObject({ url: file, via: "linked", backed: true });
+  expect(located.file).toMatchObject({
+    url: file,
+    via: "linked",
+    backed: true,
+  });
 });
 
 test("the file chosen is remembered, and is a lead for the next packet", async () => {
-  const t = initConvexTest();
+  const t = await withSites();
   const file = `${ssa}/ssa-561.pdf`;
   const net = fakeNetwork({ [file]: servePdf(ssa561) });
   await locateForm(
@@ -719,8 +748,64 @@ test("the file chosen is remembered, and is a lead for the next packet", async (
     finder,
   );
 
-  expect(located).toMatchObject({ url: file, via: "known" });
+  expect(located.file).toMatchObject({ url: file, via: "known" });
   expect(net.asked(file)).toBe(2);
   expect(finder.spend.spent).toMatchObject({ downloads: 1 });
   expect((await kept(t)).editions).toHaveLength(1);
+});
+
+test("a form whose file can't be found again loses what was said of its old file", async () => {
+  const t = await withSites();
+  const gone = `${ssa}/ssa-561.pdf`;
+  fakeNetwork({ [gone]: serveStatus(404) });
+  // A draft built earlier, when the file was found and linked as the form.
+  const earlier = {
+    jurisdiction: "us",
+    authority: subject.authority,
+    packetForms: [
+      { code: "SSA-561", sourceUrl: gone, inputs: [], backed: true },
+    ],
+  } as unknown as Parameters<typeof compilePacketForms>[2];
+
+  const draft = await compilePacketForms(
+    ctxOf(t),
+    "thread",
+    earlier,
+    finderWith(),
+  );
+
+  expect(draft.packetForms).toEqual([
+    expect.objectContaining({ code: "SSA-561", sourceUrl: "" }),
+  ]);
+  expect(draft.packetForms![0]).not.toHaveProperty("backed");
+  // The draft it was given is left as it was.
+  expect(earlier.packetForms![0]).toMatchObject({ backed: true });
+});
+
+test("a link is no confirmation unless the page and the file are both on the authority's own sites", async () => {
+  const t = await withSites();
+  const file = `${ssa}/ssa-561.pdf`;
+  fakeNetwork({ [file]: servePdf(ssa561) });
+  choosing(/ssa-561/);
+  const located = (authority: () => Promise<Set<string>>) =>
+    locateForm(
+      ctxOf(t),
+      "thread",
+      { code: "SSA-561", leads: [] },
+      subject,
+      finderWith(),
+      {
+        links: async () => [
+          { url: file, label: "SSA-561", pdf: true, on: "www.ssa.gov" },
+        ],
+        authority,
+      },
+    );
+
+  expect((await located(ssaOwn)).file).toMatchObject({ backed: true });
+  // The research read another government's pages: this one isn't its own.
+  expect((await located(async () => new Set(["irs.gov"]))).file).toMatchObject({
+    url: file,
+    backed: false,
+  });
 });

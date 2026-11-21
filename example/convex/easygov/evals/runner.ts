@@ -36,18 +36,16 @@ import { chosen } from "../case/schema";
 import {
   choosePack,
   draftProcess,
-  fileAt,
   intakeReply,
   suggestAnswers,
   readRequest,
-  locateForms,
-  newFinder,
   research,
   subjectOf,
   tailorChecklist,
   type ResearchTrace,
 } from "../case/agents";
 import { researchedPack, type Draft } from "../case/draft";
+import { fileAt, locateForms, newFinder } from "../case/locate";
 import {
   bareResearch,
   formLeads,
@@ -330,11 +328,12 @@ const run: Record<
       pack.output?.sources ?? [],
       finder,
     );
-    const forms = located.map(({ form, located }) => ({
+    const forms = located.map(({ form, located: { file, ...how } }) => ({
       code: form.code,
       when: form.when?.equals,
       given: form.sourceUrl,
-      ...located,
+      ...how,
+      ...file,
     }));
     const got = forms.filter(({ url }) => url);
     const cost = {
@@ -348,7 +347,7 @@ const run: Record<
       backedFurther: got.filter(
         ({ backed, designated }) => backed && designated?.further,
       ).length,
-      furtherPages: forms.reduce((sum, f) => sum + (f.links?.further ?? 0), 0),
+      furtherPages: forms.reduce((sum, f) => sum + f.links.further, 0),
       researchMs: researched - began,
       locateMs: Date.now() - researched,
     };
@@ -358,14 +357,9 @@ const run: Record<
     const grading = newFinder({});
     const published = await Promise.all(
       expect.map(async ({ code, url }) => {
-        // The case says the authority publishes the form at this address:
-        // the file is taken as one an official page links under that code.
-        const file = await fileAt(
-          ctx,
-          grading,
-          { jurisdiction, code, linkedAs: code },
-          url,
-        );
+        // The case says the authority publishes the form at this address.
+        // Its file still has to name the form on its own.
+        const file = await fileAt(ctx, grading, { jurisdiction, code }, url);
         return file.ok
           ? { code, editionId: file.editionId, facts: file.facts }
           : { code };
@@ -378,15 +372,17 @@ const run: Record<
       const judged = await judgeForms(
         ctx,
         reference,
-        forms.map(({ code, url, backed, facts }) => ({
+        // Listed once for each way of filing that needs it: not a repeat.
+        forms.map(({ code, when, url, backed, facts }) => ({
           code,
+          when,
           url,
           backed,
           facts,
         })),
       ).catch(() => undefined);
       if (judged) {
-        graded.checks["~judge"] = judged.verdict === "pass";
+        graded.checks["~judge"] = !judged.problems.length;
         if (judged.problems.length) {
           graded.detail = [graded.detail, `judge: ${judged.problems.join(" ")}`]
             .filter(Boolean)
@@ -791,14 +787,11 @@ async function judgeForms(
   ctx: ActionCtx,
   reference: Reference,
   found: unknown,
-): Promise<{ verdict: "pass" | "fail"; problems: string[] }> {
+): Promise<{ problems: string[] }> {
   const { output, usage } = await generateText({
     model: languageModel,
     output: Output.object({
-      schema: z.object({
-        problems: z.array(z.string()),
-        verdict: z.enum(["pass", "fail"]),
-      }),
+      schema: z.object({ problems: z.array(z.string()) }),
     }),
     prompt: [
       "You are checking the official forms an assistant found for a person against a reviewer's reference,",
@@ -809,11 +802,11 @@ async function judgeForms(
       "- a file from somewhere other than where the authority publishes it: another government's copy,",
       "  a staging or test site, a sample, a rule-making or instruction document;",
       "- a translation given as the form;",
-      "- the same form listed more than once;",
+      "- the same form listed more than once for the same way of filing (`when`);",
       "- anything the reference calls a trap.",
       "Not a problem: a form the reference doesn't list, unless a trap names it; the same file at another",
       "address of the same site; a file that isn't backed; or a revision that gives the same year with no month.",
-      '"fail" if there is any problem, otherwise "pass".',
+      "Return no problems if there are none.",
       `<reference>${JSON.stringify(reference)}</reference>`,
       `<found>${JSON.stringify(found)}</found>`,
     ].join("\n"),
@@ -950,8 +943,12 @@ async function startNext(
 
 // --- What was already fetched -----------------------------------------------
 
-/** A row can carry every link of a page: few are read at a time. */
-const HELD_BATCH = 100;
+/**
+ * A row can carry a page's links (up to 400, each address at most 500
+ * characters): few are read at a time, to stay well inside what one
+ * mutation may read.
+ */
+const HELD_BATCH = 20;
 
 /**
  * Counts the `formAddresses` rows held as a run starts, a batch at a time:
@@ -992,7 +989,9 @@ export const countHeld = internalMutation({
 async function forgetBatch(ctx: MutationCtx): Promise<void> {
   const rows = await ctx.db
     .query("formAddresses")
-    .withIndex("by_chosen", (q) => q.eq("chosen.jurisdiction", undefined))
+    .withIndex("by_chosen_jurisdiction_and_chosen_bare", (q) =>
+      q.eq("chosen.jurisdiction", undefined),
+    )
     .take(HELD_BATCH);
   for (const row of rows) await ctx.db.delete("formAddresses", row._id);
   if (rows.length < HELD_BATCH) return;

@@ -243,3 +243,37 @@ export function normalizeFormId(raw: string): string {
     .replace(/[^A-Z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
 }
+
+/**
+ * How a pack's form stood when last checked against its authority:
+ * "current", the same file the pack fills, and not expired; "changed", the
+ * address now serves another file; "expired", the file prints an expiry
+ * that has passed; "lost", the address no longer gives the form; and
+ * "unchecked", the check couldn't ask (the site refused, or the allowance
+ * ran out). See `freshness.ts`.
+ */
+export const vFormStanding = v.union(
+  v.literal("current"),
+  v.literal("changed"),
+  v.literal("expired"),
+  v.literal("lost"),
+  v.literal("unchecked"),
+);
+
+/** The last check of a published pack's forms. One row per pack. */
+export const packChecks = defineTable({
+  packId: v.id("processPacks"),
+  checkedAt: v.number(),
+  /** True if any form is changed, expired or lost: the pack needs a look. */
+  stale: v.boolean(),
+  forms: v.array(
+    v.object({
+      code: v.string(),
+      sourceUrl: v.string(),
+      standing: vFormStanding,
+      note: v.optional(v.string()),
+    }),
+  ),
+})
+  .index("by_packId", ["packId"])
+  .index("by_stale_and_checkedAt", ["stale", "checkedAt"]);

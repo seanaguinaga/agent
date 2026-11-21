@@ -18,9 +18,15 @@ export type FormFacts = {
   language: Language;
   /** The revision the file prints, as YYYYMM. Undefined if it prints none. */
   revision?: number;
-  /** True if the file prints a date it expires on, and that date has passed. */
+  /**
+   * True if the file prints a date it expires on, and that date has passed.
+   * Worked out when the facts are given, never kept: see `ReadFacts`.
+   */
   expired?: boolean;
 };
+
+/** What is read from a file once, and kept: everything but whether it has expired. */
+export type ReadFacts = Omit<FormFacts, "expired">;
 
 const ENGLISH = [
   "the",
@@ -128,7 +134,8 @@ const LANGUAGE_ORDER: Record<Language, number> = {
 
 /**
  * Candidates for one form, best first: a file with places to write in before
- * one without, English (or bilingual) before a translation, the file the
+ * one without, English (or bilingual) before a translation, a current file
+ * before one that prints an expiry that has passed, the file the
  * authority's own link gives before any other, then the latest revision
  * printed. Ties keep the order they came in, which is the order the sources
  * can be trusted in.
@@ -139,6 +146,7 @@ export function rankForms<T extends { facts: FormFacts; designated?: boolean }>(
   const key = ({ facts, designated }: T) => [
     facts.places > 0 ? 0 : 1,
     LANGUAGE_ORDER[facts.language],
+    facts.expired ? 1 : 0,
     designated ? 0 : 1,
     -(facts.revision ?? 0),
   ];
@@ -150,6 +158,7 @@ export function rankForms<T extends { facts: FormFacts; designated?: boolean }>(
         a.key[1] - b.key[1] ||
         a.key[2] - b.key[2] ||
         a.key[3] - b.key[3] ||
+        a.key[4] - b.key[4] ||
         a.index - b.index,
     )
     .map(({ candidate }) => candidate);

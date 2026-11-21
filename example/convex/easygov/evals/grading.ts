@@ -7,6 +7,7 @@ import type { Mapping } from "../forms/schema";
 import type { vProcessPackDefinition } from "../packs/schema";
 import { isReading, type Address } from "../profile/vocabulary";
 import type { FormOutcome } from "./tables";
+import { sameFormCode } from "../forms/sources";
 
 export type Checks = Record<string, boolean>;
 export type Graded = { checks: Checks; detail?: string };
@@ -99,24 +100,14 @@ export function gradeResearch(
 
 // --- Forms ------------------------------------------------------------------
 
-/**
- * Whether two ways of writing a form's code name one form: "IRS-FORM-12153"
- * and "Form 12153", "SSA-3441-BK" and "SSA-3441", "DWC-1" and "DWC Form 1".
- * One has to contain the other once the word "form" and the punctuation are
- * gone, and the shorter has to be long enough to mean something.
- */
-export function sameCode(a: string, b: string): boolean {
-  const key = (code: string) =>
-    code
-      .toUpperCase()
-      .replace(/\bFORMS?\b/g, "")
-      .replace(/[^A-Z0-9]/g, "");
-  const [short, long] = [key(a), key(b)].sort((x, y) => x.length - y.length);
-  return short === long || (short.length >= 4 && long.includes(short));
-}
-
 /** What an edition of a form prints, as far as telling two apart needs. */
-type Edition = { revision?: number; places: number; pages: number };
+type Edition = {
+  revision?: number;
+  places: number;
+  pages: number;
+  /** A translation of an edition isn't that edition. */
+  language?: string;
+};
 
 /** A form that came back, and the file its PDF was fetched as, if any. */
 export type FoundForm = {
@@ -131,6 +122,14 @@ export type FoundForm = {
 /** How one expected form came out, and the file chosen for it. */
 export type FormGrade = { code: string; outcome: FormOutcome; file?: string };
 
+/** The outcomes a person can hold for a form, worst first. */
+const WORST_FIRST: FormOutcome[] = [
+  "wrongUnwarned",
+  "wrongWarned",
+  "rightWarned",
+  "rightBacked",
+];
+
 export function gradeForms(
   expected: readonly { code: string }[],
   found: readonly FoundForm[],
@@ -142,13 +141,14 @@ export function gradeForms(
   }[] = [],
 ): Graded & { forms: FormGrade[] } {
   // The same edition served from another address, or as an accessible copy,
-  // has other bytes and is the same form.
+  // has other bytes and is the same form: unless it is in another language.
   const sameEdition = (a?: Edition, b?: Edition) =>
     !!a &&
     !!b &&
     a.revision === b.revision &&
     a.places === b.places &&
-    a.pages === b.pages;
+    a.pages === b.pages &&
+    a.language === b.language;
   const isPublished = (f: FoundForm, code: string) =>
     published.some(
       (p) =>
@@ -160,23 +160,32 @@ export function gradeForms(
   // A form is found under its code, or as its file: research sometimes
   // names a form only by its title and still fetches the right one.
   const match = (code: string) =>
-    found.filter((f) => sameCode(f.code, code) || isPublished(f, code));
+    found.filter((f) => sameFormCode(f.code, code) || isPublished(f, code));
   const forms = expected.map(({ code }): FormGrade => {
     const located = match(code).filter((f) => f.url);
-    const file = located.find((f) => isPublished(f, code)) ?? located[0];
-    if (!file) return { code, outcome: "missing" };
-    const right = isPublished(file, code);
+    if (!located.length) return { code, outcome: "missing" };
     const known = published.some((p) => p.code === code && p.editionId);
-    const outcome = !known
-      ? "unverified"
-      : right
+    if (!known) return { code, outcome: "unverified", file: located[0].url };
+    // A form listed once for each way of filing is held by different
+    // people: the trial is as good as the worst file any of them holds.
+    const held = located.map((file) => ({
+      file,
+      outcome: (isPublished(file, code)
         ? file.backed
           ? "rightBacked"
           : "rightWarned"
         : file.backed
           ? "wrongUnwarned"
-          : "wrongWarned";
-    return { code, outcome, file: file.editionId ?? file.url };
+          : "wrongWarned") as FormOutcome,
+    }));
+    const [worst] = held.toSorted(
+      (a, b) => WORST_FIRST.indexOf(a.outcome) - WORST_FIRST.indexOf(b.outcome),
+    );
+    return {
+      code,
+      outcome: worst.outcome,
+      file: worst.file.editionId ?? worst.file.url,
+    };
   });
   const codes = (...outcomes: FormOutcome[]) =>
     forms.filter((f) => outcomes.includes(f.outcome)).map((f) => f.code);
@@ -195,6 +204,9 @@ export function gradeForms(
       // Every expected form is named, and its PDF was fetched.
       named: missing.length === 0,
       located: codes("missing").length === 0,
+      // A file is graded only against the published one: where that
+      // couldn't be fetched, the trial proves nothing, and doesn't pass.
+      verified: codes("unverified").length === 0,
       // The person is never handed the wrong file as the authority's own.
       warnedIfWrong: codes("wrongUnwarned").length === 0,
       // Advisory: the published file can itself have moved on since the
@@ -210,6 +222,7 @@ export function gradeForms(
           missing.map((f) => f.code),
         ),
         list("not located", unlocated),
+        list("not verified", codes("unverified")),
         list("other edition", codes("wrongWarned")),
         list("other edition, no warning", codes("wrongUnwarned")),
         list(

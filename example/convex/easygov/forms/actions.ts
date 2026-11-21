@@ -16,15 +16,21 @@ import {
 import {
   BrowserBusy,
   browserService,
-  downloadViaBrowser,
-  readViaBrowser,
+  openViaBrowser,
+  type Opened,
 } from "./browser";
 import { resolveMapping } from "./mapping";
 import { openForFilling, UnusablePdf } from "./open";
 import { fillPdf, inspectPdf, verifyPdf } from "./pdf";
-import { expiredBy, languageOf, revisionOf, type FormFacts } from "./facts";
 import {
-  vAddressOutcome,
+  expiredBy,
+  languageOf,
+  revisionOf,
+  type FormFacts,
+  type ReadFacts,
+} from "./facts";
+import {
+  vAddressAnswer,
   vFilledDocument,
   vFormFacts,
   vPageLink,
@@ -33,13 +39,15 @@ import {
   vMapping,
   vPacketPdf,
 } from "./schema";
-import { isOfficialHost } from "./data";
 import {
   addressKey,
+  isOfficialHost,
   isTheForm,
   isWebPage,
   labelledLinks,
+  MAX_BYTES,
   notAPdf,
+  readUpTo,
   stands,
   type PageLink,
 } from "./sources";
@@ -63,15 +71,20 @@ const vCost = v.object({
 type AskCost = Infer<typeof vCost>;
 
 /**
- * Why an ask got nothing. "refused": a plain request was turned away, and a
- * browser may do better. "busy": no browser could be had. "unspent": it
- * would have cost something, and the caller said not to spend.
+ * Why an ask got nothing. What an address answers (see `vAddressAnswer`),
+ * or: "page", it is a web page and a file was wanted; "otherForm", its file
+ * isn't the form; "refused", a plain request was turned away, and a browser
+ * may do better; "busy", no browser could be had; "unspent", it would have
+ * cost something, and the caller said not to spend.
  */
 const vWhyNot = v.union(
-  vAddressOutcome,
+  v.literal("gone"),
+  v.literal("unreachable"),
+  v.literal("unusable"),
+  v.literal("page"),
+  v.literal("otherForm"),
   v.literal("refused"),
   v.literal("busy"),
-  v.literal("otherForm"),
   v.literal("unspent"),
 );
 const vNo = v.object({
@@ -114,16 +127,24 @@ type Asked =
     }
   | { ok: true; links: PageLink[]; cost: AskCost }
   | Infer<typeof vNo>;
+type AddressAnswer = Infer<typeof vAddressAnswer>;
+
+/** As much of a page as is read for its links. */
+const MAX_PAGE = 2_000_000;
 
 /** One plain request, following redirects on official sites only. */
 async function request(
   url: string,
   ms: number,
+  /** The most bytes taken: a body longer than this is cut there. */
+  limit: number,
   held?: { etag?: string; lastModified?: string },
 ): Promise<
   | {
       got: "body";
       bytes: Uint8Array;
+      /** Whether the body was longer than `limit`, and cut. */
+      cut: boolean;
       /** Where the request ended up, after any redirects. */
       at: string;
       /** Whether the server says it is a web page. */
@@ -167,7 +188,7 @@ async function request(
       }
       return {
         got: "body",
-        bytes: new Uint8Array(await response.arrayBuffer()),
+        ...(await readUpTo(response, limit)),
         at: address,
         html: /html/i.test(response.headers.get("content-type") ?? ""),
         etag: response.headers.get("etag") ?? undefined,
@@ -199,22 +220,33 @@ async function browserLease(ctx: ActionCtx) {
   return null;
 }
 
+/** As many links of each kind as are kept from a page. */
+const MAX_LINKS = 200;
+
 /** The links worth keeping from a page: official ones, PDFs first. */
 function linksWorthKeeping(html: string, page: string) {
-  const links = labelledLinks(html.slice(0, 2_000_000), page).filter(
-    ({ url }) => isOfficialHost(url),
+  const links = labelledLinks(html.slice(0, MAX_PAGE), page).filter(
+    ({ url }) => isOfficialHost(url) && url.length <= 500,
   );
   return [
-    ...links.filter(({ pdf }) => pdf).slice(0, 300),
-    ...links.filter(({ pdf }) => !pdf).slice(0, 300),
+    ...links.filter(({ pdf }) => pdf).slice(0, MAX_LINKS),
+    ...links.filter(({ pdf }) => !pdf).slice(0, MAX_LINKS),
   ];
 }
+
+/** What a file says about itself now: as read, and whether it has expired. */
+const factsNow = (opening: string, facts: ReadFacts): FormFacts => ({
+  ...facts,
+  ...(expiredBy(opening, Date.now()) && { expired: true }),
+});
 
 /**
  * What an official address serves: a form's file, or a page's links. What
  * it answered before is used first (see `stands`); a file is asked for
  * again only so the server can say it hasn't changed. New bytes are known by
  * their hash, so a file held from another address isn't read or kept twice.
+ * Whether a file has expired is worked out each time it is given, from what
+ * it prints: never kept, so it can't go stale.
  */
 async function ask(
   ctx: ActionCtx,
@@ -238,31 +270,26 @@ async function ask(
     key,
   });
   if (held) cost.held++;
-  const keep = (
-    answer: Omit<
-      typeof internal.easygov.forms.data.recordAddress._args,
-      "key" | "url" | "packet"
-    >,
-  ) =>
+  const keep = (answer: AddressAnswer) =>
     ctx.runMutation(internal.easygov.forms.data.recordAddress, {
       key,
       url,
       packet,
-      ...answer,
+      answer,
     });
   /** A file as the form it is wanted as. Undefined: it has yet to be kept. */
   const asFile = (file: {
-    opening?: string;
-    facts?: FormFacts;
+    opening: string;
+    facts: ReadFacts;
     editionId?: Id<"formEditions">;
   }): Asked | undefined => {
     if (!form) return no("unusable", "It isn't a web page.");
-    if (!isTheForm(form.code, file.opening ?? "", form.linkedAs)) {
+    if (!isTheForm(form.code, file.opening, form.linkedAs)) {
       return no("otherForm", `The file doesn't name ${form.code}.`);
     }
-    const { editionId, facts } = file;
-    return editionId && facts
-      ? { ok: true, file: { editionId, facts }, cost }
+    const { editionId, opening, facts } = file;
+    return editionId
+      ? { ok: true, file: { editionId, facts: factsNow(opening, facts) }, cost }
       : undefined;
   };
   const asPage = (links: PageLink[]): Asked =>
@@ -274,8 +301,8 @@ async function ask(
       held.outcome === "file"
         ? asFile(held)
         : held.outcome === "page"
-          ? asPage(held.links ?? [])
-          : no(held.outcome, held.note ?? "");
+          ? asPage(held.links)
+          : no(held.outcome, held.note);
     if (answer) {
       cost.reused++;
       return answer;
@@ -283,18 +310,20 @@ async function ask(
   }
   if (!spend) return no("unspent", "");
 
-  let bytes: Uint8Array;
-  let html = !form;
-  // A page's links are relative to where it was served from.
-  let at = url;
+  let got: { bytes: Uint8Array; at: string; html: boolean };
   let etag: string | undefined;
   let lastModified: string | undefined;
   if (way === "request") {
     cost[form ? "downloads" : "pages"]++;
     // Only a file that is still kept can be told "the same as before".
     const kept = held?.outcome === "file" && held.editionId ? held : undefined;
-    const got = await request(url, form ? 45_000 : 15_000, form && kept);
-    if (got.got === "unchanged" && kept) {
+    const answered = await request(
+      url,
+      form ? 45_000 : 15_000,
+      form ? MAX_BYTES : MAX_PAGE,
+      form && kept,
+    );
+    if (answered.got === "unchanged" && kept) {
       cost.unchanged++;
       const {
         url: _url,
@@ -306,26 +335,34 @@ async function ask(
       await keep(same);
       return asFile(kept) ?? no("unusable", "The file isn't kept.");
     }
-    if (got.got === "gone" || got.got === "unusable") {
-      await keep({ outcome: got.got, note: got.note });
-      return no(got.got, got.note);
+    if (answered.got === "gone" || answered.got === "unusable") {
+      await keep({ outcome: answered.got, note: answered.note });
+      return no(answered.got, answered.note);
     }
-    if (got.got !== "body") return no("refused", got.note);
-    ({ bytes, at, html, etag, lastModified } = got);
+    if (answered.got !== "body") return no("refused", answered.note);
+    if (answered.cut && !answered.html) {
+      const note = "The file is too large.";
+      await keep({ outcome: "unusable", note });
+      return no("unusable", note);
+    }
+    ({ etag, lastModified } = answered);
+    got = answered;
   } else {
     const service = browserService();
     if (!service) return no("busy", "No browser is set up.");
     const leaseId = await browserLease(ctx);
     if (!leaseId) return no("busy", "Every browser is in use.");
+    let opened: Opened;
     try {
       cost.browser++;
-      bytes = form
-        ? await downloadViaBrowser(url, service)
-        : new TextEncoder().encode(await readViaBrowser(url, service));
+      opened = await openViaBrowser(url, service);
     } catch (error) {
       if (error instanceof BrowserBusy) return no("busy", error.message);
-      const note = `${error instanceof Error ? error.message : error}`;
-      await keep({ outcome: "unreachable", note: note.slice(0, 200) });
+      const note = `${error instanceof Error ? error.message : error}`.slice(
+        0,
+        200,
+      );
+      await keep({ outcome: "unreachable", note });
       return no("unreachable", note);
     } finally {
       await ctx
@@ -334,7 +371,21 @@ async function ask(
         })
         .catch(() => undefined);
     }
+    if (opened.got === "page" && !isOfficialHost(opened.at)) {
+      const note = "The page left the authority’s permitted sites.";
+      await keep({ outcome: "unusable", note });
+      return no("unusable", note);
+    }
+    got =
+      opened.got === "file"
+        ? { bytes: opened.bytes, at: url, html: false }
+        : {
+            bytes: new TextEncoder().encode(opened.html),
+            at: opened.at,
+            html: true,
+          };
   }
+  const { bytes, at, html } = got;
 
   const problem = notAPdf(bytes);
   if (problem) {
@@ -342,7 +393,8 @@ async function ask(
       await keep({ outcome: "unusable", note: problem });
       return no("unusable", problem);
     }
-    // A page is read for its links, not downloaded from.
+    // A page is read for its links, not downloaded from. Its links are
+    // relative to where it was served from.
     const links = linksWorthKeeping(new TextDecoder().decode(bytes), at);
     await keep({ outcome: "page", links });
     return asPage(links);
@@ -351,16 +403,23 @@ async function ask(
   cost.bytes += bytes.length;
 
   const sha256 = bytesToHex(sha256Of(bytes));
-  const served = { outcome: "file" as const, sha256, etag, lastModified };
   const known = await ctx.runMutation(internal.easygov.forms.data.keepFile, {
     sha256,
   });
   if (known.opening !== undefined && known.facts) {
     // The same bytes as before: nothing to read again.
-    const answer = asFile(known);
+    const { opening, facts } = known;
+    const answer = asFile({ opening, facts, editionId: known.editionId });
     if (answer) {
-      const { opening, facts, editionId } = known;
-      await keep({ ...served, opening, facts, editionId });
+      await keep({
+        outcome: "file",
+        sha256,
+        etag,
+        lastModified,
+        opening,
+        facts,
+        editionId: known.editionId,
+      });
       return answer;
     }
   }
@@ -378,12 +437,11 @@ async function ask(
   }
   const { pages, edition, fillable, targets, opening } =
     await inspectPdf(ready);
-  const facts: FormFacts = {
+  const facts: ReadFacts = {
     pages,
     places: targets.length,
     language: languageOf(opening),
     revision: revisionOf(`${edition ?? ""} ${opening}`),
-    ...(expiredBy(opening, Date.now()) && { expired: true }),
   };
   // Whatever way it came, it has to be the form it's meant to be. A file
   // that isn't is still known for what it is, and isn't kept.
@@ -416,7 +474,16 @@ async function ask(
     if (!file.kept) await ctx.storage.delete(storageId);
     ({ editionId } = file);
   }
-  await keep({ ...served, opening, facts, editionId });
+  await keep({
+    outcome: "file",
+    sha256,
+    etag,
+    lastModified,
+    opening,
+    facts,
+    editionId,
+  });
+  // Not the form, or kept just now: either way there is an answer.
   return asFile({ opening, facts, editionId })!;
 }
 

@@ -1,4 +1,3 @@
-import { FormBacking } from "./FormBacking";
 import { useAct } from "./session";
 import type { PacketEvidence } from "./packetArchive";
 import type { CaseView } from "../../convex/easygov/autopilot";
@@ -80,9 +79,6 @@ export function PacketContents({
             </a>
           ) : (
             <span>{doc.code} · file unavailable</span>
-          )}
-          {"sourceUrl" in doc && (
-            <FormBacking form={doc} pages={artifact.sources} />
           )}
           {doc.omissions.map((item, i) => (
             <p key={i}>

@@ -255,6 +255,7 @@ async function hold(t: ReturnType<typeof initConvexTest>, addresses: number) {
       url,
       checkedAt: 0,
       outcome: "gone" as const,
+      note: "The source answered 404.",
       failures: 1,
     });
     for (let i = 0; i < addresses; i++) {
@@ -291,7 +292,7 @@ test("forgetting what was fetched keeps the addresses chosen", async () => {
   await hold(t, 205);
   await t.mutation(runner.forgetFetched, {});
   // One batch is gone, and the rest follow.
-  expect(await held(t)).toHaveLength(106);
+  expect(await held(t)).toHaveLength(186);
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   expect(await held(t)).toEqual(["https://www.irs.gov/pub/irs-pdf/f8822.pdf"]);
   await t.mutation(runner.start, { note: "cold", slices: ["search"] });

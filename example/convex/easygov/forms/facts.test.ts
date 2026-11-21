@@ -114,6 +114,16 @@ describe("rankForms", () => {
     ).toEqual(["the authority's link, 2016", "typed, 2020"]);
   });
 
+  test("a current file before an expired one, even the one the authority links", () => {
+    // An authority's page can go on linking an edition it replaced.
+    expect(
+      order([
+        file("linked, expired 2019", { revision: 201901, expired: true }, true),
+        file("given, current 2025", { revision: 202508 }),
+      ]),
+    ).toEqual(["given, current 2025", "linked, expired 2019"]);
+  });
+
   test("ties keep the order the sources were trusted in", () => {
     expect(order([file("given", {}), file("known", {})])).toEqual([
       "given",

@@ -60,7 +60,7 @@ async function build(t: T, caseId: Id<"cases">, codes: string[]) {
   return (await read(t, caseId)).artifact!;
 }
 
-test("an unbacked form is marked on its document and left to check", async () => {
+test("an unbacked form is left to check, filled or not", async () => {
   const { t, caseId } = await caseWith([
     form("A-1", false),
     form("B-2", true),
@@ -68,10 +68,6 @@ test("an unbacked form is marked on its document and left to check", async () =>
   ]);
   // C-3 could not be filled: it has no document, and is still to check.
   const artifact = await build(t, caseId, ["A-1", "B-2"]);
-  expect(artifact.documents).toMatchObject([
-    { code: "A-1", backed: false },
-    { code: "B-2", backed: true },
-  ]);
   expect(artifact.openItems).toEqual(
     expect.arrayContaining([
       editionCheck(form("A-1")),
@@ -85,6 +81,5 @@ test("a pack that doesn't record it builds the packet it always did", async () =
   const { t, caseId } = await caseWith([form("A-1")]);
   const artifact = await build(t, caseId, ["A-1"]);
   expect(artifact.documents).toHaveLength(1);
-  expect(artifact.documents![0]).not.toHaveProperty("backed");
   expect(artifact.openItems?.join("\n") ?? "").not.toMatch(/edition/);
 });

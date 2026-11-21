@@ -8,7 +8,7 @@ import { api, internal } from "../../_generated/api";
 import type { Id } from "../../_generated/dataModel";
 import { initConvexTest } from "../../setup.test";
 import { read, resetCases, send, type T } from "../case/cases.testkit";
-import { isOfficialHost } from "./data";
+import { isOfficialHost } from "./sources";
 import { inspectPdf } from "./pdf";
 
 vi.mock("../../modelsForDemo", async () =>

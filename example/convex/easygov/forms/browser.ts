@@ -10,6 +10,8 @@
 // Matches EasyGov's source browser: managed proxies, CAPTCHA solving and
 // ad blocking. A site that still refuses access is reported as unreachable.
 
+import { MAX_BYTES, readUpTo } from "./sources";
+
 const API = "https://api.browserbase.com/v1";
 
 export type BrowserService = {
@@ -159,40 +161,113 @@ async function inBrowser<T>(
   }
 }
 
+/** What an address opened in a browser gave: a file it downloaded, or a page. */
+export type Opened =
+  | { got: "file"; bytes: Uint8Array }
+  /** `at` is where the page ended up, after any redirects. */
+  | { got: "page"; html: string; at: string };
+
+/** What the browser answers a command with, or why it refused. */
+type Reply = { id?: number; result?: unknown; error?: { message?: string } };
+
 /**
- * Opens `url` in a hosted browser and returns the file it downloads. A PDF
- * address downloads instead of displaying. Throws if no file arrives, and
- * never waits long: every step has a limit, and a stall says which step.
+ * Sends commands to the browser and waits for each one's answer, under its
+ * own number, no later than `deadline` (and never more than 15 seconds).
  */
-export async function downloadViaBrowser(
+function commander(socket: WebSocket, deadline: number) {
+  let next = 1;
+  const waiting = new Map<
+    number,
+    { resolve: (result: unknown) => void; reject: (error: Error) => void }
+  >();
+  socket.addEventListener("message", (event) => {
+    let reply: Reply;
+    try {
+      reply = JSON.parse(String(event.data)) as Reply;
+    } catch {
+      return;
+    }
+    const pending = reply.id === undefined ? undefined : waiting.get(reply.id);
+    if (!pending || reply.id === undefined) return;
+    waiting.delete(reply.id);
+    if (reply.error) {
+      pending.reject(
+        new Error(reply.error.message ?? "The browser refused a command."),
+      );
+    } else {
+      pending.resolve(reply.result ?? {});
+    }
+  });
+  return <T>(
+    method: string,
+    params: Record<string, unknown>,
+    sessionId?: string,
+  ) =>
+    new Promise<T>((resolve, reject) => {
+      const id = next++;
+      const timer = setTimeout(
+        () => {
+          waiting.delete(id);
+          reject(new Error("The browser didn't answer in time."));
+        },
+        Math.min(15_000, Math.max(1_000, deadline - Date.now())),
+      );
+      waiting.set(id, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          resolve(result as T);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      socket.send(
+        JSON.stringify({ id, method, params, ...(sessionId && { sessionId }) }),
+      );
+    });
+}
+
+/**
+ * Opens `url` in a hosted browser: what it downloads, if it downloads a
+ * file, or else the page it shows once that has loaded, and where that is.
+ * So an address is asked once, whichever it turns out to be. Throws if it
+ * gives neither, and never waits long: every step has a limit, and a stall
+ * says which step.
+ */
+export async function openViaBrowser(
   url: string,
   service: BrowserService,
-): Promise<Uint8Array> {
+): Promise<Opened> {
   const { timeoutMs = 45_000, pollMs = 2_000 } = service;
   return await inBrowser(
     service,
     async ({ id, socket, headers, request, step }) => {
-      // Keep what it downloads where the service can hand it back.
-      socket.send(
-        JSON.stringify({
-          id: 1,
-          method: "Browser.setDownloadBehavior",
-          params: {
-            behavior: "allow",
-            downloadPath: "downloads",
-            eventsEnabled: true,
-          },
-        }),
-      );
-      socket.send(
-        JSON.stringify({
-          id: 2,
-          method: "Target.createTarget",
-          params: { url },
-        }),
-      );
-
       const deadline = Date.now() + timeoutMs;
+      const call = commander(socket, deadline);
+      // Keep what it downloads where the service can hand it back.
+      await call("Browser.setDownloadBehavior", {
+        behavior: "allow",
+        downloadPath: "downloads",
+        eventsEnabled: true,
+      });
+      const { targetId } = await call<{ targetId: string }>(
+        "Target.createTarget",
+        { url },
+      );
+      const { sessionId } = await call<{ sessionId: string }>(
+        "Target.attachToTarget",
+        { targetId, flatten: true },
+      );
+      const evaluate = async (expression: string) =>
+        (
+          await call<{ result?: { value?: unknown } }>(
+            "Runtime.evaluate",
+            { expression, returnByValue: true },
+            sessionId,
+          )
+        ).result?.value;
+
       for (;;) {
         const listed = await step(
           "looking for the download",
@@ -222,134 +297,37 @@ export async function downloadViaBrowser(
           if (!file.ok) {
             throw new Error(`Fetching the download answered ${file.status}.`);
           }
-          return new Uint8Array(
-            await step("collecting the download", file.arrayBuffer(), 30_000),
+          const { bytes, cut } = await step(
+            "collecting the download",
+            readUpTo(file, MAX_BYTES),
+            30_000,
           );
+          if (cut) throw new Error("The file is too large.");
+          return { got: "file", bytes };
+        }
+        // A new tab starts as a blank page that already counts as loaded:
+        // a page is taken once it is somewhere, and has finished loading.
+        const state = await evaluate(
+          "JSON.stringify([location.href, document.readyState, document.contentType])",
+        ).catch(() => undefined);
+        const [at, ready, type] =
+          typeof state === "string"
+            ? (JSON.parse(state) as string[])
+            : ["", "", ""];
+        if (/^https?:/.test(at) && ready === "complete" && /html/.test(type)) {
+          const html = await evaluate("document.documentElement.outerHTML");
+          if (typeof html !== "string" || !html) {
+            throw new Error("The browser opened the page but read nothing.");
+          }
+          return { got: "page", html, at };
         }
         if (Date.now() >= deadline) {
           throw new Error(
-            "The browser opened the address but downloaded nothing.",
+            "The browser opened the address but it gave neither a file nor a page.",
           );
         }
         await sleep(pollMs);
       }
     },
   );
-}
-
-/** What the browser answers a command with, or why it refused. */
-type Reply = { id?: number; result?: unknown; error?: { message?: string } };
-
-/**
- * Opens `url` in a hosted browser and returns the page's HTML once it has
- * loaded. For an authority's page that refuses a plain request: the page is
- * only read for the links it carries. Throws if nothing can be read, and
- * never waits long: every step has a limit, and a stall says which step.
- */
-export async function readViaBrowser(
-  url: string,
-  service: BrowserService,
-): Promise<string> {
-  // A page is only somewhere a link may be: it isn't waited on for long.
-  const { timeoutMs = 25_000, pollMs = 1_000 } = service;
-  return await inBrowser(service, async ({ socket: open }) => {
-    // Each command is answered under its own number.
-    let next = 1;
-    const waiting = new Map<
-      number,
-      { resolve: (result: unknown) => void; reject: (error: Error) => void }
-    >();
-    open.addEventListener("message", (event) => {
-      let reply: Reply;
-      try {
-        reply = JSON.parse(String(event.data)) as Reply;
-      } catch {
-        return;
-      }
-      const pending =
-        reply.id === undefined ? undefined : waiting.get(reply.id);
-      if (!pending || reply.id === undefined) return;
-      waiting.delete(reply.id);
-      if (reply.error) {
-        pending.reject(
-          new Error(reply.error.message ?? "The browser refused a command."),
-        );
-      } else {
-        pending.resolve(reply.result ?? {});
-      }
-    });
-    const deadline = Date.now() + timeoutMs;
-    const call = <T>(
-      method: string,
-      params: Record<string, unknown>,
-      sessionId?: string,
-    ) =>
-      new Promise<T>((resolve, reject) => {
-        const id = next++;
-        const timer = setTimeout(
-          () => {
-            waiting.delete(id);
-            reject(new Error("The browser didn't answer in time."));
-          },
-          Math.min(15_000, Math.max(1_000, deadline - Date.now())),
-        );
-        waiting.set(id, {
-          resolve: (result) => {
-            clearTimeout(timer);
-            resolve(result as T);
-          },
-          reject: (error) => {
-            clearTimeout(timer);
-            reject(error);
-          },
-        });
-        open.send(
-          JSON.stringify({
-            id,
-            method,
-            params,
-            ...(sessionId && { sessionId }),
-          }),
-        );
-      });
-
-    const { targetId } = await call<{ targetId: string }>(
-      "Target.createTarget",
-      { url },
-    );
-    const { sessionId } = await call<{ sessionId: string }>(
-      "Target.attachToTarget",
-      { targetId, flatten: true },
-    );
-    const evaluate = async (expression: string) =>
-      (
-        await call<{ result?: { value?: unknown } }>(
-          "Runtime.evaluate",
-          { expression, returnByValue: true },
-          sessionId,
-        )
-      ).result?.value;
-
-    // A new tab starts as a blank page that already counts as loaded, so
-    // wait until it is somewhere and that page has finished. Past the
-    // deadline, take what there is.
-    while (Date.now() < deadline) {
-      const state = await evaluate(
-        "location.href + ' ' + document.readyState",
-      ).catch(() => "");
-      if (
-        typeof state === "string" &&
-        /^https?:/.test(state) &&
-        state.endsWith(" complete")
-      ) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, pollMs));
-    }
-    const html = await evaluate("document.documentElement.outerHTML");
-    if (typeof html !== "string" || !html) {
-      throw new Error("The browser opened the page but read nothing.");
-    }
-    return html;
-  });
 }

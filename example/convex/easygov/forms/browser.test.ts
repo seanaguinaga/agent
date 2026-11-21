@@ -1,7 +1,7 @@
 // Reading a page through the hosted browser, against a stand-in for the
 // service and the browser's connection.
 import { expect, test, vi } from "vitest";
-import { BrowserBusy, downloadViaBrowser, readViaBrowser } from "./browser";
+import { BrowserBusy, openViaBrowser } from "./browser";
 
 type Sent = {
   id: number;
@@ -63,37 +63,52 @@ function fakeService(Socket: typeof WebSocket) {
   };
 }
 
-test("reads a page's HTML once it has loaded, and releases the browser", async () => {
+const STATE = "JSON.stringify([location.href";
+const state = (at: string, ready = "complete", type = "text/html") => ({
+  result: { value: JSON.stringify([at, ready, type]) },
+});
+
+/** A browser that opens a tab, and shows `pages` in turn as it loads. */
+const showing = (pages: ReturnType<typeof state>[], html: unknown) => {
   let asked = 0;
-  const { sent, Socket } = fakeBrowser(({ method, params }) => {
+  return fakeBrowser(({ method, params }) => {
     if (method === "Target.createTarget") return { targetId: "t1" };
     if (method === "Target.attachToTarget") return { sessionId: "page1" };
-    if (String(params.expression).startsWith("location.href")) {
-      // A new tab is a blank page that already says it has loaded.
-      const states = [
-        "about:blank complete",
-        "https://www.ssa.gov/forms/ loading",
-        "https://www.ssa.gov/forms/ complete",
-      ];
-      return { result: { value: states[Math.min(asked++, 2)] } };
-    }
-    return {
-      result: {
-        value: '<html><a href="/forms/ssa-561.pdf">SSA-561</a></html>',
-      },
-    };
+    if (method !== "Runtime.evaluate") return {};
+    if (String(params.expression).startsWith(STATE))
+      return pages[Math.min(asked++, pages.length - 1)];
+    return { result: { value: html } };
   });
+};
+
+test("reads a page once it has loaded, says where it ended up, and releases the browser", async () => {
+  const { sent, Socket } = showing(
+    [
+      // A new tab is a blank page that already says it has loaded.
+      state("about:blank"),
+      state("https://www.ssa.gov/forms/", "loading"),
+      state("https://www.ssa.gov/forms/index.html"),
+    ],
+    '<html><a href="/forms/ssa-561.pdf">SSA-561</a></html>',
+  );
   const { fetchMock, service } = fakeService(Socket);
 
-  const html = await readViaBrowser("https://www.ssa.gov/forms/", service);
+  const opened = await openViaBrowser("https://www.ssa.gov/forms/", service);
 
-  expect(html).toContain('href="/forms/ssa-561.pdf"');
-  expect(sent[0]).toMatchObject({
-    method: "Target.createTarget",
+  expect(opened).toMatchObject({
+    got: "page",
+    html: expect.stringContaining('href="/forms/ssa-561.pdf"'),
+    at: "https://www.ssa.gov/forms/index.html",
+  });
+  expect(sent.map(({ method }) => method).slice(0, 3)).toEqual([
+    "Browser.setDownloadBehavior",
+    "Target.createTarget",
+    "Target.attachToTarget",
+  ]);
+  expect(sent[1]).toMatchObject({
     params: { url: "https://www.ssa.gov/forms/" },
   });
-  // It waited for the page, and asked the page itself, not the browser.
-  expect(asked).toBe(3);
+  // It asked the page itself, not the browser.
   expect(sent.at(-1)).toMatchObject({
     method: "Runtime.evaluate",
     sessionId: "page1",
@@ -107,19 +122,103 @@ test("reads a page's HTML once it has loaded, and releases the browser", async (
 });
 
 test("says so when the page gives nothing, and still releases the browser", async () => {
-  const { Socket } = fakeBrowser(({ method, params }) => {
-    if (method === "Target.createTarget") return { targetId: "t1" };
-    if (method === "Target.attachToTarget") return { sessionId: "page1" };
-    if (String(params.expression).startsWith("location.href")) {
-      return { result: { value: "https://www.ssa.gov/forms/ complete" } };
-    }
-    return { result: {} };
-  });
+  const { Socket } = showing([state("https://www.ssa.gov/forms/")], undefined);
   const { fetchMock, service } = fakeService(Socket);
   await expect(
-    readViaBrowser("https://www.ssa.gov/forms/", service),
+    openViaBrowser("https://www.ssa.gov/forms/", service),
   ).rejects.toThrow("read nothing");
   expect(String(fetchMock.mock.calls.at(-1)![0])).toMatch(/\/sessions\/s1$/);
+});
+
+/** A service whose download list is empty until `after` lists. */
+function downloading(file: Response | (() => Response), after = 1) {
+  let lists = 0;
+  return vi.fn<typeof fetch>(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/sessions"))
+      return Response.json({ id: "s1", connectUrl: "wss://browser/s1" });
+    if (url.includes("/downloads?"))
+      return Response.json({
+        downloads: ++lists > after ? [{ id: "d1" }] : [],
+      });
+    if (url.endsWith("/downloads/d1"))
+      return typeof file === "function" ? file() : file;
+    return Response.json({});
+  });
+}
+
+test("collects what the address downloads, with EasyGov's proxy and CAPTCHA settings, and releases the session", async () => {
+  const { sent, Socket } = showing([state("about:blank")], undefined);
+  const fetchMock = downloading(new Response("%PDF-1.7 a form"));
+  const opened = await openViaBrowser("https://a.gov/f.pdf", {
+    apiKey: "key",
+    projectId: "p1",
+    pollMs: 1,
+    fetch: fetchMock,
+    WebSocket: Socket,
+  });
+  expect(opened.got === "file" && new TextDecoder().decode(opened.bytes)).toBe(
+    "%PDF-1.7 a form",
+  );
+  expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+    projectId: "p1",
+    browserSettings: { blockAds: true, solveCaptchas: true },
+    proxies: true,
+    timeout: 90,
+  });
+  expect(sent[0]).toMatchObject({
+    method: "Browser.setDownloadBehavior",
+    params: {
+      behavior: "allow",
+      downloadPath: "downloads",
+      eventsEnabled: true,
+    },
+  });
+  expect(JSON.parse(String(fetchMock.mock.calls.at(-1)![1]?.body))).toEqual({
+    projectId: "p1",
+    status: "REQUEST_RELEASE",
+  });
+});
+
+test("a download larger than any form is refused, not held", async () => {
+  const { Socket } = showing([state("about:blank")], undefined);
+  const chunk = new Uint8Array(1024 * 1024);
+  const huge = () => {
+    let sent = 0;
+    return new Response(
+      new ReadableStream({
+        pull(controller) {
+          if (sent++ < 30) controller.enqueue(chunk);
+          else controller.close();
+        },
+      }),
+    );
+  };
+  await expect(
+    openViaBrowser("https://a.gov/f.pdf", {
+      apiKey: "key",
+      pollMs: 1,
+      fetch: downloading(huge, 0),
+      WebSocket: Socket,
+    }),
+  ).rejects.toThrow("The file is too large.");
+});
+
+test("gives up when the address gives neither a file nor a page, and still lets the browser go", async () => {
+  const { Socket } = showing([state("about:blank")], undefined);
+  const fetchMock = downloading(new Response(""), Infinity);
+  await expect(
+    openViaBrowser("https://a.gov/page", {
+      apiKey: "key",
+      pollMs: 1,
+      timeoutMs: 50,
+      fetch: fetchMock,
+      WebSocket: Socket,
+    }),
+  ).rejects.toThrow(/neither a file nor a page/);
+  expect(
+    JSON.parse(String(fetchMock.mock.calls.at(-1)![1]?.body)),
+  ).toMatchObject({ status: "REQUEST_RELEASE" });
 });
 
 test("refuses when the service won't start a browser", async () => {
@@ -127,72 +226,14 @@ test("refuses when the service won't start a browser", async () => {
     async () => new Response(null, { status: 402 }),
   );
   await expect(
-    readViaBrowser("https://www.ssa.gov/forms/", {
+    openViaBrowser("https://www.ssa.gov/forms/", {
       apiKey: "key",
       fetch: fetchMock,
     }),
   ).rejects.toThrow("The browser service answered 402.");
 });
 
-test("gives up, and says where, when the browser never connects", async () => {
-  vi.useFakeTimers();
-  class Silent {
-    addEventListener() {}
-    send() {}
-    close() {}
-  }
-  const { service } = fakeService(Silent as unknown as typeof WebSocket);
-  const reading = readViaBrowser("https://www.ssa.gov/forms/", service);
-  const failed = expect(reading).rejects.toThrow(
-    "The browser stalled while connecting to the browser.",
-  );
-  await vi.advanceTimersByTimeAsync(21_000);
-  await failed;
-  vi.useRealTimers();
-});
-
-test("asks a busy service again, then says it is busy and learned nothing", async () => {
-  const fetchMock = vi.fn<typeof fetch>(
-    async () => new Response(null, { status: 429 }),
-  );
-  await expect(
-    readViaBrowser("https://www.ssa.gov/forms/", {
-      apiKey: "key",
-      fetch: fetchMock,
-      busyWaitMs: 1,
-    }),
-  ).rejects.toBeInstanceOf(BrowserBusy);
-  expect(fetchMock).toHaveBeenCalledTimes(3);
-});
-
-test("a busy service that frees up is used", async () => {
-  const { Socket } = fakeBrowser(({ method, params }) => {
-    if (method === "Target.createTarget") return { targetId: "t1" };
-    if (method === "Target.attachToTarget") return { sessionId: "page1" };
-    if (String(params.expression).startsWith("location.href")) {
-      return { result: { value: "https://www.ssa.gov/forms/ complete" } };
-    }
-    return { result: { value: "<html></html>" } };
-  });
-  let asked = 0;
-  const fetchMock = vi.fn<typeof fetch>(async (input) =>
-    String(input).endsWith("/sessions")
-      ? ++asked === 1
-        ? new Response(null, { status: 429 })
-        : Response.json({ id: "s1", connectUrl: "wss://browser.example/s1" })
-      : Response.json({}),
-  );
-  const html = await readViaBrowser("https://www.ssa.gov/forms/", {
-    apiKey: "key",
-    fetch: fetchMock,
-    WebSocket: Socket,
-    pollMs: 1,
-    busyWaitMs: 1,
-  });
-  expect(html).toBe("<html></html>");
-});
-
-test("a download gives up, and says where, when the browser never connects", async () => {
+test("gives up, says where, and lets the browser go when it never connects", async () => {
   vi.useFakeTimers();
   class Silent {
     addEventListener() {}
@@ -203,18 +244,54 @@ test("a download gives up, and says where, when the browser never connects", asy
     Silent as unknown as typeof WebSocket,
   );
   const failed = expect(
-    downloadViaBrowser("https://www.ssa.gov/forms/ssa-561.pdf", service),
+    openViaBrowser("https://www.ssa.gov/forms/", service),
   ).rejects.toThrow("The browser stalled while connecting to the browser.");
   await vi.advanceTimersByTimeAsync(21_000);
   await failed;
-  // The browser is still let go.
   expect(String(fetchMock.mock.calls.at(-1)![0])).toMatch(/\/sessions\/s1$/);
   vi.useRealTimers();
 });
 
-test("a download gives up when the service stops answering", async () => {
+test("asks a busy service again, then says it is busy and learned nothing", async () => {
+  const fetchMock = vi.fn<typeof fetch>(
+    async () => new Response(null, { status: 429 }),
+  );
+  await expect(
+    openViaBrowser("https://www.ssa.gov/forms/", {
+      apiKey: "key",
+      fetch: fetchMock,
+      busyWaitMs: 1,
+    }),
+  ).rejects.toBeInstanceOf(BrowserBusy);
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+});
+
+test("a busy service that frees up is used", async () => {
+  const { Socket } = showing(
+    [state("https://www.ssa.gov/forms/")],
+    "<html></html>",
+  );
+  let asked = 0;
+  const fetchMock = vi.fn<typeof fetch>(async (input) =>
+    String(input).endsWith("/sessions")
+      ? ++asked === 1
+        ? new Response(null, { status: 429 })
+        : Response.json({ id: "s1", connectUrl: "wss://browser.example/s1" })
+      : Response.json({}),
+  );
+  const opened = await openViaBrowser("https://www.ssa.gov/forms/", {
+    apiKey: "key",
+    fetch: fetchMock,
+    WebSocket: Socket,
+    pollMs: 1,
+    busyWaitMs: 1,
+  });
+  expect(opened).toMatchObject({ got: "page", html: "<html></html>" });
+});
+
+test("gives up when the service stops answering", async () => {
   vi.useFakeTimers();
-  const { Socket } = fakeBrowser(() => ({}));
+  const { Socket } = showing([state("about:blank")], undefined);
   const fetchMock = vi.fn<typeof fetch>(async (input) =>
     String(input).endsWith("/sessions")
       ? Response.json({ id: "s1", connectUrl: "wss://browser.example/s1" })
@@ -223,7 +300,7 @@ test("a download gives up when the service stops answering", async () => {
         : Response.json({}),
   );
   const failed = expect(
-    downloadViaBrowser("https://www.ssa.gov/forms/ssa-561.pdf", {
+    openViaBrowser("https://www.ssa.gov/forms/ssa-561.pdf", {
       apiKey: "key",
       fetch: fetchMock,
       WebSocket: Socket,
@@ -244,6 +321,6 @@ test("a connection that closes without opening is a failure, not a wait", async 
   }
   const { service } = fakeService(Closing as unknown as typeof WebSocket);
   await expect(
-    readViaBrowser("https://www.ssa.gov/forms/", service),
+    openViaBrowser("https://www.ssa.gov/forms/", service),
   ).rejects.toThrow("Couldn't connect to the browser.");
 });

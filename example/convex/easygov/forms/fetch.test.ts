@@ -211,20 +211,15 @@ test("one file served at two addresses is read and kept once", async () => {
   expect(after.editions).toHaveLength(1);
   expect(after.blobs).toHaveLength(1);
   // Each address is remembered as serving that one file.
-  expect(after.addresses.map(({ editionId }) => editionId)).toEqual([
-    after.editions[0]._id,
-    after.editions[0]._id,
-  ]);
+  expect(
+    after.addresses.map((row) => row.outcome === "file" && row.editionId),
+  ).toEqual([after.editions[0]._id, after.editions[0]._id]);
 });
 
-// A bug, left failing on purpose. Two addresses that serve one file nobody
-// has kept yet, asked at the same time (as `locateForm` asks a form's leads),
-// each find the file unknown (`fileKnown` in `fetchFile`) before either has
-// kept it. Each then stores it, registers its own address as a form, and
-// `recordFetch` looks for the edition under that form only: so one file
-// becomes two editions and two stored copies, and `locateForms` can no
-// longer tell that two entries are one file. Remove `.fails` when the file
-// is kept once however the two asks interleave.
+// Two addresses that serve one file nobody has kept yet, asked at the same
+// time (as `locateForm` asks a form's leads): `keepFile` looks and keeps in
+// one step, so the file is one edition and one stored copy however the two
+// asks interleave.
 test("one file served at two addresses asked at once is kept once", async () => {
   const t = initConvexTest();
   const mirror = "https://secure.ssa.gov/apps10/forms/SSA-561-U2.pdf";
@@ -465,7 +460,9 @@ describe("whether a file is the form", () => {
     expect(after.addresses).toMatchObject([
       { outcome: "file", facts: { places: 1 } },
     ]);
-    expect(after.addresses[0].opening).toContain("SSA-827");
+    expect(after.addresses[0]).toMatchObject({
+      opening: expect.stringContaining("SSA-827"),
+    });
   });
 
   test("the same file is the other form when asked for as that one", async () => {
@@ -796,5 +793,112 @@ describe("a page's links", () => {
       ok: false,
       why: "unusable",
     });
+  });
+});
+
+test("a file kept before its printed expiry is given as expired once that has passed", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2025-12-01"));
+  const t = initConvexTest();
+  const expiring = await formPdf(["Form SSA-561 (08-2025) Expires: 01/26"]);
+  const net = fakeNetwork({
+    [address]: serveRevalidating(
+      expiring,
+      '"v1"',
+      "Wed, 20 Aug 2025 10:00:00 GMT",
+    ),
+  });
+
+  const before = await fetchFile(t, address);
+  expect(before).toMatchObject({ ok: true });
+  expect(before).not.toHaveProperty("facts.expired");
+
+  // The server says the file hasn't changed; the calendar has.
+  vi.setSystemTime(new Date("2026-03-01"));
+  expect(await fetchFile(t, address)).toMatchObject({
+    ok: true,
+    facts: { expired: true },
+    cost: { unchanged: 1, bytes: 0 },
+  });
+  // What is kept never says it has expired: that is worked out each time.
+  expect((await kept(t)).addresses[0]).not.toHaveProperty("facts.expired");
+  expect(net.requests.length).toBeGreaterThan(1);
+});
+
+describe("an address that refuses a plain request, opened in the browser", () => {
+  const page = `${ssa}/ssa-561.html`;
+
+  test("is read as a page when it is one, so its links can be followed", async () => {
+    restoreKey();
+    restoreKey = browserKey("key");
+    const t = initConvexTest();
+    const net = fakeNetwork(
+      { [page]: serveStatus(403) },
+      {
+        page: {
+          at: page,
+          html: '<h2>Form SSA-561</h2><a href="/forms/ssa-561.pdf">English PDF</a>',
+        },
+      },
+    );
+
+    expect(await fetchFile(t, page, { way: "browser" })).toMatchObject({
+      ok: false,
+      why: "page",
+      cost: { browser: 1 },
+    });
+    // Its links are kept, and read without opening a browser again.
+    const asked = net.service.length;
+    expect(await readLinks(t, page, { way: "browser" })).toMatchObject({
+      ok: true,
+      links: [{ url: `${ssa}/ssa-561.pdf`, label: "English PDF", pdf: true }],
+      cost: { browser: 0, reused: 1 },
+    });
+    expect(net.service).toHaveLength(asked);
+  });
+
+  test("is unusable when the browser ends up off the authority's sites", async () => {
+    restoreKey();
+    restoreKey = browserKey("key");
+    const t = initConvexTest();
+    fakeNetwork(
+      { [page]: serveStatus(403) },
+      {
+        page: {
+          at: "https://forms.example.com/ssa-561.html",
+          html: '<a href="https://www.ssa.gov/forms/ssa-561.pdf">SSA-561</a>',
+        },
+      },
+    );
+
+    expect(await readLinks(t, page, { way: "browser" })).toMatchObject({
+      ok: false,
+      why: "unusable",
+    });
+    expect((await kept(t)).addresses).toMatchObject([{ outcome: "unusable" }]);
+  });
+});
+
+test("a file larger than any form is refused without being held", async () => {
+  const t = initConvexTest();
+  const chunk = new Uint8Array(1024 * 1024);
+  fakeNetwork({
+    [address]: () => {
+      let sent = 0;
+      return new Response(
+        new ReadableStream({
+          pull(controller) {
+            if (sent++ < 30) controller.enqueue(chunk);
+            else controller.close();
+          },
+        }),
+        { headers: { "content-type": "application/pdf" } },
+      );
+    },
+  });
+  expect(await fetchFile(t, address)).toMatchObject({
+    ok: false,
+    why: "unusable",
+    note: "The file is too large.",
   });
 });

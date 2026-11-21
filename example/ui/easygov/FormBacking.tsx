@@ -4,12 +4,15 @@
 
 export type BackedForm = { code: string; sourceUrl: string; backed?: boolean };
 
+import { editionCheck } from "../../convex/easygov/case/state";
+
 export type BackingNote =
-  | { kind: "unconfirmed"; headline: string; detail: string; action: string }
+  | { kind: "unconfirmed"; headline: string; text: string }
   | { kind: "linked"; text: string };
 
 /** Nothing for a form that doesn't say (a pack made before it was recorded). */
-export function backingNote({ code, backed }: BackedForm): BackingNote | null {
+export function backingNote(form: BackedForm): BackingNote | null {
+  const { code, backed } = form;
   if (backed === undefined) return null;
   if (backed)
     return {
@@ -19,10 +22,8 @@ export function backingNote({ code, backed }: BackedForm): BackingNote | null {
   return {
     kind: "unconfirmed",
     headline: `${code}: not confirmed by the authority’s own page`,
-    detail:
-      `This file was found under the name ${code}, but no page of the authority that was read links it as this form. ` +
-      `It may be an older edition or a copy.`,
-    action: `Before you file it, check on the authority’s site that it is the current edition of ${code}.`,
+    // The packet's own words for it, so the person reads one wording.
+    text: editionCheck(form),
   };
 }
 
@@ -41,9 +42,7 @@ export function FormBacking({
   return (
     <div className="text-sm text-amber-800" role="note">
       <p className="font-medium">{note.headline}</p>
-      <p>
-        {note.detail} {note.action}
-      </p>
+      <p>{note.text}</p>
       <ul className="list-disc break-all pl-5">
         <li>
           <a

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { editionCheck } from "../../convex/easygov/case/state";
 import { backingNote } from "./FormBacking";
 
 const form = { code: "SSA-561", sourceUrl: "https://example.org/ssa-561.pdf" };
@@ -14,9 +15,8 @@ describe("backingNote", () => {
       kind: "unconfirmed",
       headline: "SSA-561: not confirmed by the authority’s own page",
     });
-    const words = JSON.stringify(note);
-    expect(words).toMatch(/found under the name SSA-561/);
-    expect(words).toMatch(/check on the authority’s site/);
+    // In the packet's own words for it.
+    expect(note).toMatchObject({ text: editionCheck(form) });
   });
 
   test("a backed form claims only that an official page links the file", () => {

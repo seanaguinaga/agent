@@ -19,12 +19,11 @@ import {
 } from "../packs/schema";
 import { READINGS } from "../profile/vocabulary";
 import { chargeTokens } from "../limits";
-import { decide } from "../decisions";
 import { vFoundFacts } from "./schema";
+import { noStorage, selectionAgent } from "./selection";
 import { answerProblem } from "./answers";
 import {
   checklistPack,
-  onePerForm,
   citedFormPdfs,
   citedIn,
   confidentialInput,
@@ -42,7 +41,6 @@ import {
   methodsOf,
   notesOf,
   pagesSearched,
-  sameForm,
   tidy,
   withMethodForms,
   zResearch,
@@ -50,21 +48,13 @@ import {
   type Research,
   type ResearchForm,
 } from "./research";
+import { isOfficialHost } from "../forms/sources";
 import {
-  addressKey,
-  isOfficialHost,
-  leadsFrom,
-  looseKey,
-  sameAddress,
-  shortlist,
-  type LabelledLink,
-  type PageLink,
-} from "../forms/sources";
-import { rankForms, type FormFacts } from "../forms/facts";
-import { budget, type Budget, type Kind, type Limits } from "../forms/budget";
-import type { FileAnswer } from "../forms/actions";
-import type { FormQuestion } from "../forms/mapping";
-import type { Id } from "../../_generated/dataModel";
+  compilePacketForms,
+  locateForm,
+  newFinder,
+  type Finder,
+} from "./locate";
 
 export { sourcesIn, type Subject };
 
@@ -148,16 +138,6 @@ export async function intakeReply(
 // Read the request, compare the saved candidates, and if none fits, read the
 // authority's own site and draft a process from what it says.
 
-export const selectionAgent = new Agent(components.agent, {
-  name: "Select process pack",
-  instructions:
-    "Identify the process pack that fits a person's goal. " +
-    "Only select a pack for the same task, in a jurisdiction that covers the person's. " +
-    "Authorities are named in many ways; compare what they do, not their labels.",
-  ...defaultConfig,
-  usageHandler: chargeTokens,
-});
-
 export const proposalFields = {
   message: v.string(),
   packId: v.optional(v.id("processPacks")),
@@ -225,8 +205,6 @@ const PROFILE_PLACEHOLDERS = [
 ]
   .map((key) => `{{${key}}} (${READINGS[key].label.toLowerCase()})`)
   .join(", ");
-
-const noStorage = { storageOptions: { saveMessages: "none" } } as const;
 
 function subjectLines({ process, jurisdiction, authority, forms }: Subject) {
   return [
@@ -336,7 +314,8 @@ export async function research(
   /** The packet's allowance, and what it has fetched: see `Finder`. */
   finder: Finder = newFinder(),
 ): Promise<Research> {
-  finder.spend.take("searches");
+  // Research itself always runs: it is counted, not limited.
+  finder.spend.add({ searches: 1 });
   const result = await selectionAgent.generateText(
     ctx,
     { threadId },
@@ -413,8 +392,8 @@ async function methodForms(
   threadId: string,
   subject: Subject,
   method: Method,
-  trace: ResearchTrace = {},
-  finder: Finder = newFinder(),
+  trace: ResearchTrace,
+  finder: Finder,
 ): Promise<ResearchForm[]> {
   const result = await selectionAgent.generateText(
     ctx,
@@ -455,7 +434,7 @@ async function methodForms(
         finder,
         { search: false },
       );
-      return got.url ? { ...form, pdfUrl: got.url } : null;
+      return got.file ? { ...form, pdfUrl: got.file.url } : null;
     }),
   );
   const kept = checked.filter((form) => form !== null);
@@ -538,728 +517,6 @@ export async function draftProcess(
   return found && notes
     ? researchedPack(draft, subject, found)
     : checklistPack(draft, subject);
-}
-
-// --- Finding a packet's forms -----------------------------------------------
-//
-// The authority says "complete form X". This binds that name to one file:
-// form X itself, its current edition, in the person's language. What holds:
-//
-// 1. A form is one thing: looked up once, and one entry, however many
-//    spellings or addresses lead to it.
-// 2. A file is one thing: its bytes, read and kept once.
-// 3. An address is asked once in a packet. Between cases a file is asked
-//    for again only so the server can say it hasn't changed.
-// 4. A packet has one allowance for everything that costs.
-// 5. What makes the binding is the authority's own page linking a file as
-//    the form: looked for on the pages research read and, failing that, one
-//    link further on, and no further.
-
-/** What finding one packet's forms may spend, in all. See `budget.ts`. */
-const PACKET_LIMITS: Limits = {
-  downloads: 12,
-  browser: 10,
-  searches: 4,
-  decisions: 10,
-  pages: 12,
-};
-
-/** The finding of one packet's forms: its allowance, and what it has asked. */
-export type Finder = {
-  spend: Budget;
-  /** Names the packet, so an address knows what this packet asked it. */
-  id: string;
-  /** The last ask of each address, in any letter case, and what it was for. */
-  asked: Map<string, Promise<{ as: string; answer: Answer }>>;
-};
-
-export const newFinder = (limits: Limits = PACKET_LIMITS): Finder => ({
-  spend: budget(limits),
-  id: crypto.randomUUID(),
-  asked: new Map(),
-});
-
-type AskCost = FileAnswer["cost"];
-type Answer =
-  | { ok: true; cost: AskCost }
-  | { ok: false; why: string; note: string; cost: AskCost };
-
-/**
- * Asks an address, once in a packet: after whoever asked it last, whose
- * answer is this one's if it was for the same thing. The cheap way first,
- * and the browser only if that was turned away. Each way is paid for from
- * the packet's allowance, and the payment is taken back if it cost nothing.
- */
-function ask<A extends Answer>(
-  finder: Finder,
-  url: string,
-  as: string,
-  how: (way: "request" | "browser", spend: boolean) => Promise<A>,
-): Promise<A | Extract<Answer, { ok: false }>> {
-  const { spend } = finder;
-  const kind = as === "page" ? "pages" : "downloads";
-  const pay = async (way: "request" | "browser") => {
-    const kinds: Kind[] = [way === "request" ? kind : "browser"];
-    const taken = kinds.filter((each) => spend.take(each));
-    const paid = taken.length === kinds.length;
-    const answer = await how(way, paid);
-    const used = way === "request" ? answer.cost[kind] : answer.cost.browser;
-    if (!paid || !used) taken.forEach((each) => spend.giveBack(each));
-    const { bytes, reused, unchanged } = answer.cost;
-    spend.add({ bytes, reused, unchanged });
-    if (!answer.ok && answer.why === "unspent") spend.add({ refused: 1 });
-    return answer;
-  };
-  const key = looseKey(url);
-  const earlier = finder.asked.get(key);
-  const run = (async () => {
-    const before = await earlier;
-    if (before?.as === as && before.answer.ok) return before;
-    try {
-      const plain = await pay("request");
-      const answer =
-        plain.ok || plain.why !== "refused" ? plain : await pay("browser");
-      return { as, answer };
-    } catch (error) {
-      console.error("Address unavailable", url, error);
-      const cost = {
-        downloads: 0,
-        browser: 0,
-        pages: 0,
-        bytes: 0,
-        held: 0,
-        reused: 0,
-        unchanged: 0,
-      };
-      return {
-        as,
-        answer: { ok: false as const, why: "unusable", note: `${error}`, cost },
-      };
-    }
-  })();
-  finder.asked.set(key, run);
-  return run.then(({ answer }) => answer as A);
-}
-
-/** The file at an address, as a form. */
-export async function fileAt(
-  ctx: ActionCtx,
-  finder: Finder,
-  form: {
-    jurisdiction: string;
-    code: string;
-    /** The page's words for its link to the address, if it links it as the form. */
-    linkedAs?: string;
-  },
-  url: string,
-): Promise<FileAnswer> {
-  const answer = await ask(
-    finder,
-    url,
-    `${form.code}\n${form.linkedAs ?? ""}`,
-    (way, spend) =>
-      ctx.runAction(internal.easygov.forms.actions.fetchFile, {
-        ...form,
-        url,
-        way,
-        spend,
-        packet: finder.id,
-      }),
-  );
-  return answer as FileAnswer;
-}
-
-/** The links an official page carries. */
-async function linksAt(
-  ctx: ActionCtx,
-  finder: Finder,
-  page: string,
-): Promise<PageLink[]> {
-  const answer = await ask(finder, page, "page", (way, spend) =>
-    ctx.runAction(internal.easygov.forms.actions.readLinks, {
-      url: page,
-      way,
-      spend,
-      packet: finder.id,
-    }),
-  );
-  const on = new URL(page).hostname;
-  return answer.ok && "links" in answer
-    ? answer.links.map((link) => ({ ...link, on }))
-    : [];
-}
-
-/** As many of the pages research read as are read for their links. */
-const MAX_PAGES = 8;
-
-/** As many pages one link further on as are read for one form. */
-const MAX_FURTHER = 2;
-
-/** Links from several pages as one list, each address once. */
-function eachOnce<T extends { url: string }>(links: T[]): T[] {
-  const seen = new Set<string>();
-  return links.filter(({ url }) => {
-    const key = addressKey(url);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-/** The links on official pages, with their words, as read now. */
-export async function linksOn(
-  ctx: ActionCtx,
-  finder: Finder,
-  pages: string[],
-): Promise<PageLink[]> {
-  const found = await Promise.all(
-    pages
-      // A PDF among the pages is itself a lead, tried as one: not a page.
-      .filter(
-        (page) => isOfficialHost(page) && !/pdf/i.test(page.split("?")[0]),
-      )
-      .slice(0, MAX_PAGES)
-      .map((page) => linksAt(ctx, finder, page)),
-  );
-  return eachOnce(found.flat());
-}
-
-/** The link an authority's pages give for a form, and how sure the choice is. */
-export type Designated = {
-  url: string;
-  label: string;
-  /** The heading the link sits under on the page, if it has one. */
-  under?: string;
-  /** From 0 to 1, where the chooser says. */
-  confidence?: number;
-  by: "decision" | "model";
-  /** True if it was found one link further on than the pages research read. */
-  further?: boolean;
-};
-
-/** Below this, a choice of link is a guess, and the other leads are used. */
-const SURE = 0.5;
-
-/**
- * Which of an authority's own links is the form. The choice is among links
- * that exist, so no address can be made up, and it comes with a confidence,
- * so an unsure choice isn't acted on. No `designated` if no link is the form.
- *
- * The decision model makes the choice. If it can't be reached, the ordinary
- * model picks a link by number, without a confidence.
- */
-async function chooseLink(
-  ctx: ActionCtx,
-  threadId: string,
-  code: string,
-  subject: Pick<Subject, "jurisdiction" | "authority">,
-  links: LabelledLink[],
-  spend: Budget,
-): Promise<{
-  designated?: Designated;
-  /** What it picked when the pick wasn't acted on, and how sure it was. */
-  considered?: { choice: string; confidence?: number };
-}> {
-  if (!links.length) return {};
-  if (!spend.take("decisions")) {
-    spend.add({ refused: 1 });
-    return {};
-  }
-  // The page's words for the link: its own, and the heading it sits under.
-  // Then whose site the file and the page are on: any government's page can
-  // link a form, and only the authority's own says which file is its form.
-  const describe = ({ url, label, under, on }: LabelledLink) => {
-    const { hostname, pathname } = new URL(url);
-    return (
-      `${label || "(no words)"}` +
-      (under ? `, under the heading "${under}"` : "") +
-      ` [${hostname}/…/${decodeURI(pathname.split("/").pop() ?? "")}` +
-      (on ? `, linked from a page of ${on}]` : "]")
-    );
-  };
-  const instructions =
-    `Which link is the blank form ${code} itself, in English, for a person to fill in? ` +
-    "Failing that, the authority's own page for that form. " +
-    `It has to be published by ${subject.authority ?? "the authority"} itself: ` +
-    "not a copy, or another government's version, on some other site. " +
-    "Not its instructions, not a translation, and not another form with a similar name. " +
-    "Go by the link's words and the heading it is under before its file name: " +
-    "a form that was renamed can keep its old file name. " +
-    "Choose none if no link is that form.";
-  const decided = await decide(ctx, {
-    state: {
-      form: code,
-      authority: subject.authority ?? "",
-      jurisdiction: subject.jurisdiction,
-    },
-    instructions,
-    criteria: {
-      ...Object.fromEntries(
-        links.map((link, i) => [`link${i + 1}`, describe(link)]),
-      ),
-      none: "No link here is that form.",
-    },
-  });
-  if (decided) {
-    const link = links[Number(decided.choice.replace(/^link/, "")) - 1];
-    const sure = decided.confidence;
-    const considered = {
-      choice: link ? `${link.label} [${link.url.split("/").pop()}]` : "none",
-      confidence: sure,
-    };
-    if (!link || (sure !== undefined && sure < SURE)) return { considered };
-    return {
-      designated: {
-        url: link.url,
-        label: link.label,
-        under: link.under,
-        confidence: sure,
-        by: "decision",
-      },
-    };
-  }
-  try {
-    const { output } = await selectionAgent.generateText(
-      ctx,
-      { threadId },
-      {
-        prompt: [
-          instructions,
-          "Answer the link's number, or 0 for none.",
-          ...links.map((link, i) => `${i + 1}. ${describe(link)}`),
-        ].join("\n"),
-        output: Output.object({
-          schema: z.object({ link: z.number().int().min(0).max(links.length) }),
-        }),
-      },
-      { contextOptions: { recentMessages: 0 }, ...noStorage },
-    );
-    const link = links[output.link - 1];
-    return link
-      ? {
-          designated: {
-            url: link.url,
-            label: link.label,
-            under: link.under,
-            by: "model",
-          },
-        }
-      : {};
-  } catch (error) {
-    console.error("Link choice unavailable", code, error);
-    return {};
-  }
-}
-
-/** How an address for a form was come by, most trusted first. */
-type Via = "linked" | "given" | "variant" | "known" | "search";
-
-/** A file fetched for a form, and what it says about itself. */
-type FormFile = {
-  url: string;
-  editionId: Id<"formEditions">;
-  via: Via;
-  facts: FormFacts;
-  /** Whether it is the file the authority's own link gives. */
-  designated: boolean;
-};
-
-/** Where a form's PDF was found, and by which step. */
-export type Located = {
-  url?: string;
-  /** The PDF as fetched from `url`. */
-  editionId?: Id<"formEditions">;
-  via?: Via;
-  facts?: FormFacts;
-  /**
-   * Whether the file chosen is the one an official page links as this form:
-   * the binding itself, not a file that only names the form.
-   */
-  backed?: boolean;
-  /** The authority's own link chosen for the form, if one was. */
-  designated?: Designated;
-  /** Why there is or isn't one: how many links there were to choose from. */
-  links?: {
-    onPages: number;
-    shortlisted: number;
-    /** Pages read one link further on, looking for the form's own. */
-    further: number;
-    chose: string;
-    considered?: { choice: string; confidence?: number };
-  };
-  /** The other files that named the form, which this one was chosen over. */
-  others?: { url: string; via: Via; facts: FormFacts }[];
-  /** The leads that gave no file for the form, each with why. */
-  failed?: { url: string; via: Via; why: string; note: string }[];
-};
-
-/**
- * The file to use for a form. Every address is only a lead: all of them are
- * asked, each file that names the form is known by its facts, and the best
- * is chosen by those facts (see `rankForms`), not by which was found first.
- * The leads are the authority's own link to the form, where its pages have
- * one; the addresses research gave and their English editions; and the
- * addresses earlier cases chose.
- *
- * Where the pages research read don't link the form, its own page is usually
- * one link further on: a lead that turned out to be a page, or a link whose
- * words carry the form's number. Those are read for the link, and no page
- * beyond them. Only if no lead serves the form is the search model asked for
- * it alone.
- */
-export async function locateForm(
-  ctx: ActionCtx,
-  threadId: string,
-  form: { code: string; leads: string[] },
-  subject: Pick<Subject, "jurisdiction" | "authority">,
-  finder: Finder,
-  options: {
-    /** The links on the pages research read, with their words. */
-    links?: () => Promise<PageLink[]>;
-    /** False to stop before asking the search model. */
-    search?: boolean;
-  } = {},
-): Promise<Located> {
-  const { jurisdiction, authority } = subject;
-  const { spend } = finder;
-  const { code } = form;
-  const found: FormFile[] = [];
-  const asked = new Set<string>();
-  /** Leads that turned out to be web pages, not files. */
-  const pages: string[] = [];
-  const failed: NonNullable<Located["failed"]> = [];
-  /** Asks each address not asked yet, and keeps the files that are the form. */
-  const tryLeads = async (
-    leads: { url: string; via: Via }[],
-    /** The page's words for the link these leads came from. */
-    linkedAs?: string,
-  ) => {
-    const fresh = leads.filter(({ url }) => {
-      const key = addressKey(url);
-      if (!url || asked.has(key)) return false;
-      asked.add(key);
-      return true;
-    });
-    const files = await Promise.all(
-      fresh.map(async ({ url, via }) => {
-        const answer = await fileAt(
-          ctx,
-          finder,
-          { jurisdiction, code, linkedAs },
-          url,
-        );
-        if (answer.ok) return [{ url, via, ...answer }];
-        if (answer.why === "page") pages.push(url);
-        failed.push({ url, via, why: answer.why, note: answer.note });
-        return [];
-      }),
-    );
-    for (const { url, via, editionId, facts } of files.flat()) {
-      // The same file reached by two addresses counts once.
-      const same = found.find((file) => file.editionId === editionId);
-      if (same) same.designated ||= via === "linked";
-      else {
-        found.push({
-          url,
-          editionId,
-          via,
-          facts,
-          designated: via === "linked",
-        });
-      }
-    }
-  };
-  const as = (via: Via) => (url: string) => ({ url, via });
-
-  // The authority's own link to the form, if its pages have one: the only
-  // lead that states which form a file is. A link isn't taken for a file or
-  // a page by how its address looks: it is asked, and says which it is.
-  const onPages = options.links ? await options.links() : [];
-  let short: LabelledLink[] = [];
-  let considered: { choice: string; confidence?: number } | undefined;
-  const wordsOf = ({ label, under }: Designated) => `${label} ${under ?? ""}`;
-  /** Chooses the form's link among these, and asks it. */
-  const follow = async (links: LabelledLink[]) => {
-    short = shortlist(links, code);
-    const chosen = await chooseLink(ctx, threadId, code, subject, short, spend);
-    considered = chosen.considered ?? considered;
-    if (!chosen.designated) return undefined;
-    const linked = leadsFrom(chosen.designated.url);
-    // It may be a file already found: then that file is the linked one.
-    for (const file of found) {
-      if (linked.some((url) => sameAddress(url, file.url))) {
-        file.designated = true;
-      }
-    }
-    await tryLeads(linked.map(as("linked")), wordsOf(chosen.designated));
-    return chosen.designated;
-  };
-  let designated = await follow(onPages);
-  // What earlier cases chose for this form, so a search that misses it this
-  // time doesn't lose it.
-  const remembered: string[] = await ctx.runQuery(
-    internal.easygov.forms.data.knownSources,
-    { jurisdiction, code },
-  );
-  const given = form.leads.filter(Boolean);
-  // Where the file the authority's own link gives is a form to fill in, in
-  // English, no other lead could be chosen over it (see `rankForms`), so
-  // none is asked.
-  const settled = found.some(
-    ({ designated, facts }) =>
-      designated &&
-      facts.places > 0 &&
-      (facts.language === "en" || facts.language === "both"),
-  );
-  if (!settled) {
-    await tryLeads([
-      ...given.map(as("given")),
-      ...given.flatMap(leadsFrom).map(as("variant")),
-      ...remembered.map(as("known")),
-    ]);
-  }
-
-  // One link further on: where the link chosen, or a lead, was the form's
-  // own page and not its file, that page's links are chosen among. No
-  // further than that.
-  const beyond = found.some((file) => file.designated)
-    ? []
-    : eachOnce(pages.map((url) => ({ url }))).slice(0, MAX_FURTHER);
-  if (beyond.length) {
-    const more = await Promise.all(
-      beyond.map(({ url }) => linksAt(ctx, finder, url)),
-    );
-    const further = await follow(eachOnce(more.flat()));
-    designated = further && { ...further, further: true };
-  }
-  if (!found.some((file) => file.designated)) designated = undefined;
-  const links = {
-    onPages: onPages.length,
-    shortlisted: short.length,
-    further: beyond.length,
-    chose: designated
-      ? "a link"
-      : !onPages.length
-        ? "no links on the pages"
-        : !short.length
-          ? "no link shares the code"
-          : "none of the shortlist",
-    considered,
-  };
-
-  const search = !found.length && options.search !== false;
-  if (search && !spend.take("searches")) spend.add({ refused: 1 });
-  else if (search) {
-    try {
-      const result = await selectionAgent.generateText(
-        ctx,
-        { threadId },
-        {
-          model: researchModel,
-          prompt: [
-            `Find the current official blank PDF for ${code}, published by ${authority ?? jurisdiction}.`,
-            given.length &&
-              `That address could not supply the PDF: ${given[0]}. Look for another official publication location, including the authority's own forms service.`,
-            "Return direct official file URLs only. Omit instruction booklets and application portals.",
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        },
-        { contextOptions: { recentMessages: 0 }, ...noStorage },
-      );
-      await tryLeads(
-        citedIn(result.text).slice(0, 3).flatMap(leadsFrom).map(as("search")),
-      );
-    } catch (error) {
-      console.error("Official form lookup unavailable", code, error);
-    }
-  }
-
-  const [best, ...rest] = rankForms(found);
-  if (!best) return { designated, links, failed };
-  await ctx.runMutation(internal.easygov.forms.data.rememberChosen, {
-    jurisdiction,
-    code,
-    url: best.url,
-  });
-  const { url, editionId, via, facts } = best;
-  return {
-    url,
-    editionId,
-    via,
-    facts,
-    // A file that prints a date it expired on isn't given as confirmed,
-    // whoever links it: an authority's page can link an edition it replaced.
-    backed: best.designated && !best.facts.expired,
-    designated,
-    links,
-    others: rest.map(({ url, via, facts }) => ({ url, via, facts })),
-    failed,
-  };
-}
-
-/** A form of a packet, as research named it. */
-type NamedForm = {
-  code: string;
-  sourceUrl: string;
-  when?: { key: string; equals: string };
-};
-
-/**
- * Each of a packet's forms with the file found for it. A form is looked up
- * once, however many entries name it; and entries that turn out to be one
- * file are one form (see `onePerForm`).
- */
-export async function locateForms<T extends NamedForm>(
-  ctx: ActionCtx,
-  threadId: string,
-  forms: T[],
-  subject: Pick<Subject, "jurisdiction" | "authority">,
-  /** The official pages research read. */
-  pages: string[],
-  finder: Finder,
-): Promise<{ form: T; located: Located }[]> {
-  // The pages are read for their links once, and only if a form needs it.
-  let reading: ReturnType<typeof linksOn> | undefined;
-  const links = () => (reading ??= linksOn(ctx, finder, pages));
-  const lookups: { code: string; leads: string[]; members: T[] }[] = [];
-  for (const form of forms) {
-    const lookup = lookups.find(({ members }) =>
-      members.some((other) =>
-        sameForm(
-          { code: other.code, pdfUrl: other.sourceUrl, requiredBy: "" },
-          { code: form.code, pdfUrl: form.sourceUrl, requiredBy: "" },
-        ),
-      ),
-    );
-    if (lookup) {
-      lookup.members.push(form);
-      lookup.leads.push(form.sourceUrl);
-    } else {
-      lookups.push({
-        code: form.code,
-        leads: [form.sourceUrl],
-        members: [form],
-      });
-    }
-  }
-  const located = await Promise.all(
-    lookups.map((lookup) =>
-      locateForm(ctx, threadId, lookup, subject, finder, { links }),
-    ),
-  );
-  const entries = lookups.flatMap(({ members }, i) =>
-    members.map((form) => ({
-      code: form.code,
-      when: form.when,
-      form,
-      located: located[i],
-    })),
-  );
-  return onePerForm(
-    entries,
-    (a, b) =>
-      a.located === b.located ||
-      (!!a.located.editionId && a.located.editionId === b.located.editionId),
-  ).map(({ form, when, located }) => ({
-    form: { ...form, when },
-    located,
-  }));
-}
-
-async function compilePacketForms(
-  ctx: ActionCtx,
-  threadId: string,
-  draft: Infer<typeof vProcessPackDefinition>,
-  finder: Finder,
-) {
-  if (!draft.packetForms?.length) return draft;
-  const questions = new Map(
-    (draft.inputQuestions ?? []).map((q) => [q.key, q]),
-  );
-  const found = await locateForms(
-    ctx,
-    threadId,
-    draft.packetForms,
-    draft,
-    draft.output?.sources ?? [],
-    finder,
-  );
-  // The same file under two ways of filing is compiled once.
-  const compiling = new Map<string, ReturnType<typeof compile>>();
-  async function compile(
-    code: string,
-    url: string,
-    editionId: Id<"formEditions">,
-  ) {
-    try {
-      const compiled: {
-        blueprintId: Id<"formBlueprints">;
-        questions: FormQuestion[];
-      } = await ctx.runAction(internal.easygov.forms.agents.compileSource, {
-        jurisdiction: draft.jurisdiction,
-        code,
-        sourceUrl: url,
-        editionId,
-      });
-      return compiled;
-    } catch (error) {
-      console.error("Form could not be made fillable", code, url, error);
-      return undefined;
-    }
-  }
-  const prepared = await Promise.all(
-    found.map(async ({ form: named, located }) => {
-      const { url = "", editionId } = located;
-      // Whether the authority's own page links this file as the form.
-      const form = { ...named, ...(url && { backed: !!located.backed }) };
-      const running =
-        editionId &&
-        (compiling.get(editionId) ?? compile(form.code, url, editionId));
-      if (editionId && running) compiling.set(editionId, running);
-      const compiled = await running;
-      if (compiled) {
-        return {
-          questions: compiled.questions,
-          form: {
-            ...form,
-            sourceUrl: url,
-            blueprintId: compiled.blueprintId,
-            inputs: compiled.questions.map((q) => q.key),
-            openItem: undefined,
-          },
-        };
-      }
-      // If the PDF is at least there, the person is pointed to it. An
-      // address nothing came from isn't kept as a source.
-      return {
-        questions: [],
-        form: {
-          ...form,
-          sourceUrl: url,
-          // "Official" is said only of a file the authority's page links.
-          openItem: url
-            ? located.backed
-              ? `Complete ${form.code} by hand. EasyGov found the official form but could not fill it in.`
-              : `Complete ${form.code} by hand. EasyGov found a file for it but could not fill it in.`
-            : `Complete ${form.code} manually. EasyGov could not prepare a copy from the official source.`,
-        },
-      };
-    }),
-  );
-  for (const result of prepared)
-    for (const q of result.questions) questions.set(q.key, q);
-  draft.packetForms = prepared.map((result) => result.form);
-  draft.inputQuestions = [...questions.values()];
-  // The alert that a packet hit its ceiling: search the logs for this line.
-  if (finder.spend.spent.refused) {
-    console.warn("easygov packet allowance ran out", {
-      jurisdiction: draft.jurisdiction,
-      authority: draft.authority,
-      spent: finder.spend.spent,
-    });
-  }
-  return draft;
 }
 
 type Request = Awaited<ReturnType<typeof readRequest>>;
@@ -1366,8 +623,12 @@ export const propose = internalAction({
       },
     );
     const notes = found ? notesOf(found) : "";
-    const draft = await draftProcess(ctx, threadId, subject, found);
-    await compilePacketForms(ctx, threadId, draft, finder);
+    const draft = await compilePacketForms(
+      ctx,
+      threadId,
+      await draftProcess(ctx, threadId, subject, found),
+      finder,
+    );
     const pages = draft.output?.sources?.length ?? 0;
     return {
       origin,
@@ -1784,19 +1045,22 @@ export const revisitDraft = internalAction({
             ?.filter((q) => confidentialInput(q.key, q.question))
             .map((q) => q.key),
         );
-        if (draft.output?.letter)
-          draft.output.letter = draft.output.letter.replace(
-            /{{(\w+)}}/g,
-            (token, key: string) =>
-              privateKeys.has(key) ? "[complete by hand]" : token,
-          );
-        draft.inputs = draft.inputs.filter((key) => !privateKeys.has(key));
-        draft.inputQuestions = draft.inputQuestions?.filter(
-          (q) => !privateKeys.has(q.key),
+        const letter = draft.output?.letter?.replace(
+          /{{(\w+)}}/g,
+          (token, key: string) =>
+            privateKeys.has(key) ? "[complete by hand]" : token,
         );
-        draft.packetForms = known;
+        const redacted = {
+          ...draft,
+          ...(draft.output && { output: { ...draft.output, letter } }),
+          inputs: draft.inputs.filter((key) => !privateKeys.has(key)),
+          inputQuestions: draft.inputQuestions?.filter(
+            (q) => !privateKeys.has(q.key),
+          ),
+          packetForms: known,
+        };
         return {
-          draft: await compilePacketForms(ctx, threadId, draft, finder),
+          draft: await compilePacketForms(ctx, threadId, redacted, finder),
           notes,
         };
       }

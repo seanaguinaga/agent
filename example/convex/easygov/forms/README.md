@@ -148,6 +148,9 @@ fills the form (`fillForCase`). The review shows the PDF
 
 ## The files
 
+How a form is confirmed as a government's own, in any country, and the stages of
+that work: [VOUCHING.md](VOUCHING.md).
+
 | File         | Job                                                                         |
 | ------------ | --------------------------------------------------------------------------- |
 | `pdf.ts`     | Pure: read a PDF's places, fill them, read them back                        |
@@ -159,3 +162,4 @@ fills the form (`fillForCase`). The review shows the PDF
 | `browser.ts` | In Node: open an address in a hosted browser, collect the file              |
 | `actions.ts` | In Node: fetch from the source, fill for a case                             |
 | `agents.ts`  | The model step: draft a mapping from the printed words                      |
+| `sites.ts`   | Whose government each site is; which form is confirmed (see `VOUCHING.md`)  |

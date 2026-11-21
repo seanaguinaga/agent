@@ -102,7 +102,7 @@ const vSite = v.object({
 });
 
 /** The registered domain a host is under, if it is in the register. */
-async function registeredFor(ctx: QueryCtx, host: string) {
+export async function registeredFor(ctx: QueryCtx, host: string) {
   const labels = host.toLowerCase().split(".");
   // A registered .gov domain is the host's last two labels.
   const domain = labels.slice(-2).join(".");

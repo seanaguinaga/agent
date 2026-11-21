@@ -8,6 +8,7 @@ import { internal } from "../../_generated/api";
 import type { ActionCtx } from "../../_generated/server";
 import { initConvexTest } from "../../setup.test";
 import { decide } from "../decisions";
+import { authorityKey } from "../forms/authorities";
 import {
   browserKey,
   fakeNetwork,
@@ -70,7 +71,13 @@ const ctxOf = (t: T) =>
     runAction: t.action,
   }) as unknown as ActionCtx;
 
-/** A test deployment whose register knows who owns ssa.gov. */
+/** The authority's own sites, for a form looked up alone. */
+const ssaOwn = [{ domain: "ssa.gov" }];
+
+/**
+ * A test deployment whose register knows who owns ssa.gov, and where an
+ * operator has approved ssa.gov as the SSA's site.
+ */
 async function withSites() {
   const t = initConvexTest();
   await t.mutation(internal.easygov.forms.sites.putSites, {
@@ -83,11 +90,19 @@ async function withSites() {
     ],
     at: 0,
   });
+  await t.run((ctx) =>
+    ctx.db.insert("authoritySites", {
+      key: authorityKey("us", subject.authority),
+      jurisdiction: "us",
+      authority: subject.authority,
+      sites: ssaOwn,
+      status: "approved",
+      approvedAt: 0,
+      approvedBy: "test user",
+    }),
+  );
   return t;
 }
-
-/** The authority's own sites, for a form looked up alone. */
-const ssaOwn = async () => new Set(["ssa.gov"]);
 
 /** A finder that may not search, so the search model is never called. */
 const finderWith = (limits: Parameters<typeof newFinder>[0] = {}) =>
@@ -304,7 +319,7 @@ test("a form two ways of filing need is one lookup, and one entry for each way",
   expect(net.asked(a)).toBe(1);
 });
 
-test("the authority's own link to a fillable English file settles the form: no other lead is requested", async () => {
+test("the authority's own link to a fillable English file is chosen over older editions others gave", async () => {
   const t = await withSites();
   const linked = `${ssa}/ssa-561.pdf`;
   const given = `${ssa}/old/ssa-561-2019.pdf`;
@@ -361,16 +376,21 @@ test("the authority's own link to a fillable English file settles the form: no o
       confidence: 0.9,
     },
     links: { onPages: 2, chose: "a link", further: 0 },
-    others: [],
+    others: [
+      { url: earlier, via: "known", facts: { revision: 202103 } },
+      { url: given, via: "given", facts: { revision: 201901 } },
+    ],
   });
   // The decision was offered the page's words and heading for each link.
   expect(offered()[0].link1).toBe(
     'English PDF, under the heading "Form SSA-561 | Request for Reconsideration" [a file of Social Security Administration (www.ssa.gov): …/ssa-561.pdf, linked from a page of Social Security Administration (www.ssa.gov)]',
   );
-  // Neither the address research gave nor the remembered one was asked.
-  expect(net.addresses()).toEqual([index, linked]);
+  // The address research gave and the remembered one were asked too: either
+  // could have been a later edition than the page links.
+  expect(net.addresses()).toEqual([index, linked, given, earlier]);
   expect(finder.spend.spent).toMatchObject({
-    downloads: 1,
+    // The stand-in server never answers "unchanged", so each is downloaded.
+    downloads: 3,
     pages: 1,
     decisions: 1,
     refused: 0,
@@ -586,7 +606,7 @@ test("a lead that turns out to be a page is read one link further on, without be
     { code: "SSA-561", leads: [page] },
     subject,
     finder,
-    { authority: ssaOwn },
+    { sites: ssaOwn },
   );
 
   expect(located).toMatchObject({
@@ -782,30 +802,144 @@ test("a form whose file can't be found again loses what was said of its old file
   expect(earlier.packetForms![0]).toMatchObject({ backed: true });
 });
 
-test("a link is no confirmation unless the page and the file are both on the authority's own sites", async () => {
-  const t = await withSites();
+test("a link is no confirmation unless the page and the file are both on the authority's approved sites", async () => {
   const file = `${ssa}/ssa-561.pdf`;
-  fakeNetwork({ [file]: servePdf(ssa561) });
-  choosing(/ssa-561/);
-  const located = (authority: () => Promise<Set<string>>) =>
-    locateForm(
-      ctxOf(t),
+  const copy = "https://www.county.gov/forms/ssa-561.pdf";
+  fakeNetwork({
+    [file]: servePdf(ssa561),
+    [copy]: servePdf(await formPdf(["Form SSA-561 (08-2025)", "County copy"])),
+  });
+  // Each on its own deployment, so no file found for one is known to the next.
+  const located = async (url: string, on: string, sites = ssaOwn) => {
+    choosing(/ssa-561/);
+    return locateForm(
+      ctxOf(await withSites()),
       "thread",
       { code: "SSA-561", leads: [] },
       subject,
       finderWith(),
       {
-        links: async () => [
-          { url: file, label: "SSA-561", pdf: true, on: "www.ssa.gov" },
-        ],
-        authority,
+        links: async () => [{ url, label: "SSA-561", pdf: true, on }],
+        sites,
       },
     );
+  };
 
-  expect((await located(ssaOwn)).file).toMatchObject({ backed: true });
-  // The research read another government's pages: this one isn't its own.
-  expect((await located(async () => new Set(["irs.gov"]))).file).toMatchObject({
+  expect((await located(file, index)).file).toMatchObject({ backed: true });
+  // Another government's page linking the authority's file.
+  expect((await located(file, "https://www.county.gov/")).file).toMatchObject({
     url: file,
     backed: false,
   });
+  // The authority's page linking a copy on another site.
+  expect((await located(copy, index)).file).toMatchObject({
+    url: copy,
+    backed: false,
+  });
+  // No sites approved for the authority.
+  expect((await located(file, index, [])).file).toMatchObject({
+    backed: false,
+  });
+});
+
+test("a later edition on the authority's own site is chosen over the old one its page links, and stays confirmed", async () => {
+  const t = await withSites();
+  const old = `${ssa}/ssa-561-u2.pdf`;
+  const current = `${ssa}/ssa-561.pdf`;
+  const net = fakeNetwork({
+    [old]: servePdf(await formPdf(["Form SSA-561-U2 (05-2016)"])),
+    [current]: servePdf(ssa561),
+  });
+  choosing(/ssa-561-u2/);
+
+  const located = await locateForm(
+    ctxOf(t),
+    "thread",
+    { code: "SSA-561", leads: [current] },
+    subject,
+    finderWith(),
+    {
+      links: async () => [
+        { url: old, label: "SSA-561", pdf: true, on: `${ssa}/ssa-3441.html` },
+      ],
+      sites: ssaOwn,
+    },
+  );
+
+  expect(located.file).toMatchObject({
+    url: current,
+    via: "given",
+    backed: true,
+    facts: { revision: 202508 },
+  });
+  expect(net.asked(old)).toBe(1);
+});
+
+test("once the authority's own link gives a good file, leads off its sites aren't asked", async () => {
+  const t = await withSites();
+  const linked = `${ssa}/ssa-561.pdf`;
+  const elsewhere = "https://www.county.gov/forms/ssa-561.pdf";
+  const net = fakeNetwork({
+    [linked]: servePdf(ssa561),
+    [elsewhere]: servePdf(ssa561),
+  });
+  choosing(/ssa-561/);
+
+  const located = await locateForm(
+    ctxOf(t),
+    "thread",
+    { code: "SSA-561", leads: [elsewhere] },
+    subject,
+    finderWith(),
+    {
+      links: async () => [
+        { url: linked, label: "SSA-561", pdf: true, on: index },
+      ],
+      sites: ssaOwn,
+    },
+  );
+
+  expect(located.file).toMatchObject({ url: linked, backed: true });
+  expect(net.asked(elsewhere)).toBe(0);
+});
+
+test("an authority with no approved sites gets the sites research read suggested, and nothing confirmed", async () => {
+  const t = await withSites();
+  const file = `${ssa}/ssa-561.pdf`;
+  fakeNetwork({
+    [index]: servePage(
+      `<html><body><a href="ssa-561.pdf">SSA-561</a></body></html>`,
+    ),
+    [file]: servePdf(ssa561),
+  });
+  choosing(/ssa-561/);
+  const other = {
+    ...us,
+    authority: "Social Security Administration, Baltimore",
+  };
+
+  const [{ located }] = await locateForms(
+    ctxOf(t),
+    "thread",
+    [{ code: "SSA-561", sourceUrl: file }],
+    other,
+    [index],
+    finderWith(),
+  );
+
+  expect(located.file).toMatchObject({ url: file, backed: false });
+  const rows = await t.run((ctx) =>
+    ctx.db
+      .query("authoritySites")
+      .withIndex("by_key", (q) =>
+        q.eq("key", authorityKey("us", other.authority)),
+      )
+      .collect(),
+  );
+  expect(rows).toEqual([
+    expect.objectContaining({
+      status: "suggested",
+      sites: [{ domain: "ssa.gov" }],
+    }),
+  ]);
 });

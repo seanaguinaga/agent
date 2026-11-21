@@ -405,6 +405,10 @@ export const vHistoryKind = v.union(
   v.literal("goal.set"),
   v.literal("pack.proposed"),
   v.literal("pack.clarification"),
+  // The person turned down what the model proposed, or corrected it.
+  v.literal("pack.rejected"),
+  v.literal("answer.changed"),
+  v.literal("artifact.reassessed"),
   v.literal("answers.suggested"),
   v.literal("evidence.added"),
   v.literal("evidence.removed"),

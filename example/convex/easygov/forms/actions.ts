@@ -2,7 +2,7 @@
 // The PDF work: fetching a form from its authority, reading it, and filling
 // it. In Node because the PDF libraries need it.
 import { requireOperator } from "../operators";
-import { sha256 } from "@noble/hashes/sha2.js";
+import { sha256 as sha256Of } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { ConvexError, v, type Infer } from "convex/values";
 import { PDFCheckBox, PDFDocument, PDFTextField } from "pdf-lib";
@@ -13,122 +13,418 @@ import {
   internalAction,
   type ActionCtx,
 } from "../../_generated/server";
-import { browserService, downloadViaBrowser, readViaBrowser } from "./browser";
+import {
+  BrowserBusy,
+  browserService,
+  openViaBrowser,
+  type Opened,
+} from "./browser";
 import { resolveMapping } from "./mapping";
 import { openForFilling, UnusablePdf } from "./open";
 import { fillPdf, inspectPdf, verifyPdf } from "./pdf";
-import { languageOf, revisionOf, type FormFacts } from "./facts";
 import {
+  expiredBy,
+  languageOf,
+  revisionOf,
+  type FormFacts,
+  type ReadFacts,
+} from "./facts";
+import {
+  vAddressAnswer,
   vFilledDocument,
+  vFormFacts,
+  vPageLink,
   vLeft,
   vTarget,
   vMapping,
   vPacketPdf,
 } from "./schema";
-import { isOfficialHost } from "./data";
-import { namesForm, obtain } from "./sources";
+import {
+  addressKey,
+  isOfficialHost,
+  isTheForm,
+  isWebPage,
+  labelledLinks,
+  MAX_BYTES,
+  notAPdf,
+  readUpTo,
+  stands,
+  type PageLink,
+} from "./sources";
 
-const fetchArgs = {
-  formId: v.id("forms"),
-  /** Read the targets again even if these bytes are known. */
-  reinspect: v.optional(v.boolean()),
-};
-const vFetched = v.object({
-  editionId: v.id("formEditions"),
-  fresh: v.boolean(),
-});
-type Fetched = Infer<typeof vFetched>;
-/** What one fetch cost: see `budget.ts`. */
-const vFetchCost = v.object({
+// --- Asking an official address ---------------------------------------------
+//
+// Every fetch goes through `ask`: a case finding its forms, a case reading a
+// page for its links, and an operator fetching a registry entry. What an
+// address answered is kept (`formAddresses`), a file is known by its hash
+// wherever it came from, and each ask says what it cost.
+
+const vCost = v.object({
   downloads: v.number(),
   browser: v.number(),
+  pages: v.number(),
   bytes: v.number(),
+  held: v.number(),
+  reused: v.number(),
+  unchanged: v.number(),
 });
-type FetchCost = Infer<typeof vFetchCost>;
+type AskCost = Infer<typeof vCost>;
 
 /**
- * Fetches a form from its source and records what came back. The same bytes
- * as before only refresh `checkedAt`; different bytes are a new edition,
- * read for its revision and targets. Returns the edition.
+ * Why an ask got nothing. What an address answers (see `vAddressAnswer`),
+ * or: "page", it is a web page and a file was wanted; "otherForm", its file
+ * isn't the form; "refused", a plain request was turned away, and a browser
+ * may do better; "busy", no browser could be had; "unspent", it would have
+ * cost something, and the caller said not to spend.
  */
-async function fetchEdition(
-  ctx: ActionCtx,
-  { formId, reinspect }: { formId: Id<"forms">; reinspect?: boolean },
-  /** Counted into as the fetch goes, so a fetch that throws still says. */
-  cost: FetchCost = { downloads: 0, browser: 0, bytes: 0 },
-): Promise<Fetched> {
-  const form: { urls: string[]; code: string } | null = await ctx.runQuery(
-    internal.easygov.forms.data.formOf,
-    { formId },
-  );
-  if (!form) throw new ConvexError("Form not found.");
-  // A plain request first. Where that's refused, a real browser opens the
-  // same address, if one is set up.
-  const service = browserService();
-  const got = await obtain(form.urls, {
-    request: async (url) => {
-      let address = url;
-      for (let redirects = 0; redirects <= 5; redirects++) {
-        if (!isOfficialHost(address))
-          throw new Error(
-            "The form link left the authority’s permitted sites.",
-          );
-        const response = await fetch(address, {
-          redirect: "manual",
-          headers: { "User-Agent": "Mozilla/5.0 (compatible; form-fetch)" },
-        });
-        if (
-          response.status >= 300 &&
-          response.status < 400 &&
-          response.headers.has("location")
-        ) {
-          address = new URL(response.headers.get("location")!, address).href;
-          continue;
-        }
-        if (!response.ok)
-          throw new Error(`The source answered ${response.status}.`);
-        return new Uint8Array(await response.arrayBuffer());
-      }
-      throw new Error("The form link redirected too many times.");
-    },
-    browser: service && ((url) => downloadViaBrowser(url, service)),
-  });
-  for (const { via } of got.attempts) {
-    if (via === "browser") cost.browser++;
-    else cost.downloads++;
-  }
-  if ("bytes" in got) cost.bytes += got.bytes.length;
-  const record = (ok: boolean, attempts = got.attempts) =>
-    ctx.runMutation(internal.easygov.forms.data.recordAttempts, {
-      formId,
-      ok,
-      attempts,
-    });
-  if (!("bytes" in got)) {
-    await record(false);
-    const last = got.attempts.at(-1);
-    throw new ConvexError(
-      `The form couldn't be fetched. ${last?.note ?? ""}` +
-        (service ? "" : " No browser is set up to try next."),
-    );
-  }
-  const { bytes, via, url } = got;
-  const hash = bytesToHex(sha256(bytes));
-  const known: Id<"formEditions"> | null = await ctx.runMutation(
-    internal.easygov.forms.data.recordFetch,
-    { formId, sha256: hash },
-  );
-  if (known && !reinspect) {
-    await record(true);
-    return { editionId: known, fresh: false };
-  }
-  // Many forms are protected without a password. Where the file allows
-  // its forms to be filled, it's opened; otherwise the fetch stops here,
-  // having still found the file.
-  const refuse = async (note: string, say: string) => {
-    await record(false, [...got.attempts, { via, url, ok: false, note }]);
-    return new ConvexError(say);
+const vWhyNot = v.union(
+  v.literal("gone"),
+  v.literal("unreachable"),
+  v.literal("unusable"),
+  v.literal("page"),
+  v.literal("otherForm"),
+  v.literal("refused"),
+  v.literal("busy"),
+  v.literal("unspent"),
+);
+const vNo = v.object({
+  ok: v.literal(false),
+  why: vWhyNot,
+  note: v.string(),
+  cost: vCost,
+});
+
+const askArgs = {
+  url: v.string(),
+  /** A plain request, or the hosted browser: the caller pays for each. */
+  way: v.union(v.literal("request"), v.literal("browser")),
+  /** False to answer only from what is held, spending nothing. */
+  spend: v.boolean(),
+};
+type Ask = {
+  url: string;
+  way: "request" | "browser";
+  spend: boolean;
+  /** The form the address is wanted as. Without one, it is wanted as a page. */
+  form?: {
+    code: string;
+    jurisdiction: string;
+    /** The page's words for its link here, if it links it as the form. */
+    linkedAs?: string;
+    /** The registry entry a new file belongs to. */
+    formId?: Id<"forms">;
   };
+  /** The caller's packet: what it has asked already isn't asked again. */
+  packet?: string;
+  /** True to ask even where a failure still stands. */
+  again?: boolean;
+};
+type Asked =
+  | {
+      ok: true;
+      file: { editionId: Id<"formEditions">; facts: FormFacts };
+      cost: AskCost;
+    }
+  | { ok: true; links: PageLink[]; cost: AskCost }
+  | Infer<typeof vNo>;
+type AddressAnswer = Infer<typeof vAddressAnswer>;
+
+/** As much of a page as is read for its links. */
+const MAX_PAGE = 2_000_000;
+
+/** One plain request, following redirects on official sites only. */
+async function request(
+  url: string,
+  ms: number,
+  /** The most bytes taken: a body longer than this is cut there. */
+  limit: number,
+  held?: { etag?: string; lastModified?: string },
+): Promise<
+  | {
+      got: "body";
+      bytes: Uint8Array;
+      /** Whether the body was longer than `limit`, and cut. */
+      cut: boolean;
+      /** Where the request ended up, after any redirects. */
+      at: string;
+      /** Whether the server says it is a web page. */
+      html: boolean;
+      etag?: string;
+      lastModified?: string;
+    }
+  | { got: "unchanged" | "gone" | "refused" | "unusable"; note: string }
+> {
+  let address = url;
+  const signal = AbortSignal.timeout(ms);
+  try {
+    for (let redirects = 0; redirects <= 5; redirects++) {
+      if (!isOfficialHost(address)) {
+        return {
+          got: "unusable",
+          note: "The form link left the authority’s permitted sites.",
+        };
+      }
+      const response = await fetch(address, {
+        redirect: "manual",
+        signal,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; form-fetch)",
+          ...(held?.etag && { "If-None-Match": held.etag }),
+          ...(held?.lastModified && { "If-Modified-Since": held.lastModified }),
+        },
+      });
+      const { status } = response;
+      if (status === 304) return { got: "unchanged", note: "" };
+      if (status >= 300 && status < 400 && response.headers.has("location")) {
+        address = new URL(response.headers.get("location")!, address).href;
+        continue;
+      }
+      // Gone is gone; anything else is the site turning the request away.
+      if (status === 404 || status === 410) {
+        return { got: "gone", note: `The source answered ${status}.` };
+      }
+      if (!response.ok) {
+        return { got: "refused", note: `The source answered ${status}.` };
+      }
+      return {
+        got: "body",
+        ...(await readUpTo(response, limit)),
+        at: address,
+        html: /html/i.test(response.headers.get("content-type") ?? ""),
+        etag: response.headers.get("etag") ?? undefined,
+        lastModified: response.headers.get("last-modified") ?? undefined,
+      };
+    }
+    return {
+      got: "unusable",
+      note: "The form link redirected too many times.",
+    };
+  } catch (error) {
+    // No answer at all: nothing was learned about the address.
+    return {
+      got: "refused",
+      note: `The request failed: ${error}`.slice(0, 200),
+    };
+  }
+}
+
+/** A place among the browsers all cases share, waiting a little for one. */
+async function browserLease(ctx: ActionCtx) {
+  for (let tries = 0; tries < 5; tries++) {
+    const lease = await ctx
+      .runMutation(internal.easygov.forms.data.takeBrowserLease, {})
+      .catch(() => null);
+    if (lease) return lease;
+    await new Promise((turn) => setTimeout(turn, 2000 + Math.random() * 2000));
+  }
+  return null;
+}
+
+/** As many links of each kind as are kept from a page. */
+const MAX_LINKS = 200;
+
+/** The links worth keeping from a page: official ones, PDFs first. */
+function linksWorthKeeping(html: string, page: string) {
+  const links = labelledLinks(html.slice(0, MAX_PAGE), page).filter(
+    ({ url }) => isOfficialHost(url) && url.length <= 500,
+  );
+  return [
+    ...links.filter(({ pdf }) => pdf).slice(0, MAX_LINKS),
+    ...links.filter(({ pdf }) => !pdf).slice(0, MAX_LINKS),
+  ];
+}
+
+/** What a file says about itself now: as read, and whether it has expired. */
+const factsNow = (opening: string, facts: ReadFacts): FormFacts => ({
+  ...facts,
+  ...(expiredBy(opening, Date.now()) && { expired: true }),
+});
+
+/**
+ * What an official address serves: a form's file, or a page's links. What
+ * it answered before is used first (see `stands`); a file is asked for
+ * again only so the server can say it hasn't changed. New bytes are known by
+ * their hash, so a file held from another address isn't read or kept twice.
+ * Whether a file has expired is worked out each time it is given, from what
+ * it prints: never kept, so it can't go stale.
+ */
+async function ask(
+  ctx: ActionCtx,
+  { url, way, spend, form, packet, again }: Ask,
+): Promise<Asked> {
+  const cost = {
+    downloads: 0,
+    browser: 0,
+    pages: 0,
+    bytes: 0,
+    held: 0,
+    reused: 0,
+    unchanged: 0,
+  };
+  const no = (why: Infer<typeof vWhyNot>, note: string) =>
+    ({ ok: false, why, note, cost }) as const;
+  if (!isOfficialHost(url))
+    return no("unusable", "Not the authority’s own site.");
+  const key = addressKey(url);
+  const held = await ctx.runQuery(internal.easygov.forms.data.addressOf, {
+    key,
+  });
+  if (held) cost.held++;
+  const keep = (answer: AddressAnswer) =>
+    ctx.runMutation(internal.easygov.forms.data.recordAddress, {
+      key,
+      url,
+      packet,
+      answer,
+    });
+  /** A file as the form it is wanted as. Undefined: it has yet to be kept. */
+  const asFile = (file: {
+    opening: string;
+    facts: ReadFacts;
+    editionId?: Id<"formEditions">;
+  }): Asked | undefined => {
+    if (!form) return no("unusable", "It isn't a web page.");
+    if (!isTheForm(form.code, file.opening, form.linkedAs)) {
+      return no("otherForm", `The file doesn't name ${form.code}.`);
+    }
+    const { editionId, opening, facts } = file;
+    return editionId
+      ? { ok: true, file: { editionId, facts: factsNow(opening, facts) }, cost }
+      : undefined;
+  };
+  const asPage = (links: PageLink[]): Asked =>
+    form ? no("page", "It is a web page.") : { ok: true, links, cost };
+
+  const mine = !!packet && held?.packet === packet;
+  if (held && (mine || (!again && stands(held, Date.now())))) {
+    const answer =
+      held.outcome === "file"
+        ? asFile(held)
+        : held.outcome === "page"
+          ? asPage(held.links)
+          : no(held.outcome, held.note);
+    if (answer) {
+      cost.reused++;
+      return answer;
+    }
+  }
+  if (!spend) return no("unspent", "");
+
+  let got: { bytes: Uint8Array; at: string; html: boolean };
+  let etag: string | undefined;
+  let lastModified: string | undefined;
+  if (way === "request") {
+    cost[form ? "downloads" : "pages"]++;
+    // Only a file that is still kept can be told "the same as before".
+    const kept = held?.outcome === "file" && held.editionId ? held : undefined;
+    const answered = await request(
+      url,
+      form ? 45_000 : 15_000,
+      form ? MAX_BYTES : MAX_PAGE,
+      form && kept,
+    );
+    if (answered.got === "unchanged" && kept) {
+      cost.unchanged++;
+      const {
+        url: _url,
+        checkedAt: _at,
+        failures: _n,
+        packet: _p,
+        ...same
+      } = kept;
+      await keep(same);
+      return asFile(kept) ?? no("unusable", "The file isn't kept.");
+    }
+    if (answered.got === "gone" || answered.got === "unusable") {
+      await keep({ outcome: answered.got, note: answered.note });
+      return no(answered.got, answered.note);
+    }
+    if (answered.got !== "body") return no("refused", answered.note);
+    if (answered.cut && !answered.html) {
+      const note = "The file is too large.";
+      await keep({ outcome: "unusable", note });
+      return no("unusable", note);
+    }
+    ({ etag, lastModified } = answered);
+    got = answered;
+  } else {
+    const service = browserService();
+    if (!service) return no("busy", "No browser is set up.");
+    const leaseId = await browserLease(ctx);
+    if (!leaseId) return no("busy", "Every browser is in use.");
+    let opened: Opened;
+    try {
+      cost.browser++;
+      opened = await openViaBrowser(url, service);
+    } catch (error) {
+      if (error instanceof BrowserBusy) return no("busy", error.message);
+      const note = `${error instanceof Error ? error.message : error}`.slice(
+        0,
+        200,
+      );
+      await keep({ outcome: "unreachable", note });
+      return no("unreachable", note);
+    } finally {
+      await ctx
+        .runMutation(internal.easygov.forms.data.releaseBrowserLease, {
+          leaseId,
+        })
+        .catch(() => undefined);
+    }
+    if (opened.got === "page" && !isOfficialHost(opened.at)) {
+      const note = "The page left the authority’s permitted sites.";
+      await keep({ outcome: "unusable", note });
+      return no("unusable", note);
+    }
+    got =
+      opened.got === "file"
+        ? { bytes: opened.bytes, at: url, html: false }
+        : {
+            bytes: new TextEncoder().encode(opened.html),
+            at: opened.at,
+            html: true,
+          };
+  }
+  const { bytes, at, html } = got;
+
+  const problem = notAPdf(bytes);
+  if (problem) {
+    if (!html && !isWebPage(bytes)) {
+      await keep({ outcome: "unusable", note: problem });
+      return no("unusable", problem);
+    }
+    // A page is read for its links, not downloaded from. Its links are
+    // relative to where it was served from.
+    const links = linksWorthKeeping(new TextDecoder().decode(bytes), at);
+    await keep({ outcome: "page", links });
+    return asPage(links);
+  }
+  if (!form) return no("unusable", "It isn't a web page.");
+  cost.bytes += bytes.length;
+
+  const sha256 = bytesToHex(sha256Of(bytes));
+  const known = await ctx.runMutation(internal.easygov.forms.data.keepFile, {
+    sha256,
+  });
+  if (known.opening !== undefined && known.facts) {
+    // The same bytes as before: nothing to read again.
+    const { opening, facts } = known;
+    const answer = asFile({ opening, facts, editionId: known.editionId });
+    if (answer) {
+      await keep({
+        outcome: "file",
+        sha256,
+        etag,
+        lastModified,
+        opening,
+        facts,
+        editionId: known.editionId,
+      });
+      return answer;
+    }
+  }
+  // Many forms are protected without a password. Where the file allows its
+  // forms to be filled, it's opened.
   let ready: Uint8Array;
   let opened: boolean;
   try {
@@ -136,139 +432,166 @@ async function fetchEdition(
   } catch (error) {
     const why =
       error instanceof UnusablePdf ? error.message : "It can't be read.";
-    throw await refuse(why, `The form was fetched, but can't be used. ${why}`);
+    await keep({ outcome: "unusable", note: why });
+    return no("unusable", why);
   }
   const { pages, edition, fillable, targets, opening } =
     await inspectPdf(ready);
-  // Whatever way it came, it has to be the form it's meant to be.
-  if (!namesForm(form.code, opening)) {
-    throw await refuse(
-      `The file doesn't name ${form.code}.`,
-      `What came back isn't ${form.code}.`,
+  const facts: ReadFacts = {
+    pages,
+    places: targets.length,
+    language: languageOf(opening),
+    revision: revisionOf(`${edition ?? ""} ${opening}`),
+  };
+  // Whatever way it came, it has to be the form it's meant to be. A file
+  // that isn't is still known for what it is, and isn't kept.
+  let { editionId } = known;
+  if (isTheForm(form.code, opening, form.linkedAs) && !editionId) {
+    // What's kept is the form ready to fill. Its identity is still the hash
+    // of the bytes as the authority published them.
+    const storageId = await ctx.storage.store(
+      new Blob([ready.slice().buffer], { type: "application/pdf" }),
     );
-  }
-  await record(true);
-  if (known) {
-    await ctx.runMutation(internal.easygov.forms.data.replaceTargets, {
-      editionId: known,
-      targets,
-    });
-    return { editionId: known, fresh: false };
-  }
-  const storageId = await ctx.storage.store(
-    // What's kept is the form ready to fill. Its identity is still the
-    // hash of the bytes as the authority published them.
-    new Blob([ready.slice().buffer], { type: "application/pdf" }),
-  );
-  const editionId: Id<"formEditions"> | null = await ctx.runMutation(
-    internal.easygov.forms.data.recordFetch,
-    {
-      formId,
-      sha256: hash,
+    const file = await ctx.runMutation(internal.easygov.forms.data.keepFile, {
+      sha256,
       fresh: {
-        storageId,
-        edition,
-        pages,
-        fillable,
-        targets,
-        obtained: { via, url },
-        opened,
+        formId: form.formId,
+        sourceUrl: url,
+        code: form.code,
+        jurisdiction: form.jurisdiction,
+        edition: {
+          storageId,
+          edition,
+          pages,
+          fillable,
+          targets,
+          obtained: { via: way, url },
+          opened,
+        },
       },
-    },
-  );
-  if (!editionId) throw new Error("The edition wasn't recorded");
-  return { editionId, fresh: true };
+    });
+    // Another address served the same bytes a moment ago: its copy stands.
+    if (!file.kept) await ctx.storage.delete(storageId);
+    ({ editionId } = file);
+  }
+  await keep({
+    outcome: "file",
+    sha256,
+    etag,
+    lastModified,
+    opening,
+    facts,
+    editionId,
+  });
+  // Not the form, or kept just now: either way there is an answer.
+  return asFile({ opening, facts, editionId })!;
 }
 
-/** `fetchEdition`, for an operator's page. */
-export const fetchForm = action({
-  args: fetchArgs,
-  returns: vFetched,
-  handler: async (ctx, args): Promise<Fetched> => {
-    await requireOperator(ctx);
-    return await fetchEdition(ctx, args);
-  },
-});
-
-const vSourced = v.union(
-  v.object({ ok: v.literal(true), ...vFetched.fields, cost: vFetchCost }),
-  v.object({ ok: v.literal(false), note: v.string(), cost: vFetchCost }),
-);
-
-/**
- * `fetchEdition`, for a case's own work: no operator is signed in there. A
- * form that can't be fetched is an answer here, not a throw, and either way
- * it says what the try cost.
- */
-export const fetchSource = internalAction({
-  args: fetchArgs,
-  returns: vSourced,
-  handler: async (ctx, args): Promise<Infer<typeof vSourced>> => {
-    const cost = { downloads: 0, browser: 0, bytes: 0 };
-    try {
-      return { ok: true, ...(await fetchEdition(ctx, args, cost)), cost };
-    } catch (error) {
-      const note =
-        error instanceof ConvexError ? String(error.data) : `${error}`;
-      return { ok: false, note: note.slice(0, 300), cost };
-    }
-  },
-});
-
-/**
- * An official page's HTML, read through the hosted browser. For a page that
- * refuses a plain request. Null if no browser is set up, the address isn't
- * the authority's, or the page couldn't be read: the caller goes without.
- */
-export const readPage = internalAction({
-  args: { url: v.string() },
-  returns: v.union(v.string(), v.null()),
-  handler: async (_ctx, { url }): Promise<string | null> => {
-    const service = browserService();
-    if (!service || !isOfficialHost(url)) return null;
-    try {
-      return (await readViaBrowser(url, service)).slice(0, 1_500_000);
-    } catch (error) {
-      console.error("Page could not be read in the browser", url, error);
-      return null;
-    }
-  },
-});
-
-/**
- * What a stored form's file says about itself: its pages, its places to
- * write in, its language and the revision it prints.
- */
-export const fileFacts = internalAction({
-  args: { editionId: v.id("formEditions") },
-  returns: v.object({
-    pages: v.number(),
-    places: v.number(),
-    language: v.union(
-      v.literal("en"),
-      v.literal("es"),
-      v.literal("both"),
-      v.literal("other"),
-      v.literal("unknown"),
-    ),
-    revision: v.optional(v.number()),
+const vFileAnswer = v.union(
+  v.object({
+    ok: v.literal(true),
+    editionId: v.id("formEditions"),
+    facts: vFormFacts,
+    cost: vCost,
   }),
-  handler: async (ctx, { editionId }): Promise<FormFacts> => {
-    const { storageId, targets } = await ctx.runQuery(
-      internal.easygov.forms.data.fillInput,
-      { editionId },
+  vNo,
+);
+export type FileAnswer = Infer<typeof vFileAnswer>;
+
+/** The file at an address, as the form `code`: see `ask`. */
+export const fetchFile = internalAction({
+  args: {
+    ...askArgs,
+    code: v.string(),
+    jurisdiction: v.string(),
+    linkedAs: v.optional(v.string()),
+    packet: v.optional(v.string()),
+  },
+  returns: vFileAnswer,
+  handler: async (
+    ctx,
+    { url, way, spend, packet, ...form },
+  ): Promise<FileAnswer> => {
+    const answer = await ask(ctx, { url, way, spend, packet, form });
+    if (!answer.ok) return answer;
+    if (!("file" in answer)) throw new Error("A form was asked for");
+    return { ok: true, ...answer.file, cost: answer.cost };
+  },
+});
+
+const vLinksAnswer = v.union(
+  v.object({ ok: v.literal(true), links: v.array(vPageLink), cost: vCost }),
+  vNo,
+);
+export type LinksAnswer = Infer<typeof vLinksAnswer>;
+
+/** The links an official page carries, with the page's words: see `ask`. */
+export const readLinks = internalAction({
+  args: { ...askArgs, packet: v.optional(v.string()) },
+  returns: vLinksAnswer,
+  handler: async (ctx, args): Promise<LinksAnswer> => {
+    const answer = await ask(ctx, args);
+    if (!answer.ok) return answer;
+    if (!("links" in answer)) throw new Error("A page was asked for");
+    return answer;
+  },
+});
+
+/**
+ * Fetches a registry entry's form from its source, for an operator: each of
+ * its addresses by a plain request, then by a browser where that was
+ * refused. Keeps how every try went.
+ */
+export const fetchForm = action({
+  args: { formId: v.id("forms") },
+  returns: v.object({ editionId: v.id("formEditions") }),
+  handler: async (ctx, { formId }) => {
+    await requireOperator(ctx);
+    const form = await ctx.runQuery(internal.easygov.forms.data.formOf, {
+      formId,
+    });
+    if (!form) throw new ConvexError("Form not found.");
+    const { urls, code, jurisdiction } = form;
+    const attempts: {
+      via: "request" | "browser";
+      url: string;
+      ok: boolean;
+      note: string;
+    }[] = [];
+    const record = (ok: boolean) =>
+      ctx.runMutation(internal.easygov.forms.data.recordAttempts, {
+        formId,
+        ok,
+        attempts,
+      });
+    const refused = new Set<string>();
+    for (const way of ["request", "browser"] as const) {
+      for (const url of way === "request" ? urls : [...refused]) {
+        const answer = await ask(ctx, {
+          url,
+          way,
+          spend: true,
+          again: true,
+          form: { code, jurisdiction, formId },
+        });
+        const ok = answer.ok && "file" in answer;
+        attempts.push({
+          via: way,
+          url,
+          ok,
+          note: answer.ok ? "" : answer.note,
+        });
+        if (answer.ok && "file" in answer) {
+          await record(true);
+          return { editionId: answer.file.editionId };
+        }
+        if (!answer.ok && answer.why === "refused") refused.add(url);
+      }
+    }
+    await record(false);
+    throw new ConvexError(
+      `The form couldn't be fetched. ${attempts.at(-1)?.note ?? ""}`,
     );
-    const blank = await ctx.storage.get(storageId);
-    if (!blank) throw new Error("The blank form is missing");
-    const { opening, pages, edition } = await inspectPdf(
-      new Uint8Array(await blank.arrayBuffer()),
-    );
-    return {
-      pages,
-      places: targets.length,
-      language: languageOf(opening),
-      revision: revisionOf(`${edition ?? ""} ${opening}`),
-    };
   },
 });
 

@@ -75,6 +75,100 @@ export const vAttempt = v.object({
   note: v.string(),
 });
 
+/** What a form's file says about itself, as read from it once. */
+export const vReadFacts = v.object({
+  pages: v.number(),
+  places: v.number(),
+  language: v.union(
+    v.literal("en"),
+    v.literal("es"),
+    v.literal("both"),
+    v.literal("other"),
+    v.literal("unknown"),
+  ),
+  revision: v.optional(v.number()),
+});
+
+/**
+ * What a form's file says about itself, now: what was read from it, and
+ * whether an expiry it prints has passed. See `facts.ts`.
+ */
+export const vFormFacts = v.object({
+  ...vReadFacts.fields,
+  expired: v.optional(v.boolean()),
+});
+
+/** A link on a page: where it goes, the page's words for it, and its kind. */
+export const vPageLink = v.object({
+  url: v.string(),
+  label: v.string(),
+  pdf: v.boolean(),
+  /** The heading it sits under, and what the page says it describes. */
+  under: v.optional(v.string()),
+});
+
+/**
+ * How an address last answered. "file": it served a PDF, known by its hash
+ * and what it prints; `editionId` is set where the file was kept as a form.
+ * "page": it is a web page, and these are its links. Otherwise it gave
+ * neither: "gone", it isn't there; "unreachable", no way of asking got an
+ * answer; "unusable", what it served can't be read as a form.
+ */
+const fileAnswer = {
+  outcome: v.literal("file"),
+  sha256: v.string(),
+  opening: v.string(),
+  facts: vReadFacts,
+  editionId: v.optional(v.id("formEditions")),
+  etag: v.optional(v.string()),
+  lastModified: v.optional(v.string()),
+};
+const pageAnswer = { outcome: v.literal("page"), links: v.array(vPageLink) };
+const failedAnswer = {
+  outcome: v.union(
+    v.literal("gone"),
+    v.literal("unreachable"),
+    v.literal("unusable"),
+  ),
+  note: v.string(),
+};
+export const vAddressAnswer = v.union(
+  v.object(fileAnswer),
+  v.object(pageAnswer),
+  v.object(failedAnswer),
+);
+
+/** When an address answered, how many failures in a row, and who asked. */
+const asked = {
+  url: v.string(),
+  checkedAt: v.number(),
+  /** How many times in a row it gave neither a file nor a page. */
+  failures: v.number(),
+  /** The packet that last asked, which needn't ask again. */
+  packet: v.optional(v.string()),
+};
+export const vHeldAddress = v.union(
+  v.object({ ...asked, ...fileAnswer }),
+  v.object({ ...asked, ...pageAnswer }),
+  v.object({ ...asked, ...failedAnswer }),
+);
+
+/** An address's row: how it answered, and the form chosen at it, if any. */
+const addressRow = {
+  key: v.string(),
+  ...asked,
+  /** The form a case chose this address for, remembered for the next. */
+  chosen: v.optional(
+    v.object({
+      jurisdiction: v.string(),
+      /** The code without its agency, to look the form up by. */
+      bare: v.string(),
+      code: v.string(),
+      at: v.number(),
+    }),
+  ),
+};
+
 export const vPacketPdf = v.object({
   code: v.string(),
   sourceUrl: v.string(),
@@ -98,9 +192,9 @@ export default {
     /** Other places the same authority publishes the same file. */
     alternateUrls: v.optional(v.array(v.string())),
     /**
-     * When this address was last the one chosen for the form, over every
-     * other file found for it. Only a chosen address is remembered for the
-     * next case: a translation fetched along the way isn't.
+     * No longer written: a chosen address is now remembered on its
+     * `formAddresses` row. Kept so documents that still carry it deploy;
+     * remove it once `clearChosenAt` has run everywhere.
      */
     chosenAt: v.optional(v.number()),
     /**
@@ -116,8 +210,47 @@ export default {
     ),
   })
     .index("by_code", ["code"])
-    .index("by_jurisdiction_and_chosenAt", ["jurisdiction", "chosenAt"])
     .index("by_sourceUrl", ["sourceUrl"]),
+
+  /**
+   * An official address, and how it last answered: with a file, a page of
+   * links, or neither. One row per address, so every form and case that
+   * leads to it shares what is known. See `stands` for when it is asked
+   * again.
+   */
+  formAddresses: defineTable(
+    v.union(
+      v.object({ ...addressRow, ...fileAnswer }),
+      v.object({ ...addressRow, ...pageAnswer }),
+      v.object({ ...addressRow, ...failedAnswer }),
+    ),
+  )
+    .index("by_key", ["key"])
+    .index("by_sha256", ["sha256"])
+    .index("by_chosen_jurisdiction_and_chosen_bare", [
+      "chosen.jurisdiction",
+      "chosen.bare",
+    ]),
+
+  /**
+   * Who each .gov domain belongs to, from CISA's register (see `sites.ts`):
+   * what decides whether a page or a file is on an authority's own site.
+   */
+  officialSites: defineTable({
+    domain: v.string(),
+    kind: v.string(),
+    organization: v.string(),
+    suborganization: v.optional(v.string()),
+    /** When the register last listed it. */
+    at: v.number(),
+  })
+    .index("by_domain", ["domain"])
+    .index("by_at", ["at"]),
+
+  /** A hosted browser in use. Expires on its own if its work died. */
+  browserLeases: defineTable({ expiresAt: v.number() }).index("by_expiresAt", [
+    "expiresAt",
+  ]),
 
   /**
    * The bytes of a form as fetched, known by their hash. A form that changes
@@ -170,5 +303,7 @@ export default {
     // Kept beside the index below for its order: newest edition first.
     // eslint-disable-next-line @convex-dev/no-duplicate-indexes
     .index("by_formId", ["formId"])
-    .index("by_formId_and_sha256", ["formId", "sha256"]),
+    .index("by_formId_and_sha256", ["formId", "sha256"])
+    // The same bytes are one file, whichever address they came from.
+    .index("by_sha256", ["sha256"]),
 };

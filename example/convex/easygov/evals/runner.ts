@@ -4,7 +4,10 @@
 //
 //   npx convex run easygov/evals/runner:start '{"note":"baseline"}'
 //   npx convex run easygov/evals/runner:start '{"note":"...","slices":["draft"],"trials":5}'
+//   npx convex run easygov/evals/runner:start '{"note":"...","slices":["forms"],"serial":true}'
+//   npx convex run easygov/evals/runner:forgetFetched
 //   npx convex run easygov/evals/runner:runs
+//   npx convex run easygov/evals/runner:quality '{"runId":"..."}'
 //   npx convex run easygov/evals/runner:trials '{"runId":"...","failedOnly":true}'
 //
 // Like `dev.ts`, these are public and check nothing: they're for the test
@@ -33,18 +36,16 @@ import { chosen } from "../case/schema";
 import {
   choosePack,
   draftProcess,
-  fetchable,
   intakeReply,
   suggestAnswers,
   readRequest,
-  linkedPdfs,
-  locateForm,
   research,
   subjectOf,
   tailorChecklist,
   type ResearchTrace,
 } from "../case/agents";
 import { researchedPack, type Draft } from "../case/draft";
+import { fileAt, locateForms, newFinder } from "../case/locate";
 import {
   bareResearch,
   formLeads,
@@ -53,10 +54,11 @@ import {
 } from "../case/research";
 import { chargeUsage } from "../limits";
 import { proposeMapping } from "../forms/agents";
-import { budget } from "../forms/budget";
 import { normalizeFormId, parseJurisdiction } from "../packs/schema";
 import { addressFromText } from "../profile/agents";
+import { withTelemetry } from "../../debugging/spans";
 import * as cases from "./cases";
+import { references, type Reference } from "./references";
 import {
   gradeAddress,
   gradeDraft,
@@ -71,11 +73,15 @@ import {
   outcomeOf,
   passes,
   type FilledForm,
+  type FormGrade,
   type Graded,
 } from "./grading";
 import {
   draftInput,
+  FORM_OUTCOMES,
+  HELD_COUNT_CAP,
   SLICES,
+  vHeld,
   vJudgeCheck,
   vSlice,
   vTrialOutcome,
@@ -96,17 +102,23 @@ const STAGGER_MS = 400;
  */
 const TRIAL_TIMEOUT_MS = 30 * 60 * 1000;
 
-/** Starts a run: every case of the chosen slices, `trials` times each. */
+/**
+ * Starts a run: every case of the chosen slices, `trials` times each. With
+ * `serial`, one trial runs at a time, in planned order, so no trial's time
+ * or cache is another's: the first starts once the held rows are counted,
+ * and each next one as the one before ends.
+ */
 export const start = mutation({
   args: {
     note: v.string(),
     slices: v.optional(v.array(vSlice)),
     trials: v.optional(v.number()),
+    serial: v.optional(v.boolean()),
   },
   returns: v.id("easygovEvalRuns"),
   handler: async (
     ctx,
-    { note, slices = [...SLICES], trials = DEFAULT_TRIALS },
+    { note, slices = [...SLICES], trials = DEFAULT_TRIALS, serial = false },
   ) => {
     await requireOperator(ctx);
     if (!Number.isInteger(trials) || trials < 1 || trials > 10) {
@@ -134,6 +146,7 @@ export const start = mutation({
       totalTrials: planned.length,
       finishedTrials: 0,
       status: planned.length ? "running" : "done",
+      ...(serial ? { serial } : {}),
     });
     for (const [i, trial] of planned.entries()) {
       const trialId = await ctx.db.insert("easygovEvalTrials", {
@@ -141,12 +154,19 @@ export const start = mutation({
         ...trial,
         status: "pending",
       });
+      // A serial run's first trial is started by `countHeld`.
+      if (serial) continue;
       await ctx.scheduler.runAfter(
         i * STAGGER_MS,
         internal.easygov.evals.runner.runTrial,
         { trialId },
       );
     }
+    await ctx.scheduler.runAfter(0, internal.easygov.evals.runner.countHeld, {
+      runId,
+      cursor: null,
+      addresses: 0,
+    });
     if (slices.includes("draft")) {
       await ctx.scheduler.runAfter(
         0,
@@ -166,7 +186,11 @@ function find<T extends { id: string }>(list: T[], id: string): T {
   return found;
 }
 
-type Result = Graded & { output: unknown; cost?: Record<string, number> };
+type Result = Graded & {
+  output: unknown;
+  cost?: Record<string, number>;
+  forms?: FormGrade[];
+};
 
 /** A draft that says nothing: the forms come from the research alone. */
 const NO_DRAFT: Draft = {
@@ -196,11 +220,10 @@ export const runTrial = internalAction({
         });
         return null;
       }
-      const { checks, detail, output, cost } = await run[slice](
+      const { checks, detail, output, cost, forms } = await withTelemetry(
         ctx,
-        caseId,
         threadId,
-        saved,
+        () => run[slice](ctx, caseId, threadId, saved),
       );
       await ctx.runMutation(internal.easygov.evals.runner.finishTrial, {
         trialId,
@@ -211,6 +234,7 @@ export const runTrial = internalAction({
           output: JSON.stringify(output, null, 1).slice(0, 20000),
           ms: Date.now() - started,
           cost,
+          forms,
         },
       });
     } catch (error) {
@@ -290,47 +314,84 @@ const run: Record<
     const subject = subjectOf(request, goal, jurisdiction);
     const trace: ResearchTrace = {};
     // What finding the forms spends, apart from what grading them does.
-    const spend = budget();
+    const finder = newFinder();
     const began = Date.now();
-    const found = await research(ctx, threadId, subject, trace, spend);
+    const found = await research(ctx, threadId, subject, trace, finder);
     const researched = Date.now();
-    const packet = researchedPack(NO_DRAFT, subject, found).packetForms ?? [];
-    let links: ReturnType<typeof linkedPdfs> | undefined;
-    const linked = () => (links ??= linkedPdfs(ctx, found.sources, spend));
-    const located = await Promise.all(
-      packet.map((form) =>
-        locateForm(ctx, threadId, form, subject, { linked, spend }),
-      ),
+    // The forms and the pages, as a proposal's draft would carry them.
+    const pack = researchedPack(NO_DRAFT, subject, found);
+    const located = await locateForms(
+      ctx,
+      threadId,
+      pack.packetForms ?? [],
+      subject,
+      pack.output?.sources ?? [],
+      finder,
     );
+    const forms = located.map(({ form, located: { file, ...how } }) => ({
+      code: form.code,
+      when: form.when?.equals,
+      given: form.sourceUrl,
+      ...how,
+      ...file,
+    }));
+    const got = forms.filter(({ url }) => url);
     const cost = {
-      ...spend.spent,
-      forms: packet.length,
+      ...finder.spend.spent,
+      forms: forms.length,
+      // How many forms got a file, and how many of those files are the one
+      // an official page links as that form: at all, and only by reading
+      // one link further on than the pages research read.
+      located: got.length,
+      backed: got.filter(({ backed }) => backed).length,
+      backedFurther: got.filter(
+        ({ backed, designated }) => backed && designated?.further,
+      ).length,
+      furtherPages: forms.reduce((sum, f) => sum + f.links.further, 0),
       researchMs: researched - began,
       locateMs: Date.now() - researched,
     };
-    const forms = packet.map(({ code, sourceUrl, when }, i) => ({
-      code,
-      when: when?.equals,
-      given: sourceUrl,
-      ...located[i],
-    }));
     // The file each expected form was last published as, fetched now, to
     // tell the right edition from another file found under the same name.
+    // Paid for apart from the packet, so it isn't counted as its cost.
+    const grading = newFinder({});
     const published = await Promise.all(
       expect.map(async ({ code, url }) => {
-        const got = await fetchable(ctx, jurisdiction, code, [url]);
-        const facts = got
-          ? await ctx
-              .runAction(internal.easygov.forms.actions.fileFacts, {
-                editionId: got.editionId,
-              })
-              .catch(() => undefined)
-          : undefined;
-        return { code, editionId: got?.editionId, facts };
+        // The case says the authority publishes the form at this address.
+        // Its file still has to name the form on its own.
+        const file = await fileAt(ctx, grading, { jurisdiction, code }, url);
+        return file.ok
+          ? { code, editionId: file.editionId, facts: file.facts }
+          : { code };
       }),
     );
+    const graded = gradeForms(expect, forms, published);
+    // What a reader would catch that the comparison of files can't.
+    const reference = references[caseId];
+    if (reference) {
+      const judged = await judgeForms(
+        ctx,
+        reference,
+        // Listed once for each way of filing that needs it: not a repeat.
+        forms.map(({ code, when, url, backed, facts }) => ({
+          code,
+          when,
+          url,
+          backed,
+          facts,
+        })),
+      ).catch(() => undefined);
+      if (judged) {
+        graded.checks["~judge"] = !judged.problems.length;
+        if (judged.problems.length) {
+          graded.detail = [graded.detail, `judge: ${judged.problems.join(" ")}`]
+            .filter(Boolean)
+            .join("; ");
+        }
+      }
+    }
     return {
-      ...gradeForms(expect, forms, published),
+      ...graded,
       cost,
       // Everything each step saw, so a rule can be judged across cases.
       output: {
@@ -717,6 +778,43 @@ async function judgeQuestions(
   return output;
 }
 
+/**
+ * Asks a model what is wrong with the forms a trial found, against the
+ * reviewer's reference for the case. It is told what to look for, since the
+ * faults a code check can't see are the ones a hurried reader misses too.
+ */
+async function judgeForms(
+  ctx: ActionCtx,
+  reference: Reference,
+  found: unknown,
+): Promise<{ problems: string[] }> {
+  const { output, usage } = await generateText({
+    model: languageModel,
+    output: Output.object({
+      schema: z.object({ problems: z.array(z.string()) }),
+    }),
+    prompt: [
+      "You are checking the official forms an assistant found for a person against a reviewer's reference,",
+      "which was written from the authority's own pages and the files themselves.",
+      "List each problem in one sentence. A problem is:",
+      "- a form the reference lists that wasn't found, or has no file;",
+      "- a file that isn't the edition the reference gives (compare the revision printed, as YYYYMM);",
+      "- a file from somewhere other than where the authority publishes it: another government's copy,",
+      "  a staging or test site, a sample, a rule-making or instruction document;",
+      "- a translation given as the form;",
+      "- the same form listed more than once for the same way of filing (`when`);",
+      "- anything the reference calls a trap.",
+      "Not a problem: a form the reference doesn't list, unless a trap names it; the same file at another",
+      "address of the same site; a file that isn't backed; or a revision that gives the same year with no month.",
+      "Return no problems if there are none.",
+      `<reference>${JSON.stringify(reference)}</reference>`,
+      `<found>${JSON.stringify(found)}</found>`,
+    ].join("\n"),
+  });
+  await chargeUsage(ctx, undefined, usage.totalTokens);
+  return output;
+}
+
 /** Grades known-good and known-bad questions, to check the judge itself. */
 export const checkJudge = internalAction({
   args: { runId: v.id("easygovEvalRuns") },
@@ -823,7 +921,110 @@ async function endTrial(
     finishedTrials,
     status: finishedTrials >= run.totalTrials ? "done" : "running",
   });
+  if (run.serial) await startNext(ctx, run._id);
 }
+
+/** Starts a serial run's next trial: the first planned that is pending. */
+async function startNext(
+  ctx: MutationCtx,
+  runId: Id<"easygovEvalRuns">,
+): Promise<void> {
+  // The index keeps the order the trials were planned in.
+  const trials = await ctx.db
+    .query("easygovEvalTrials")
+    .withIndex("by_runId", (q) => q.eq("runId", runId))
+    .take(1000);
+  const next = trials.find((trial) => trial.status === "pending");
+  if (!next) return;
+  await ctx.scheduler.runAfter(0, internal.easygov.evals.runner.runTrial, {
+    trialId: next._id,
+  });
+}
+
+// --- What was already fetched -----------------------------------------------
+
+/**
+ * A row can carry a page's links (up to 400, each address at most 500
+ * characters): few are read at a time, to stay well inside what one
+ * mutation may read.
+ */
+const HELD_BATCH = 20;
+
+/**
+ * Counts the `formAddresses` rows held as a run starts, a batch at a time:
+ * none is a cold run. A serial run's first trial starts once they are
+ * counted.
+ */
+export const countHeld = internalMutation({
+  args: {
+    runId: v.id("easygovEvalRuns"),
+    cursor: v.union(v.string(), v.null()),
+    addresses: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, { runId, cursor, addresses }) => {
+    const { page, isDone, continueCursor } = await ctx.db
+      .query("formAddresses")
+      .paginate({ numItems: HELD_BATCH, cursor });
+    addresses = Math.min(addresses + page.length, HELD_COUNT_CAP);
+    if (!isDone && addresses < HELD_COUNT_CAP) {
+      await ctx.scheduler.runAfter(0, internal.easygov.evals.runner.countHeld, {
+        runId,
+        cursor: continueCursor,
+        addresses,
+      });
+      return null;
+    }
+    const run = await ctx.db.get("easygovEvalRuns", runId);
+    if (!run) return null;
+    await ctx.db.patch("easygovEvalRuns", runId, {
+      heldAtStart: { addresses },
+    });
+    if (run.serial) await startNext(ctx, runId);
+    return null;
+  },
+});
+
+/** Deletes a batch of the addresses no form is remembered at. */
+async function forgetBatch(ctx: MutationCtx): Promise<void> {
+  const rows = await ctx.db
+    .query("formAddresses")
+    .withIndex("by_chosen_jurisdiction_and_chosen_bare", (q) =>
+      q.eq("chosen.jurisdiction", undefined),
+    )
+    .take(HELD_BATCH);
+  for (const row of rows) await ctx.db.delete("formAddresses", row._id);
+  if (rows.length < HELD_BATCH) return;
+  await ctx.scheduler.runAfter(
+    0,
+    internal.easygov.evals.runner.forgetMoreFetched,
+    {},
+  );
+}
+
+/**
+ * Forgets how official addresses answered, so the next run starts cold. The
+ * addresses remembered for a form (`chosen`) stay. It works in batches:
+ * start the run once `formAddresses` holds only those.
+ */
+export const forgetFetched = mutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    await requireOperator(ctx);
+    await forgetBatch(ctx);
+    return null;
+  },
+});
+
+export const forgetMoreFetched = internalMutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    await forgetBatch(ctx);
+    return null;
+  },
+});
 
 export const finishTrial = internalMutation({
   args: { trialId: v.id("easygovEvalTrials"), outcome: vTrialOutcome },
@@ -887,6 +1088,10 @@ export const runs = query({
       finishedTrials: v.number(),
       totalTrials: v.number(),
       judgeOk: v.union(v.boolean(), v.null()),
+      /** Whether its trials ran one at a time. */
+      serial: v.boolean(),
+      /** The fetched rows held when it started; null until counted. */
+      heldAtStart: v.union(vHeld, v.null()),
       slices: v.record(v.string(), vTally),
       /** By "slice / case": e.g. "2/3". */
       cases: v.record(v.string(), v.string()),
@@ -932,6 +1137,8 @@ export const runs = query({
         judgeOk: run.judgeCheck
           ? run.judgeCheck.goodPassed && run.judgeCheck.badFailed
           : null,
+        serial: run.serial ?? false,
+        heldAtStart: run.heldAtStart ?? null,
         slices,
         cases: Object.fromEntries(
           Object.entries(byCase).map(([key, c]) => [
@@ -942,6 +1149,53 @@ export const runs = query({
       });
     }
     return rows;
+  },
+});
+
+/**
+ * What the people in a run's forms trials ended up holding: how many of the
+ * forms they needed came out each way (see `FORM_OUTCOMES`), and how often
+ * a form came out as the same file in every trial of its case. `wrongUnwarned`
+ * is the one that harms a filer; a form that is a different file from one
+ * trial to the next can't be trusted even when each trial passes.
+ */
+export const quality = query({
+  args: { runId: v.id("easygovEvalRuns") },
+  returns: v.object({
+    forms: v.number(),
+    outcomes: v.record(v.string(), v.number()),
+    /** Forms asked for in two trials or more, and those the same each time. */
+    repeated: v.number(),
+    sameEachTime: v.number(),
+  }),
+  handler: async (ctx, { runId }) => {
+    await requireOperator(ctx);
+    const trials = await ctx.db
+      .query("easygovEvalTrials")
+      .withIndex("by_runId", (q) => q.eq("runId", runId))
+      .take(1000);
+    const outcomes: Record<string, number> = Object.fromEntries(
+      FORM_OUTCOMES.map((outcome) => [outcome, 0]),
+    );
+    // The file each trial chose, by case and form.
+    const chosen = new Map<string, (string | undefined)[]>();
+    for (const trial of trials) {
+      const graded = "forms" in trial ? (trial.forms ?? []) : [];
+      for (const { code, outcome, file } of graded) {
+        outcomes[outcome]++;
+        const key = `${trial.caseId}\n${code}`;
+        chosen.set(key, [...(chosen.get(key) ?? []), file]);
+      }
+    }
+    const repeated = [...chosen.values()].filter((files) => files.length > 1);
+    return {
+      forms: Object.values(outcomes).reduce((sum, n) => sum + n, 0),
+      outcomes,
+      repeated: repeated.length,
+      sameEachTime: repeated.filter(
+        (files) => files[0] !== undefined && new Set(files).size === 1,
+      ).length,
+    };
   },
 });
 

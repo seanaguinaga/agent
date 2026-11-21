@@ -8,7 +8,7 @@ import { api, internal } from "../../_generated/api";
 import type { Id } from "../../_generated/dataModel";
 import { initConvexTest } from "../../setup.test";
 import { read, resetCases, send, type T } from "../case/cases.testkit";
-import { isOfficialHost } from "./data";
+import { isOfficialHost } from "./sources";
 import { inspectPdf } from "./pdf";
 
 vi.mock("../../modelsForDemo", async () =>
@@ -35,22 +35,28 @@ async function recorded(t: T, bytes = original) {
       new Blob([bytes.slice().buffer], { type: "application/pdf" }),
     ),
   );
-  const editionId = (await t.mutation(internal.easygov.forms.data.recordFetch, {
-    formId,
+  const kept = await t.mutation(internal.easygov.forms.data.keepFile, {
     sha256: "a".repeat(64),
     fresh: {
-      storageId,
-      pages,
-      edition,
-      fillable,
-      targets,
-      obtained: {
-        via: "request",
-        url: "https://www.irs.gov/pub/irs-pdf/f8822.pdf",
+      formId,
+      sourceUrl: "https://www.irs.gov/pub/irs-pdf/f8822.pdf",
+      code: "IRS-8822",
+      jurisdiction: "us",
+      edition: {
+        storageId,
+        pages,
+        edition,
+        fillable,
+        targets,
+        obtained: {
+          via: "request",
+          url: "https://www.irs.gov/pub/irs-pdf/f8822.pdf",
+        },
+        opened: false,
       },
-      opened: false,
     },
-  })) as Id<"formEditions">;
+  });
+  const editionId = kept.editionId as Id<"formEditions">;
   const at = (pattern: RegExp) =>
     targets.find((target) => pattern.test(target.label))!.id;
   const mapping = [
@@ -82,13 +88,12 @@ test("a form is fetched only from its authority's own site", () => {
 describe("an edition", () => {
   test("is known by its bytes: the same hash again is not a new edition", async () => {
     const t = initConvexTest();
-    const { formId, editionId } = await recorded(t);
+    const { editionId } = await recorded(t);
     expect(
-      await t.mutation(internal.easygov.forms.data.recordFetch, {
-        formId,
+      await t.mutation(internal.easygov.forms.data.keepFile, {
         sha256: "a".repeat(64),
       }),
-    ).toBe(editionId);
+    ).toMatchObject({ editionId, kept: false });
     expect(await t.query(forms.listForms, {})).toMatchObject([
       {
         code: "IRS-8822",
@@ -229,16 +234,10 @@ test("a case on the form's pack is filled from the profile, and read back", asyn
   expect((await read(t, caseId)).waitingFor).toBe("review");
 
   // A pack fills this edition now, so its mapping can be corrected but not
-  // taken back to unreviewed, and its targets can't be read again.
+  // taken back to unreviewed.
   await expect(
     t.mutation(forms.updateMapping, { editionId, mapping, reviewed: false }),
   ).rejects.toThrow(/stays reviewed/);
-  await expect(
-    t.mutation(internal.easygov.forms.data.replaceTargets, {
-      editionId,
-      targets: [],
-    }),
-  ).rejects.toThrow(/can't be read again/);
   await t.mutation(forms.updateMapping, { editionId, mapping, reviewed: true });
 
   expect(await send(t, caseId, { type: "artifact.accept" })).toMatchObject({
@@ -476,7 +475,15 @@ test.each([
       const document = review.artifact?.documents?.[0];
       expect(review).toMatchObject({
         phase: "review",
-        artifact: { revision: 1, openItems: ["Sign the printed form."] },
+        artifact: {
+          revision: 1,
+          // No official page was read that links this file as the form, so
+          // the person is also left the edition to check.
+          openItems: [
+            expect.stringContaining("is the current edition"),
+            "Sign the printed form.",
+          ],
+        },
       });
       expect(
         await t.action(internal.easygov.forms.actions.readFilled, {

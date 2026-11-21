@@ -112,6 +112,51 @@ export const generateTextWithTelemetry = action({
 See the full example in
 [debugging/telemetry.ts](../example/convex/debugging/telemetry.ts).
 
+### Keeping spans in your deployment
+
+A backend shows you each trace. To ask what went wrong across a week, it helps
+to keep the spans next to the threads they belong to. The example does this with
+a second span exporter that holds each finished span tagged with a thread, and
+an action that saves its thread's spans to a `spans` table before it returns:
+
+```ts
+import { telemetryFor, withTelemetry } from "../debugging/spans";
+
+export const getForecast = internalAction({
+  args: { threadId: v.string(), promptMessageId: v.string() },
+  handler: (ctx, { threadId, promptMessageId }) =>
+    withTelemetry(ctx, threadId, async () => {
+      const result = await weatherAgent.generateText(
+        ctx,
+        { threadId },
+        {
+          promptMessageId,
+          telemetry: telemetryFor(
+            "workflows/chaining/getForecast",
+            threadId,
+            promptMessageId,
+          ),
+        },
+      );
+      return result.text;
+    }),
+});
+```
+
+`telemetryFor` names the agent's spans for the call and tags them with the
+thread, without recording prompts or responses. `withTelemetry` flushes the OTLP
+exporter and saves the spans, even when the call throws, and never throws
+itself. Each span is stored with the agent it belongs to, so `step 1` or a
+`chat` call can be told apart by agent:
+
+```sh
+npx convex run debugging/spans:summary '{"days":7}'
+```
+
+It lists each agent's steps with their count, failures, mean and p95 time,
+tokens, and the threads to read first. Spans are kept for 30 days. See
+[debugging/spans.ts](../example/convex/debugging/spans.ts).
+
 ## Inspecting the database in the dashboard
 
 You can go to the Data tab in the dashboard and select the agent component above

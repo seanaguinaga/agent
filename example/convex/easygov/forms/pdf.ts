@@ -426,13 +426,15 @@ export async function inspectPdf(bytes: Uint8Array): Promise<Inspection> {
       }
     });
   }
-  // A form prints its code at the top of page one or in its footer, so
-  // both ends are kept: "DL 410 FO (REV. 7/2024)" is the page's last line.
+  // A form prints its code somewhere on page one: at the top, in the footer
+  // ("DL 410 FO (REV. 7/2024)" is the page's last line), or between an
+  // instruction panel and the form ("MV-232 (2/26)"). So the whole page is
+  // kept, unless it is longer than any form's.
   const first = (marks[0]?.text ?? []).map((t) => t.str).join(" ");
   const opening =
-    first.length <= 2500
+    first.length <= 12_000
       ? first
-      : `${first.slice(0, 2000)} … ${first.slice(-500)}`;
+      : `${first.slice(0, 10_000)} … ${first.slice(-2_000)}`;
   return { pages: pages.length, edition, fillable, targets, opening };
 }
 

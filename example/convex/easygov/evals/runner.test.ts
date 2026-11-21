@@ -10,8 +10,16 @@ vi.mock("../../modelsForDemo", async () =>
   (await import("../case/cases.testkit")).mockModels(),
 );
 afterEach(resetCases);
+afterEach(() => vi.unstubAllEnvs());
 
 const runner = api.easygov.evals.runner;
+
+/**
+ * Moves the clock on by less than a trial's time limit. Timers are advanced
+ * while trials are still running, so running them all would expire a trial
+ * that is only waiting its turn.
+ */
+const soon = () => vi.advanceTimersByTime(10_000);
 
 test("a run plans trials per case, grades them, and tallies passes", async () => {
   vi.useFakeTimers();
@@ -22,7 +30,7 @@ test("a run plans trials per case, grades them, and tallies passes", async () =>
     slices: ["search", "choose"],
     trials: 2,
   });
-  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  await t.finishAllScheduledFunctions(soon);
   const [run] = await t.query(runner.runs, {});
   expect(run).toMatchObject({
     runId,
@@ -143,4 +151,163 @@ test("a real draft is saved as a case, and joins the draft slice", async () => {
   expect(await t.query(runner.savedCases, {})).toMatchObject([
     { name: "Contest a ticket", jurisdiction: "us/ca/alameda", hasNotes: true },
   ]);
+});
+
+/** The scheduled calls of one function that haven't finished. */
+async function waiting(t: ReturnType<typeof initConvexTest>, name: string) {
+  const jobs = await t.run((ctx) =>
+    ctx.db.system.query("_scheduled_functions").collect(),
+  );
+  return jobs.filter(
+    (job) =>
+      job.name.includes(name) &&
+      (job.state.kind === "pending" || job.state.kind === "inProgress"),
+  );
+}
+
+test("a serial run starts one trial at a time, in planned order", async () => {
+  vi.useFakeTimers();
+  const t = initConvexTest();
+  const runId = await t.mutation(runner.start, {
+    note: "one by one",
+    slices: ["choose"],
+    trials: 2,
+    serial: true,
+  });
+  const total = choose.length * 2;
+  // Nothing runs until the held rows are counted.
+  expect(await waiting(t, "runTrial")).toHaveLength(0);
+  expect(await waiting(t, "countHeld")).toHaveLength(1);
+  const order: string[] = [];
+  for (let step = 0; step < total * 4; step++) {
+    const [next, ...others] = await waiting(t, "runTrial");
+    expect(others).toHaveLength(0);
+    if (next) order.push(next.args[0].trialId);
+    else if ((await t.query(runner.runs, {}))[0].status === "done") break;
+    vi.runAllTimers();
+    await t.finishInProgressScheduledFunctions();
+  }
+  // Each trial was started once, in the order it was planned.
+  const planned = await t.run((ctx) =>
+    ctx.db
+      .query("easygovEvalTrials")
+      .withIndex("by_runId", (q) => q.eq("runId", runId))
+      .collect(),
+  );
+  expect([...new Set(order)]).toEqual(planned.map((trial) => trial._id));
+  expect((await t.query(runner.runs, {}))[0]).toMatchObject({
+    runId,
+    serial: true,
+    status: "done",
+    finishedTrials: total,
+    heldAtStart: { addresses: 0 },
+  });
+});
+
+test("a serial run goes on when a trial expires", async () => {
+  vi.useFakeTimers();
+  const t = initConvexTest();
+  const [first, second] = await t.run(async (ctx) => {
+    const runId = await ctx.db.insert("easygovEvalRuns", {
+      note: "stuck",
+      models: "mock",
+      trialsPerCase: 1,
+      totalTrials: 2,
+      finishedTrials: 0,
+      status: "running",
+      serial: true,
+    });
+    const trial = (caseId: string) =>
+      ctx.db.insert("easygovEvalTrials", {
+        runId,
+        slice: "search",
+        caseId,
+        trial: 1,
+        status: "pending",
+      });
+    return [await trial(search[0].id), await trial(search[1].id)];
+  });
+  await t.mutation(internal.easygov.evals.runner.expireTrial, {
+    trialId: first,
+  });
+  const [next, ...others] = await waiting(t, "runTrial");
+  expect(next.args).toEqual([{ trialId: second }]);
+  expect(others).toHaveLength(0);
+});
+
+test("a concurrent run starts every trial at once, and isn't serial", async () => {
+  vi.useFakeTimers();
+  const t = initConvexTest();
+  await t.mutation(runner.start, { note: "all", slices: ["search"] });
+  expect(await waiting(t, "runTrial")).toHaveLength(search.length);
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect((await t.query(runner.runs, {}))[0]).toMatchObject({
+    serial: false,
+    status: "done",
+  });
+});
+
+/** Addresses that answered, and one a form is remembered at. */
+async function hold(t: ReturnType<typeof initConvexTest>, addresses: number) {
+  await t.run(async (ctx) => {
+    const row = (url: string) => ({
+      key: url,
+      url,
+      checkedAt: 0,
+      outcome: "gone" as const,
+      note: "The source answered 404.",
+      failures: 1,
+    });
+    for (let i = 0; i < addresses; i++) {
+      await ctx.db.insert("formAddresses", row(`https://x.gov/${i}.pdf`));
+    }
+    await ctx.db.insert("formAddresses", {
+      ...row("https://www.irs.gov/pub/irs-pdf/f8822.pdf"),
+      chosen: { jurisdiction: "us", bare: "8822", code: "IRS-8822", at: 0 },
+    });
+  });
+}
+
+const held = (t: ReturnType<typeof initConvexTest>) =>
+  t.run(async (ctx) =>
+    (await ctx.db.query("formAddresses").collect()).map((row) => row.url),
+  );
+
+test("a run records what was held when it started", async () => {
+  vi.useFakeTimers();
+  const t = initConvexTest();
+  // More than two batches, so the count goes on where it left off.
+  await hold(t, 202);
+  await t.mutation(runner.start, { note: "warm", slices: ["search"] });
+  expect((await t.query(runner.runs, {}))[0].heldAtStart).toBeNull();
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect((await t.query(runner.runs, {}))[0].heldAtStart).toEqual({
+    addresses: 203,
+  });
+});
+
+test("forgetting what was fetched keeps the addresses chosen", async () => {
+  vi.useFakeTimers();
+  const t = initConvexTest();
+  await hold(t, 205);
+  await t.mutation(runner.forgetFetched, {});
+  // One batch is gone, and the rest follow.
+  expect(await held(t)).toHaveLength(186);
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(await held(t)).toEqual(["https://www.irs.gov/pub/irs-pdf/f8822.pdf"]);
+  await t.mutation(runner.start, { note: "cold", slices: ["search"] });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect((await t.query(runner.runs, {}))[0].heldAtStart).toEqual({
+    addresses: 1,
+  });
+});
+
+test("only an operator forgets what was fetched", async () => {
+  const t = initConvexTest();
+  await hold(t, 1);
+  vi.stubEnv("EASYGOV_OPERATORS", "someone else");
+  await expect(t.mutation(runner.forgetFetched, {})).rejects.toThrow(
+    /Operators only/,
+  );
+  expect(await held(t)).toHaveLength(2);
 });

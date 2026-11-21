@@ -22,10 +22,19 @@ import {
   type HistoryKind,
 } from "./schema";
 import { vPacketPdf, vFilledDocument } from "../forms/schema";
-import { intakeAgent, proposalFields, selectionAgent } from "./agents";
+import { intakeAgent, proposalFields } from "./agents";
+import { selectionAgent } from "./selection";
+import { stalenessOf } from "../packs/freshness";
 import { renderLetter } from "./answers";
 import { offerFact, syncCase, rememberedElsewhere } from "../profile/data";
-import { answerKind, questionOf, isSuggesting, needsRevisit } from "./state";
+import {
+  answerKind,
+  questionOf,
+  isSuggesting,
+  needsRevisit,
+  unbackedForms,
+  editionCheck,
+} from "./state";
 import {
   caseEvidence,
   currentChoice,
@@ -538,6 +547,9 @@ export const recordArtifact = internalMutation({
           `Attach: ${pack?.evidence?.find((file) => file.key === key)?.label ?? key}`,
       ),
       ...(packet?.openItems ?? []),
+      ...unbackedForms(found).map(editionCheck),
+      // What the pack's last check found changed at the authority.
+      ...(await stalenessOf(ctx, pinnedPack(found)?.id)),
       ...(assessment?.openItems ?? []),
     ];
     if (found.artifact)

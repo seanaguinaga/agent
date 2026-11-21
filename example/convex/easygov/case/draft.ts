@@ -20,6 +20,7 @@ import {
   methodsOf,
   notesOf,
   pagesOf,
+  sameForm,
   tidy,
   type Research,
 } from "./research";
@@ -298,16 +299,20 @@ export function researchedPack(
     draft.deadline && cited.has(draft.deadline.sourceUrl)
       ? draft.deadline
       : undefined;
-  const packetForms = withCitedPdfs(
-    // A form known only by a title stays in the notes, for the checklist.
-    formLeads(found)
-      .filter(isIdentified)
-      .map(({ code, pdfUrl, method }) => ({
-        code,
-        sourceUrl: pdfUrl,
-        ...(filing && method && { when: { key: filing.key, equals: method } }),
-      })),
-    citedFormPdfs(subject.forms, [...cited]),
+  const packetForms = onePerForm(
+    withCitedPdfs(
+      // A form known only by a title stays in the notes, for the checklist.
+      formLeads(found)
+        .filter(isIdentified)
+        .map(({ code, pdfUrl, method }) => ({
+          code,
+          sourceUrl: pdfUrl,
+          ...(filing &&
+            method && { when: { key: filing.key, equals: method } }),
+        })),
+      citedFormPdfs(subject.forms, [...cited]),
+    ),
+    sameEntry,
   );
 
   const routes = [
@@ -423,6 +428,57 @@ function redactConfidential(
       ? "[complete by hand]"
       : token,
   );
+}
+
+/** Items in groups: each joins the first group holding one `same` as it. */
+export function groupsOf<T>(items: T[], same: (a: T, b: T) => boolean): T[][] {
+  return items.reduce<T[][]>((groups, item) => {
+    const at = groups.findIndex((group) =>
+      group.some((other) => same(other, item)),
+    );
+    return at < 0
+      ? [...groups, [item]]
+      : groups.map((group, i) => (i === at ? [...group, item] : group));
+  }, []);
+}
+
+/** Two packet entries for one form: see `sameForm`. */
+export const sameEntry = (
+  a: { code: string; sourceUrl: string },
+  b: { code: string; sourceUrl: string },
+) =>
+  sameForm(
+    { code: a.code, pdfUrl: a.sourceUrl },
+    { code: b.code, pdfUrl: b.sourceUrl },
+  );
+
+/**
+ * One entry for each form. Entries that are the same form (`same`) become
+ * one: the one with a printed code, where only some have one. A form needed
+ * whichever way the person files is listed once, for everyone; a form only
+ * some ways need is listed once for each of those ways.
+ */
+export function onePerForm<T extends { code: string; when?: RouteCondition }>(
+  forms: T[],
+  same: (a: T, b: T) => boolean,
+): T[] {
+  return groupsOf(forms, same).flatMap((group) => {
+    const coded = group.filter(({ code }) => /\d/.test(code));
+    const named = coded.length ? coded : group;
+    if (group.some(({ when }) => !when)) {
+      return [
+        named.find(({ when }) => !when) ?? { ...named[0], when: undefined },
+      ];
+    }
+    return named.filter(
+      (form, i) =>
+        named.findIndex(
+          (other) =>
+            other.when?.key === form.when?.key &&
+            other.when?.equals === form.when?.equals,
+        ) === i,
+    );
+  });
 }
 
 /** The drafted forms, then each cited PDF whose URL isn't among them yet. */

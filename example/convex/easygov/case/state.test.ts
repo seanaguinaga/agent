@@ -203,3 +203,45 @@ test("a route change keeps common inputs and replaces route-specific form and le
   expect(suggestions(c)).toEqual({});
   expect(requiredInputs({...c,answers:{method:"letter"}})).toEqual(["method","letterDate"]);
 });
+
+describe("a form no official page links", () => {
+  const form = {
+    code: "X-1",
+    sourceUrl: "https://example.org/x-1.pdf",
+    inputs: [],
+  };
+  const mail = { key: "method", equals: "mail" };
+  const holding = (packetForms: object[], answers = {}) =>
+    withPack({
+      answers,
+      selection: {
+        ...pack,
+        status: "accepted",
+        definition: { inputs: [], packetForms: packetForms as never },
+      },
+    });
+
+  test("is left for the person to check, by name and file", async () => {
+    const { unbackedForms, editionCheck } = await import("./state");
+    const c = holding([{ ...form, backed: false }]);
+    expect(unbackedForms(c).map(({ code }) => code)).toEqual(["X-1"]);
+    const item = editionCheck(form);
+    expect(item).toContain("X-1");
+    expect(item).toContain(form.sourceUrl);
+    expect(item).toMatch(/current edition on the authority’s own site/);
+  });
+
+  test("a backed form, and one that doesn't say, leave nothing", async () => {
+    const { unbackedForms } = await import("./state");
+    expect(unbackedForms(holding([{ ...form, backed: true }, form]))).toEqual(
+      [],
+    );
+  });
+
+  test("only counts on the route the person takes", async () => {
+    const { unbackedForms } = await import("./state");
+    const forms = [{ ...form, backed: false, when: mail }];
+    expect(unbackedForms(holding(forms, { method: "online" }))).toEqual([]);
+    expect(unbackedForms(holding(forms, { method: "mail" }))).toHaveLength(1);
+  });
+});

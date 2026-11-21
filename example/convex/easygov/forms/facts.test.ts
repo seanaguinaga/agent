@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { languageOf, rankForms, revisionOf, type FormFacts } from "./facts";
+import {
+  expiredBy,
+  languageOf,
+  rankForms,
+  revisionOf,
+  type FormFacts,
+} from "./facts";
 
 const ENGLISH =
   "Complete this form if you are renewing your license by mail. The information you give is used for the " +
@@ -108,10 +114,33 @@ describe("rankForms", () => {
     ).toEqual(["the authority's link, 2016", "typed, 2020"]);
   });
 
+  test("a current file before an expired one, even the one the authority links", () => {
+    // An authority's page can go on linking an edition it replaced.
+    expect(
+      order([
+        file("linked, expired 2019", { revision: 201901, expired: true }, true),
+        file("given, current 2025", { revision: 202508 }),
+      ]),
+    ).toEqual(["given, current 2025", "linked, expired 2019"]);
+  });
+
   test("ties keep the order the sources were trusted in", () => {
     expect(order([file("given", {}), file("known", {})])).toEqual([
       "given",
       "known",
     ]);
   });
+});
+
+test("a form that prints an expiry is expired once that month is over", () => {
+  const at = (date: string) => Date.parse(date);
+  const old = "OMB No. 0938-1230 Expires: 04/24 APPLICATION FOR ENROLLMENT";
+  expect(expiredBy(old, at("2024-04-30"))).toBe(false);
+  expect(expiredBy(old, at("2024-05-01"))).toBe(true);
+  expect(expiredBy("Expires 10/31/2027", at("2026-11-21"))).toBe(false);
+  expect(expiredBy("Expires: 07/31/2028", at("2026-11-21"))).toBe(false);
+  // A form that prints no expiry isn't expired.
+  expect(expiredBy("Form 8822 (Rev. February 2021)", at("2030-01-01"))).toBe(
+    false,
+  );
 });

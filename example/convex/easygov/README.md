@@ -67,6 +67,7 @@ can reply on the case. The example uses a fixed test identity.
 | `profile/`         | The person's own facts, read by every form (see its README)              |
 | `evals/`           | How often the models get each step right (see its README)                |
 | `dev.ts`           | Seeding and inspection for the test pages; not for production            |
+| `review.ts`        | What people corrected lately, beside what each agent step cost           |
 | `autopilot.ts`     | Pure: plays the person's part, for the test pages and the evals          |
 
 ## How it fits together
@@ -181,6 +182,24 @@ says so, and the person can ask again.
 error (`run.state` is `failed`) and the case takes no events until the person
 sends `case.retry` (start the work again) or `case.stop` (stop). `case.cancel`
 works at any time.
+
+## What went wrong lately
+
+Each agent call is traced (see `debugging/spans.ts`), and the case history
+records each time a person corrects a model: `pack.rejected`, `answer.changed`
+(an answer changed in review, or a first answer other than the one a model read
+from the chat or a file; only the question's key is kept) and
+`artifact.reassessed`. One query puts the two side by side, leaving out the
+evals' own cases:
+
+```sh
+npx convex run easygov/review:lastDays '{"days":7}'
+```
+
+It gives each correction with example cases and threads, the questions whose
+answers were changed most, and each easygov agent step's count, failures, time
+and tokens. Read the example threads before changing a prompt, then make the
+failure an eval case (see `evals/`) so the fix shows in a run.
 
 ## What a page reads
 

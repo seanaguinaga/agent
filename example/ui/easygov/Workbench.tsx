@@ -1,3 +1,4 @@
+import { FormBacking } from "./FormBacking";
 import { PacketContents } from "./Packet";
 import { requiredInputs, routeApplies } from "../../convex/easygov/case/state";
 // One case, as every easygov test page shows it: where it is, what a person
@@ -241,6 +242,13 @@ function Proposal({ session }: { session: CaseSession }) {
           </p>
         </div>
       )}
+      {(draft ?? definitionOf(selection))?.packetForms?.map((form) => (
+        <FormBacking
+          key={form.code + form.sourceUrl}
+          form={form}
+          pages={draft?.output?.sources}
+        />
+      ))}
       <Result
         value={
           selection.kind === "draft"

@@ -18,7 +18,15 @@ export type FormFacts = {
   language: Language;
   /** The revision the file prints, as YYYYMM. Undefined if it prints none. */
   revision?: number;
+  /**
+   * True if the file prints a date it expires on, and that date has passed.
+   * Worked out when the facts are given, never kept: see `ReadFacts`.
+   */
+  expired?: boolean;
 };
+
+/** What is read from a file once, and kept: everything but whether it has expired. */
+export type ReadFacts = Omit<FormFacts, "expired">;
 
 const ENGLISH = [
   "the",
@@ -101,13 +109,17 @@ function dateIn(text: string): number | undefined {
 
 /**
  * The revision a form prints, as YYYYMM: the date after "Rev.", "Revised" or
- * "Edition", wherever on the page it is. The latest, if it prints several.
+ * "Edition", or a month and year alone in brackets, wherever on the page it
+ * is. The latest, if it prints several.
  */
 export function revisionOf(words: string): number | undefined {
   const marked = [
     ...words.matchAll(
       /\b(?:rev(?:ised|ision)?|edition|ed)\b\.?[\s(:]*([^)\n]{0,24})/gi,
     ),
+    // A month and year alone in brackets, as beside a form's code:
+    // "Form SSA-561 (08-2025)".
+    ...words.matchAll(/\(\s*(\d{1,2}[/-](?:\d{4}|\d{2}))\s*\)/g),
   ].flatMap(([, after]) => dateIn(after) ?? []);
   return marked.length ? Math.max(...marked) : undefined;
 }
@@ -122,7 +134,8 @@ const LANGUAGE_ORDER: Record<Language, number> = {
 
 /**
  * Candidates for one form, best first: a file with places to write in before
- * one without, English (or bilingual) before a translation, the file the
+ * one without, English (or bilingual) before a translation, a current file
+ * before one that prints an expiry that has passed, the file the
  * authority's own link gives before any other, then the latest revision
  * printed. Ties keep the order they came in, which is the order the sources
  * can be trusted in.
@@ -133,6 +146,7 @@ export function rankForms<T extends { facts: FormFacts; designated?: boolean }>(
   const key = ({ facts, designated }: T) => [
     facts.places > 0 ? 0 : 1,
     LANGUAGE_ORDER[facts.language],
+    facts.expired ? 1 : 0,
     designated ? 0 : 1,
     -(facts.revision ?? 0),
   ];
@@ -144,7 +158,22 @@ export function rankForms<T extends { facts: FormFacts; designated?: boolean }>(
         a.key[1] - b.key[1] ||
         a.key[2] - b.key[2] ||
         a.key[3] - b.key[3] ||
+        a.key[4] - b.key[4] ||
         a.index - b.index,
     )
     .map(({ candidate }) => candidate);
+}
+
+/**
+ * Whether a form prints an expiry that has passed: "Expires: 04/24",
+ * "Expires 10/31/2027". The last day of the month it names is the last day
+ * it holds.
+ */
+export function expiredBy(words: string, now: number): boolean {
+  const printed = words.match(
+    /\bExpir(?:es|ation(?: date)?):?\s*(\d{1,2})\s*\/\s*(?:\d{1,2}\s*\/\s*)?(\d{4}|\d{2})\b/i,
+  );
+  if (!printed) return false;
+  const [, month, digits] = printed;
+  return Date.UTC(year(digits), Number(month), 1) <= now;
 }

@@ -1,6 +1,6 @@
 // The forms registry and its editions: what the test pages and the fill
 // action read and write. The PDF work itself is in `actions.ts`.
-import { isOfficialHost, sameFormCode } from "./sources";
+import { addressKey, bareCode, isOfficialHost, sameFormCode } from "./sources";
 import { requireOperator } from "../operators";
 import { ConvexError, v, type Infer } from "convex/values";
 import { internal } from "../../_generated/api";
@@ -17,7 +17,15 @@ import { fingerprintOf, pinnedPack } from "../case/state";
 import { parseJurisdiction, vPackProfileLinks } from "../packs/schema";
 import { isReading, READINGS } from "../profile/vocabulary";
 import { mappingInputs, mappingQuestions } from "./mapping";
-import { vAttempt, vMapping, vTarget, vVia } from "./schema";
+import {
+  vAddressAnswer,
+  vAttempt,
+  vHeldAddress,
+  vMapping,
+  vReadFacts,
+  vTarget,
+  vVia,
+} from "./schema";
 
 /** Adds a form to the registry, or changes where one is fetched from. */
 export const createForm = mutation({
@@ -380,7 +388,11 @@ export const publishPack = mutation({
 export const formOf = internalQuery({
   args: { formId: v.id("forms") },
   returns: v.union(
-    v.object({ urls: v.array(v.string()), code: v.string() }),
+    v.object({
+      urls: v.array(v.string()),
+      code: v.string(),
+      jurisdiction: v.string(),
+    }),
     v.null(),
   ),
   handler: async (ctx, { formId }) => {
@@ -389,6 +401,7 @@ export const formOf = internalQuery({
       form && {
         urls: [form.sourceUrl, ...(form.alternateUrls ?? [])],
         code: form.code,
+        jurisdiction: form.jurisdiction,
       }
     );
   },
@@ -401,73 +414,6 @@ export const recordAttempts = internalMutation({
   handler: async (ctx, { formId, ok, attempts }) => {
     await ctx.db.patch("forms", formId, {
       lastFetch: { at: Date.now(), ok, attempts },
-    });
-    return null;
-  },
-});
-
-/** Records a fetch: the same bytes again, or a new edition. */
-export const recordFetch = internalMutation({
-  args: {
-    formId: v.id("forms"),
-    sha256: v.string(),
-    /** Set when these bytes are new: what was read from them. */
-    fresh: v.optional(
-      v.object({
-        storageId: v.id("_storage"),
-        edition: v.optional(v.string()),
-        pages: v.number(),
-        fillable: v.boolean(),
-        targets: v.array(vTarget),
-        obtained: v.object({ via: vVia, url: v.string() }),
-        opened: v.boolean(),
-      }),
-    ),
-  },
-  returns: v.union(v.id("formEditions"), v.null()),
-  handler: async (ctx, { formId, sha256, fresh }) => {
-    const existing = await ctx.db
-      .query("formEditions")
-      .withIndex("by_formId_and_sha256", (q) =>
-        q.eq("formId", formId).eq("sha256", sha256),
-      )
-      .first();
-    if (existing) {
-      await ctx.db.patch("formEditions", existing._id, {
-        checkedAt: Date.now(),
-      });
-      return existing._id;
-    }
-    if (!fresh) return null;
-    return await ctx.db.insert("formEditions", {
-      formId,
-      sha256,
-      checkedAt: Date.now(),
-      mapping: [],
-      mappingStatus: "none",
-      currency: { status: "unconfirmed" },
-      ...fresh,
-    });
-  },
-});
-
-/**
- * Replaces an edition's targets, after the reading of the page improved. A
- * mapping made against the old ones can't be trusted, so it's dropped.
- */
-export const replaceTargets = internalMutation({
-  args: { editionId: v.id("formEditions"), targets: v.array(vTarget) },
-  returns: v.null(),
-  handler: async (ctx, { editionId, targets }) => {
-    if (await isPublished(ctx, editionId)) {
-      throw new ConvexError(
-        "A pack fills this edition, so its targets can't be read again.",
-      );
-    }
-    await ctx.db.patch("formEditions", editionId, {
-      targets,
-      mapping: [],
-      mappingStatus: "none",
     });
     return null;
   },
@@ -513,68 +459,267 @@ export const editionOfCase = internalQuery({
   },
 });
 
-/** Research may discover the same PDF on concurrent cases. Never rewrite a curated registry entry. */
-export const registerSource = internalMutation({
-  args: { sourceUrl: v.string(), code: v.string(), jurisdiction: v.string() },
-  returns: v.id("forms"),
-  handler: async (ctx, args) => {
-    if (!isOfficialHost(args.sourceUrl))
-      throw new ConvexError("Expected an official PDF address.");
-    const existing = await ctx.db
-      .query("forms")
-      .withIndex("by_sourceUrl", (q) => q.eq("sourceUrl", args.sourceUrl))
-      .first();
-    if (!existing) {
-      return await ctx.db.insert("forms", { ...args, title: args.code });
-    }
-    // An entry research made (its title is still its code) under a name the
-    // file turned out not to carry is a wrong guess, not a curated entry:
-    // the next name offered for the same address replaces it.
-    const guessed =
-      existing.title === existing.code && existing.lastFetch?.ok === false;
-    if (guessed && existing.code !== args.code) {
-      await ctx.db.patch("forms", existing._id, {
-        code: args.code,
-        title: args.code,
-      });
-    }
-    return existing._id;
+// --- What official addresses answered ----------------------------------------
+
+const addressRow = (ctx: QueryCtx, key: string) =>
+  ctx.db
+    .query("formAddresses")
+    .withIndex("by_key", (q) => q.eq("key", key))
+    .unique();
+
+/** How an address last answered, if it has been asked. */
+export const addressOf = internalQuery({
+  args: { key: v.string() },
+  returns: v.union(vHeldAddress, v.null()),
+  handler: async (ctx, { key }) => {
+    const row = await addressRow(ctx, key);
+    if (!row) return null;
+    const { _id, _creationTime, key: _key, chosen: _chosen, ...held } = row;
+    return held;
+  },
+});
+
+/** Keeps how an address answered, in place of how it answered before. */
+export const recordAddress = internalMutation({
+  args: {
+    key: v.string(),
+    url: v.string(),
+    packet: v.optional(v.string()),
+    answer: vAddressAnswer,
+  },
+  returns: v.null(),
+  handler: async (ctx, { key, url, packet, answer }) => {
+    const row = await addressRow(ctx, key);
+    const failed = answer.outcome !== "file" && answer.outcome !== "page";
+    const held = {
+      key,
+      url,
+      packet,
+      ...answer,
+      checkedAt: Date.now(),
+      failures: failed ? (row?.failures ?? 0) + 1 : 0,
+      chosen: row?.chosen,
+    };
+    if (row) await ctx.db.replace("formAddresses", row._id, held);
+    else await ctx.db.insert("formAddresses", held);
+    return null;
   },
 });
 
 /**
- * The addresses chosen for a form before, most recent first. A form is a
- * fact about the world, not about a case: once its file has been found, the
- * next case starts from it and doesn't depend on a search finding it again.
+ * Keeps a file as an edition, once, and says what is known of it. The same
+ * bytes are one file whichever address served them, and two addresses can
+ * serve them at the same moment: so looking and keeping are one step. With
+ * no `fresh`, it only looks.
+ */
+export const keepFile = internalMutation({
+  args: {
+    sha256: v.string(),
+    fresh: v.optional(
+      v.object({
+        /** The registry entry it belongs to, or the source to make one for. */
+        formId: v.optional(v.id("forms")),
+        sourceUrl: v.string(),
+        code: v.string(),
+        jurisdiction: v.string(),
+        edition: v.object({
+          storageId: v.id("_storage"),
+          edition: v.optional(v.string()),
+          pages: v.number(),
+          fillable: v.boolean(),
+          targets: v.array(vTarget),
+          obtained: v.object({ via: vVia, url: v.string() }),
+          opened: v.boolean(),
+        }),
+      }),
+    ),
+  },
+  returns: v.object({
+    editionId: v.optional(v.id("formEditions")),
+    /** True if this call kept it: otherwise the caller's copy isn't needed. */
+    kept: v.boolean(),
+    opening: v.optional(v.string()),
+    facts: v.optional(vReadFacts),
+  }),
+  handler: async (ctx, { sha256, fresh }) => {
+    const existing = await ctx.db
+      .query("formEditions")
+      .withIndex("by_sha256", (q) => q.eq("sha256", sha256))
+      .first();
+    const read = await ctx.db
+      .query("formAddresses")
+      .withIndex("by_sha256", (q) => q.eq("sha256", sha256))
+      .first();
+    // Only a file is held by its hash.
+    const known =
+      read?.outcome === "file"
+        ? { opening: read.opening, facts: read.facts }
+        : {};
+    if (existing || !fresh) {
+      return { editionId: existing?._id, kept: false, ...known };
+    }
+    const { formId, edition, sourceUrl, code, jurisdiction } = fresh;
+    const form =
+      formId ??
+      (
+        await ctx.db
+          .query("forms")
+          .withIndex("by_sourceUrl", (q) => q.eq("sourceUrl", sourceUrl))
+          .first()
+      )?._id ??
+      (await ctx.db.insert("forms", {
+        sourceUrl,
+        code,
+        jurisdiction,
+        title: code,
+      }));
+    const editionId = await ctx.db.insert("formEditions", {
+      formId: form,
+      sha256,
+      checkedAt: Date.now(),
+      mapping: [],
+      mappingStatus: "none",
+      currency: { status: "unconfirmed" },
+      ...edition,
+    });
+    return { editionId, kept: true, ...known };
+  },
+});
+
+/** As many files as are remembered for one form. */
+const MAX_REMEMBERED = 3;
+
+/** The addresses chosen for a form, latest first. */
+async function chosenFor(ctx: QueryCtx, jurisdiction: string, code: string) {
+  const rows = await ctx.db
+    .query("formAddresses")
+    .withIndex("by_chosen_jurisdiction_and_chosen_bare", (q) =>
+      q
+        .eq("chosen.jurisdiction", jurisdiction)
+        .eq("chosen.bare", bareCode(code)),
+    )
+    .take(50);
+  return rows
+    .filter((row) => sameFormCode(row.chosen!.code, code))
+    .sort(
+      (a, b) =>
+        b.chosen!.at - a.chosen!.at || b._creationTime - a._creationTime,
+    );
+}
+
+/**
+ * The addresses earlier cases chose for a form, latest first. A form is a
+ * fact about the world, not about a case: the next case starts from its file
+ * and doesn't depend on a search finding it again.
  */
 export const knownSources = internalQuery({
   args: { jurisdiction: v.string(), code: v.string() },
   returns: v.array(v.string()),
-  handler: async (ctx, { jurisdiction, code }) => {
-    const rows = await ctx.db
-      .query("forms")
-      .withIndex("by_jurisdiction_and_chosenAt", (q) =>
-        q.eq("jurisdiction", jurisdiction).gt("chosenAt", 0),
-      )
-      .order("desc")
-      .take(500);
-    return rows
-      .filter((row) => sameFormCode(row.code, code))
-      .slice(0, 4)
-      .map((row) => row.sourceUrl);
+  handler: async (ctx, { jurisdiction, code }) =>
+    (await chosenFor(ctx, jurisdiction, code)).map((row) => row.url),
+});
+
+/**
+ * Remembers the address chosen for a form. What that makes redundant is
+ * forgotten: another address of the same file, an earlier revision, and all
+ * but the few latest. A different file of the same revision stays, so one
+ * poor choice can't push out a good one.
+ */
+export const rememberChosen = internalMutation({
+  args: { jurisdiction: v.string(), code: v.string(), url: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { jurisdiction, code, url }) => {
+    const row = await addressRow(ctx, addressKey(url));
+    if (!row) return null;
+    const others = (await chosenFor(ctx, jurisdiction, code)).filter(
+      (other) => other._id !== row._id,
+    );
+    const file = row.outcome === "file" ? row : undefined;
+    const revision = file?.facts.revision;
+    // Another address of the same file, or an earlier revision of the form.
+    const redundant = (other: (typeof others)[number]) =>
+      other.outcome === "file" &&
+      (other.sha256 === file?.sha256 ||
+        (revision !== undefined &&
+          (other.facts.revision ?? revision) < revision));
+    const kept = others.filter((other) => !redundant(other));
+    for (const other of others) {
+      if (kept.indexOf(other) >= MAX_REMEMBERED - 1 || redundant(other)) {
+        await ctx.db.patch("formAddresses", other._id, { chosen: undefined });
+      }
+    }
+    await ctx.db.patch("formAddresses", row._id, {
+      chosen: { jurisdiction, bare: bareCode(code), code, at: Date.now() },
+    });
+    return null;
   },
 });
 
-/** Remembers the address chosen for a form, for the next case. */
-export const rememberChosen = internalMutation({
-  args: { sourceUrl: v.string() },
+/**
+ * Clears the old `forms.chosenAt` field, a batch at a time, so the schema
+ * can drop it. Run once per deployment:
+ *   npx convex run easygov/forms/data:clearChosenAt '{"cursor":null}'
+ */
+export const clearChosenAt = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
   returns: v.null(),
-  handler: async (ctx, { sourceUrl }) => {
-    const row = await ctx.db
+  handler: async (ctx, { cursor }) => {
+    const { page, isDone, continueCursor } = await ctx.db
       .query("forms")
-      .withIndex("by_sourceUrl", (q) => q.eq("sourceUrl", sourceUrl))
-      .first();
-    if (row) await ctx.db.patch("forms", row._id, { chosenAt: Date.now() });
+      .paginate({ numItems: 100, cursor });
+    for (const form of page) {
+      if (form.chosenAt !== undefined) {
+        await ctx.db.patch("forms", form._id, { chosenAt: undefined });
+      }
+    }
+    if (!isDone) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.easygov.forms.data.clearChosenAt,
+        {
+          cursor: continueCursor,
+        },
+      );
+    }
+    return null;
+  },
+});
+
+/** As many hosted browsers as all cases have open at once: the service allows 24. */
+export const MAX_BROWSERS = 20;
+
+/** Longer than any browser job: a lease left by work that died ends itself. */
+export const BROWSER_LEASE_MS = 5 * 60_000;
+
+/** Takes a place for one browser, if one is free. */
+export const takeBrowserLease = internalMutation({
+  args: {},
+  returns: v.union(v.id("browserLeases"), v.null()),
+  handler: async (ctx) => {
+    const now = Date.now();
+    const leases = await ctx.db
+      .query("browserLeases")
+      .withIndex("by_expiresAt")
+      .take(MAX_BROWSERS * 3);
+    const live = leases.filter((lease) => lease.expiresAt > now);
+    for (const lease of leases) {
+      if (lease.expiresAt <= now)
+        await ctx.db.delete("browserLeases", lease._id);
+    }
+    if (live.length >= MAX_BROWSERS) return null;
+    return await ctx.db.insert("browserLeases", {
+      expiresAt: now + BROWSER_LEASE_MS,
+    });
+  },
+});
+
+export const releaseBrowserLease = internalMutation({
+  args: { leaseId: v.id("browserLeases") },
+  returns: v.null(),
+  handler: async (ctx, { leaseId }) => {
+    if (await ctx.db.get("browserLeases", leaseId)) {
+      await ctx.db.delete("browserLeases", leaseId);
+    }
     return null;
   },
 });
@@ -630,5 +775,3 @@ export const latestBlueprint = internalQuery({
       : null;
   },
 });
-
-export { isOfficialHost };

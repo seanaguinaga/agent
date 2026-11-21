@@ -22,7 +22,7 @@ import {
 import { resolveMapping } from "./mapping";
 import { openForFilling, UnusablePdf } from "./open";
 import { fillPdf, inspectPdf, verifyPdf } from "./pdf";
-import { languageOf, revisionOf, type FormFacts } from "./facts";
+import { expiredBy, languageOf, revisionOf, type FormFacts } from "./facts";
 import {
   vAddressOutcome,
   vFilledDocument,
@@ -124,6 +124,8 @@ async function request(
   | {
       got: "body";
       bytes: Uint8Array;
+      /** Where the request ended up, after any redirects. */
+      at: string;
       /** Whether the server says it is a web page. */
       html: boolean;
       etag?: string;
@@ -166,6 +168,7 @@ async function request(
       return {
         got: "body",
         bytes: new Uint8Array(await response.arrayBuffer()),
+        at: address,
         html: /html/i.test(response.headers.get("content-type") ?? ""),
         etag: response.headers.get("etag") ?? undefined,
         lastModified: response.headers.get("last-modified") ?? undefined,
@@ -282,6 +285,8 @@ async function ask(
 
   let bytes: Uint8Array;
   let html = !form;
+  // A page's links are relative to where it was served from.
+  let at = url;
   let etag: string | undefined;
   let lastModified: string | undefined;
   if (way === "request") {
@@ -306,7 +311,7 @@ async function ask(
       return no(got.got, got.note);
     }
     if (got.got !== "body") return no("refused", got.note);
-    ({ bytes, html, etag, lastModified } = got);
+    ({ bytes, at, html, etag, lastModified } = got);
   } else {
     const service = browserService();
     if (!service) return no("busy", "No browser is set up.");
@@ -338,7 +343,7 @@ async function ask(
       return no("unusable", problem);
     }
     // A page is read for its links, not downloaded from.
-    const links = linksWorthKeeping(new TextDecoder().decode(bytes), url);
+    const links = linksWorthKeeping(new TextDecoder().decode(bytes), at);
     await keep({ outcome: "page", links });
     return asPage(links);
   }
@@ -378,6 +383,7 @@ async function ask(
     places: targets.length,
     language: languageOf(opening),
     revision: revisionOf(`${edition ?? ""} ${opening}`),
+    ...(expiredBy(opening, Date.now()) && { expired: true }),
   };
   // Whatever way it came, it has to be the form it's meant to be. A file
   // that isn't is still known for what it is, and isn't kept.

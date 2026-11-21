@@ -11,7 +11,6 @@ import {
   isWebPage,
   labelledLinks,
   looseKey,
-  pagesNaming,
   sameAddress,
 } from "./sources";
 
@@ -94,28 +93,6 @@ describe("a page's links", () => {
       },
     ]);
   });
-
-  test("the pages that may be a form's own carry its number, not just its agency", () => {
-    const pages = [
-      { url: "https://www.ssa.gov/forms/", label: "SSA forms" },
-      { url: "https://www.ssa.gov/forms/ssa-827.html", label: "Form SSA-827" },
-      { url: "https://www.ssa.gov/forms/ssa-561.html", label: "Form SSA-561" },
-      { url: "https://www.ssa.gov/appeals/", label: "Appeal a decision" },
-    ];
-    expect(pagesNaming(pages, "SSA-561-U2").map(({ url }) => url)).toEqual([
-      "https://www.ssa.gov/forms/ssa-561.html",
-    ]);
-    // A title has no number to look for.
-    expect(pagesNaming(pages, "Request for Reconsideration")).toEqual([]);
-  });
-
-  test("no more pages than asked for", () => {
-    const pages = [1, 2, 3].map((n) => ({
-      url: `https://www.uscis.gov/i-864/${n}`,
-      label: "Form I-864",
-    }));
-    expect(pagesNaming(pages, "I-864", 2)).toHaveLength(2);
-  });
 });
 
 test("a web page is told from a file by how it starts", () => {
@@ -171,15 +148,6 @@ describe("a page that lists forms", () => {
         "SSA-1021 Appeal of Determination · ssa-1021 instructions",
       ],
     ]);
-  });
-
-  test("a form's own page is found by its heading, whatever the link says", () => {
-    expect(
-      pagesNaming(
-        links.filter(({ pdf }) => !pdf),
-        "SSA-561",
-      ).map(({ url }) => url),
-    ).toEqual(["https://www.ssa.gov/forms/ssa-561.html"]);
   });
 });
 

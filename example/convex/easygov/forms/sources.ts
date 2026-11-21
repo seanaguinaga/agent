@@ -128,7 +128,13 @@ export function sameAddress(a: string, b: string): boolean {
  * above it, so the heading is as much the page's word for the link as the
  * link's own.
  */
-export type LabelledLink = { url: string; label: string; under?: string };
+export type LabelledLink = {
+  url: string;
+  label: string;
+  under?: string;
+  /** The site of the page the link is on. */
+  on?: string;
+};
 
 /** A link, and whether it goes to a PDF or to another page. */
 export type PageLink = LabelledLink & { pdf: boolean };
@@ -191,44 +197,6 @@ export function labelledLinks(html: string, page: string): PageLink[] {
     }
   }
   return [...found.values()];
-}
-
-/**
- * The pages most likely to be a form's own: those whose words or address
- * carry the longest number in its code. An agency's name alone is on every
- * link of its site, and says nothing about one form.
- */
-export function pagesNaming<T extends LabelledLink>(
-  links: T[],
-  code: string,
-  limit = 2,
-): T[] {
-  const parts = (text: string) =>
-    new Set(text.toUpperCase().match(/[A-Z]+|\d+/g) ?? []);
-  const wanted = [...parts(code.replace(/\bforms?\b/gi, ""))];
-  const [number] = wanted
-    .filter((part) => /\d/.test(part))
-    .sort((a, b) => b.length - a.length);
-  if (!number) return [];
-  return links
-    .map((link, index) => {
-      const file = link.url
-        .split(/[?#]/)[0]
-        .replace(/\/$/, "")
-        .split("/")
-        .pop();
-      const seen = parts(`${link.label} ${link.under ?? ""} ${file ?? ""}`);
-      return {
-        link,
-        index,
-        hits: wanted.filter((part) => seen.has(part)).length,
-        numbered: seen.has(number),
-      };
-    })
-    .filter(({ numbered }) => numbered)
-    .sort((a, b) => b.hits - a.hits || a.index - b.index)
-    .slice(0, limit)
-    .map(({ link }) => link);
 }
 
 const HOUR = 60 * 60 * 1000;

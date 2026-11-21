@@ -87,6 +87,7 @@ export const vFormFacts = v.object({
     v.literal("unknown"),
   ),
   revision: v.optional(v.number()),
+  expired: v.optional(v.boolean()),
 });
 
 /** A link on a page: where it goes, the page's words for it, and its kind. */

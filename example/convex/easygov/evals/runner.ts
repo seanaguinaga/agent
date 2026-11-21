@@ -59,6 +59,7 @@ import { proposeMapping } from "../forms/agents";
 import { normalizeFormId, parseJurisdiction } from "../packs/schema";
 import { addressFromText } from "../profile/agents";
 import * as cases from "./cases";
+import { references, type Reference } from "./references";
 import {
   gradeAddress,
   gradeDraft,
@@ -370,8 +371,31 @@ const run: Record<
           : { code };
       }),
     );
+    const graded = gradeForms(expect, forms, published);
+    // What a reader would catch that the comparison of files can't.
+    const reference = references[caseId];
+    if (reference) {
+      const judged = await judgeForms(
+        ctx,
+        reference,
+        forms.map(({ code, url, backed, facts }) => ({
+          code,
+          url,
+          backed,
+          facts,
+        })),
+      ).catch(() => undefined);
+      if (judged) {
+        graded.checks["~judge"] = judged.verdict === "pass";
+        if (judged.problems.length) {
+          graded.detail = [graded.detail, `judge: ${judged.problems.join(" ")}`]
+            .filter(Boolean)
+            .join("; ");
+        }
+      }
+    }
     return {
-      ...gradeForms(expect, forms, published),
+      ...graded,
       cost,
       // Everything each step saw, so a rule can be judged across cases.
       output: {
@@ -752,6 +776,46 @@ async function judgeQuestions(
       'Otherwise "pass".',
       `<process>${process}</process>`,
       `<questions>${JSON.stringify(questions)}</questions>`,
+    ].join("\n"),
+  });
+  await chargeUsage(ctx, undefined, usage.totalTokens);
+  return output;
+}
+
+/**
+ * Asks a model what is wrong with the forms a trial found, against the
+ * reviewer's reference for the case. It is told what to look for, since the
+ * faults a code check can't see are the ones a hurried reader misses too.
+ */
+async function judgeForms(
+  ctx: ActionCtx,
+  reference: Reference,
+  found: unknown,
+): Promise<{ verdict: "pass" | "fail"; problems: string[] }> {
+  const { output, usage } = await generateText({
+    model: languageModel,
+    output: Output.object({
+      schema: z.object({
+        problems: z.array(z.string()),
+        verdict: z.enum(["pass", "fail"]),
+      }),
+    }),
+    prompt: [
+      "You are checking the official forms an assistant found for a person against a reviewer's reference,",
+      "which was written from the authority's own pages and the files themselves.",
+      "List each problem in one sentence. A problem is:",
+      "- a form the reference lists that wasn't found, or has no file;",
+      "- a file that isn't the edition the reference gives (compare the revision printed, as YYYYMM);",
+      "- a file from somewhere other than where the authority publishes it: another government's copy,",
+      "  a staging or test site, a sample, a rule-making or instruction document;",
+      "- a translation given as the form;",
+      "- the same form listed more than once;",
+      "- anything the reference calls a trap.",
+      "Not a problem: a form the reference doesn't list, unless a trap names it; the same file at another",
+      "address of the same site; a file that isn't backed; or a revision that gives the same year with no month.",
+      '"fail" if there is any problem, otherwise "pass".',
+      `<reference>${JSON.stringify(reference)}</reference>`,
+      `<found>${JSON.stringify(found)}</found>`,
     ].join("\n"),
   });
   await chargeUsage(ctx, undefined, usage.totalTokens);

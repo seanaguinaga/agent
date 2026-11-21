@@ -42,6 +42,7 @@ import type * as easygov_decisions from "../easygov/decisions.js";
 import type * as easygov_dev from "../easygov/dev.js";
 import type * as easygov_evals_cases from "../easygov/evals/cases.js";
 import type * as easygov_evals_grading from "../easygov/evals/grading.js";
+import type * as easygov_evals_references from "../easygov/evals/references.js";
 import type * as easygov_evals_runner from "../easygov/evals/runner.js";
 import type * as easygov_evals_tables from "../easygov/evals/tables.js";
 import type * as easygov_firms_data from "../easygov/firms/data.js";
@@ -146,6 +147,7 @@ declare const fullApi: ApiFromModules<{
   "easygov/dev": typeof easygov_dev;
   "easygov/evals/cases": typeof easygov_evals_cases;
   "easygov/evals/grading": typeof easygov_evals_grading;
+  "easygov/evals/references": typeof easygov_evals_references;
   "easygov/evals/runner": typeof easygov_evals_runner;
   "easygov/evals/tables": typeof easygov_evals_tables;
   "easygov/firms/data": typeof easygov_firms_data;

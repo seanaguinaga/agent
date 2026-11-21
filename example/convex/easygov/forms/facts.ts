@@ -18,6 +18,8 @@ export type FormFacts = {
   language: Language;
   /** The revision the file prints, as YYYYMM. Undefined if it prints none. */
   revision?: number;
+  /** True if the file prints a date it expires on, and that date has passed. */
+  expired?: boolean;
 };
 
 const ENGLISH = [
@@ -151,4 +153,18 @@ export function rankForms<T extends { facts: FormFacts; designated?: boolean }>(
         a.index - b.index,
     )
     .map(({ candidate }) => candidate);
+}
+
+/**
+ * Whether a form prints an expiry that has passed: "Expires: 04/24",
+ * "Expires 10/31/2027". The last day of the month it names is the last day
+ * it holds.
+ */
+export function expiredBy(words: string, now: number): boolean {
+  const printed = words.match(
+    /\bExpir(?:es|ation(?: date)?):?\s*(\d{1,2})\s*\/\s*(?:\d{1,2}\s*\/\s*)?(\d{4}|\d{2})\b/i,
+  );
+  if (!printed) return false;
+  const [, month, digits] = printed;
+  return Date.UTC(year(digits), Number(month), 1) <= now;
 }

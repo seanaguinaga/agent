@@ -335,7 +335,7 @@ test("the authority's own link to a fillable English file settles the form: no o
   });
   // The decision was offered the page's words and heading for each link.
   expect(offered()[0].link1).toBe(
-    'English PDF, under the heading "Form SSA-561 | Request for Reconsideration" [ssa-561.pdf]',
+    'English PDF, under the heading "Form SSA-561 | Request for Reconsideration" [www.ssa.gov/…/ssa-561.pdf, linked from a page of www.ssa.gov]',
   );
   // Neither the address research gave nor the remembered one was asked.
   expect(net.addresses()).toEqual([index, linked]);
@@ -577,14 +577,14 @@ test("a lead that turns out to be a page is read one link further on, without be
   });
 });
 
-test("the extra hop reads at most two further pages, and never a page beyond them", async () => {
+test("the link chosen is followed one page further, and no further", async () => {
   const t = initConvexTest();
   const further = ["a", "b", "c"].map((name) => `${ssa}/ssa-561-${name}.html`);
   const deeper = `${ssa}/ssa-561-deeper.html`;
   const file = `${ssa}/ssa-561.pdf`;
   const net = fakeNetwork({
-    // The page research read links no file, only three pages that name
-    // the form.
+    // The page research read links no file, only pages that name the
+    // form.
     [index]: servePage(`<html><body>
       <a href="ssa-561-a.html">Form SSA-561</a>
       <a href="ssa-561-b.html">About form SSA-561</a>
@@ -613,18 +613,20 @@ test("the extra hop reads at most two further pages, and never a page beyond the
     finder,
   );
 
-  expect(net.addresses()).toEqual([index, further[0], further[1]]);
+  // The link chosen is asked and is a page; the link chosen on that page is
+  // asked and is a page too, and there it stops: the file that page links
+  // is never asked for, nor are the pages that weren't chosen.
+  expect(net.addresses()).toEqual([index, further[0], deeper]);
+  expect(net.asked(further[1])).toBe(0);
   expect(net.asked(further[2])).toBe(0);
-  expect(net.asked(deeper)).toBe(0);
   expect(net.asked(file)).toBe(0);
   expect(located.url).toBeUndefined();
+  expect(located.designated).toBeUndefined();
   expect(located.links).toMatchObject({
-    onPages: 0,
-    further: 2,
-    chose: "no links on the pages",
+    further: 1,
+    chose: "none of the shortlist",
   });
-  expect(finder.spend.spent.pages).toBe(3);
-  expect(decideMock).not.toHaveBeenCalled();
+  expect(decideMock).toHaveBeenCalledTimes(2);
 });
 
 test("the form's own page one link further on gives the file, and the link is the binding", async () => {
@@ -643,7 +645,8 @@ test("the form's own page one link further on gives the file, and the link is th
     </body></html>`),
     [file]: servePdf(ssa561),
   });
-  choosing(/Download PDF/);
+  // First the form's own page is chosen, then the file on it.
+  choosing(/Form SSA-561 \||Download PDF/);
 
   const [{ located }] = await locateForms(
     ctxOf(t),
@@ -665,7 +668,7 @@ test("the form's own page one link further on gives the file, and the link is th
       under: "Form SSA-561 | Request for Reconsideration",
       further: true,
     },
-    links: { onPages: 0, shortlisted: 2, further: 1, chose: "a link" },
+    links: { further: 1, chose: "a link" },
   });
 });
 

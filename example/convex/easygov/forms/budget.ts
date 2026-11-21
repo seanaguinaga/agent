@@ -7,9 +7,8 @@
 export type Cost = {
   /** Requests for a form's file, whether or not one came back. */
   downloads: number;
-  /** Hosted browser sessions, and those of them that read a page. */
+  /** Hosted browser sessions: to read a page, or to collect a file. */
   browser: number;
-  browsedPages: number;
   /** Calls to the search model, and to the decision model. */
   searches: number;
   decisions: number;
@@ -43,7 +42,6 @@ export function budget(limits: Limits = {}): Budget {
   const spent: Cost = {
     downloads: 0,
     browser: 0,
-    browsedPages: 0,
     searches: 0,
     decisions: 0,
     pages: 0,

@@ -55,7 +55,7 @@ import {
   isOfficialHost,
   leadsFrom,
   looseKey,
-  pagesNaming,
+  sameAddress,
   shortlist,
   type LabelledLink,
   type PageLink,
@@ -559,8 +559,6 @@ export async function draftProcess(
 const PACKET_LIMITS: Limits = {
   downloads: 12,
   browser: 10,
-  // A page is only somewhere a link may be; a file is the form itself.
-  browsedPages: 3,
   searches: 4,
   decisions: 10,
   pages: 12,
@@ -601,12 +599,7 @@ function ask<A extends Answer>(
   const { spend } = finder;
   const kind = as === "page" ? "pages" : "downloads";
   const pay = async (way: "request" | "browser") => {
-    const kinds: Kind[] =
-      way === "request"
-        ? [kind]
-        : kind === "pages"
-          ? ["browsedPages", "browser"]
-          : ["browser"];
+    const kinds: Kind[] = [way === "request" ? kind : "browser"];
     const taken = kinds.filter((each) => spend.take(each));
     const paid = taken.length === kinds.length;
     const answer = await how(way, paid);
@@ -690,7 +683,10 @@ async function linksAt(
       packet: finder.id,
     }),
   );
-  return answer.ok && "links" in answer ? answer.links : [];
+  const on = new URL(page).hostname;
+  return answer.ok && "links" in answer
+    ? answer.links.map((link) => ({ ...link, on }))
+    : [];
 }
 
 /** As many of the pages research read as are read for their links. */
@@ -770,13 +766,22 @@ async function chooseLink(
     return {};
   }
   // The page's words for the link: its own, and the heading it sits under.
-  // The file's name comes last: it is the least the authority says of it.
-  const describe = ({ url, label, under }: LabelledLink) =>
-    `${label || "(no words)"}` +
-    (under ? `, under the heading "${under}"` : "") +
-    ` [${decodeURI(url.split(/[?#]/)[0].split("/").pop() ?? "")}]`;
+  // Then whose site the file and the page are on: any government's page can
+  // link a form, and only the authority's own says which file is its form.
+  const describe = ({ url, label, under, on }: LabelledLink) => {
+    const { hostname, pathname } = new URL(url);
+    return (
+      `${label || "(no words)"}` +
+      (under ? `, under the heading "${under}"` : "") +
+      ` [${hostname}/…/${decodeURI(pathname.split("/").pop() ?? "")}` +
+      (on ? `, linked from a page of ${on}]` : "]")
+    );
+  };
   const instructions =
     `Which link is the blank form ${code} itself, in English, for a person to fill in? ` +
+    "Failing that, the authority's own page for that form. " +
+    `It has to be published by ${subject.authority ?? "the authority"} itself: ` +
+    "not a copy, or another government's version, on some other site. " +
     "Not its instructions, not a translation, and not another form with a similar name. " +
     "Go by the link's words and the heading it is under before its file name: " +
     "a form that was renamed can keep its old file name. " +
@@ -967,101 +972,74 @@ export async function locateForm(
   const as = (via: Via) => (url: string) => ({ url, via });
 
   // The authority's own link to the form, if its pages have one: the only
-  // lead that states which form a file is.
+  // lead that states which form a file is. A link isn't taken for a file or
+  // a page by how its address looks: it is asked, and says which it is.
   const onPages = options.links ? await options.links() : [];
-  const pdfs = onPages.filter(({ pdf }) => pdf);
-  let short = shortlist(pdfs, code);
-  let { designated, considered } = await chooseLink(
-    ctx,
-    threadId,
-    code,
-    subject,
-    short,
-    spend,
-  );
-  // What the last case chose for this form, so a search that misses it
-  // this time doesn't lose it.
+  let short: LabelledLink[] = [];
+  let considered: { choice: string; confidence?: number } | undefined;
+  const wordsOf = ({ label, under }: Designated) => `${label} ${under ?? ""}`;
+  /** Chooses the form's link among these, and asks it. */
+  const follow = async (links: LabelledLink[]) => {
+    short = shortlist(links, code);
+    const chosen = await chooseLink(ctx, threadId, code, subject, short, spend);
+    considered = chosen.considered ?? considered;
+    if (!chosen.designated) return undefined;
+    const linked = leadsFrom(chosen.designated.url);
+    // It may be a file already found: then that file is the linked one.
+    for (const file of found) {
+      if (linked.some((url) => sameAddress(url, file.url))) {
+        file.designated = true;
+      }
+    }
+    await tryLeads(linked.map(as("linked")), wordsOf(chosen.designated));
+    return chosen.designated;
+  };
+  let designated = await follow(onPages);
+  // What earlier cases chose for this form, so a search that misses it this
+  // time doesn't lose it.
   const remembered: string[] = await ctx.runQuery(
     internal.easygov.forms.data.knownSources,
     { jurisdiction, code },
   );
   const given = form.leads.filter(Boolean);
-  const others = [
-    ...given.map(as("given")),
-    ...given.flatMap(leadsFrom).map(as("variant")),
-    ...remembered.map(as("known")),
-  ];
-  /**
-   * Whether the form is settled: the file the authority's own link gives is
-   * a form to fill in, in English. No other lead could be chosen over it
-   * (see `rankForms`), so none is asked.
-   */
-  const settled = () =>
-    found.some(
-      ({ designated, facts }) =>
-        designated &&
-        facts.places > 0 &&
-        (facts.language === "en" || facts.language === "both"),
-    );
-  const wordsOf = ({ label, under }: Designated) => `${label} ${under ?? ""}`;
-  if (designated) {
-    await tryLeads(
-      leadsFrom(designated.url).map(as("linked")),
-      wordsOf(designated),
-    );
+  // Where the file the authority's own link gives is a form to fill in, in
+  // English, no other lead could be chosen over it (see `rankForms`), so
+  // none is asked.
+  const settled = found.some(
+    ({ designated, facts }) =>
+      designated &&
+      facts.places > 0 &&
+      (facts.language === "en" || facts.language === "both"),
+  );
+  if (!settled) {
+    await tryLeads([
+      ...given.map(as("given")),
+      ...given.flatMap(leadsFrom).map(as("variant")),
+      ...remembered.map(as("known")),
+    ]);
   }
-  if (!settled()) await tryLeads(others);
 
-  // One link further on, where no page read so far links the form.
-  let further = 0;
-  if (!designated) {
-    const beyond = eachOnce([
-      ...pages.map((url) => ({ url })),
-      ...pagesNaming(
-        onPages.filter(({ pdf }) => !pdf),
-        code,
-        MAX_FURTHER,
-      ),
-    ]).slice(0, MAX_FURTHER);
-    further = beyond.length;
-    const more = eachOnce(
-      (
-        await Promise.all(beyond.map(({ url }) => linksAt(ctx, finder, url)))
-      ).flat(),
-    ).filter(({ pdf }) => pdf);
-    const again = shortlist(more, code);
-    if (again.length) {
-      short = again;
-      const chosen = await chooseLink(
-        ctx,
-        threadId,
-        code,
-        subject,
-        again,
-        spend,
-      );
-      considered = chosen.considered ?? considered;
-      if (chosen.designated) {
-        designated = { ...chosen.designated, further: true };
-        // It may be a file already found: then that file is the linked one.
-        const linked = leadsFrom(designated.url).map(addressKey);
-        for (const file of found) {
-          if (linked.includes(addressKey(file.url))) file.designated = true;
-        }
-        await tryLeads(
-          leadsFrom(designated.url).map(as("linked")),
-          wordsOf(designated),
-        );
-      }
-    }
+  // One link further on: where the link chosen, or a lead, was the form's
+  // own page and not its file, that page's links are chosen among. No
+  // further than that.
+  const beyond = found.some((file) => file.designated)
+    ? []
+    : eachOnce(pages.map((url) => ({ url }))).slice(0, MAX_FURTHER);
+  if (beyond.length) {
+    const more = await Promise.all(
+      beyond.map(({ url }) => linksAt(ctx, finder, url)),
+    );
+    const further = await follow(eachOnce(more.flat()));
+    designated = further && { ...further, further: true };
   }
+  if (!found.some((file) => file.designated)) designated = undefined;
   const links = {
-    onPages: pdfs.length,
+    onPages: onPages.length,
     shortlisted: short.length,
-    further,
+    further: beyond.length,
     chose: designated
       ? "a link"
-      : !pdfs.length && !short.length
+      : !onPages.length
         ? "no links on the pages"
         : !short.length
           ? "no link shares the code"
@@ -1110,7 +1088,9 @@ export async function locateForm(
     editionId,
     via,
     facts,
-    backed: best.designated,
+    // A file that prints a date it expired on isn't given as confirmed,
+    // whoever links it: an authority's page can link an edition it replaced.
+    backed: best.designated && !best.facts.expired,
     designated,
     links,
     others: rest.map(({ url, via, facts }) => ({ url, via, facts })),

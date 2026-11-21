@@ -155,6 +155,12 @@ test("codeIn keeps a form's code and drops its title", () => {
   expect(codeIn("Form 8822: Change of Address")).toBe("Form 8822");
   expect(codeIn("IRS-8822")).toBe("IRS-8822");
   expect(codeIn("SS-5 - Application for a Social Security Card")).toBe("SS-5");
+  // Seen across the eval corpus: a suffix or a revision date in brackets
+  // is not the code.
+  expect(codeIn("PLD-PI-001(1)")).toBe("PLD-PI-001(1)");
+  expect(codeIn("Claim for Damages Form (Rev. 12/18)")).toBe(
+    "Claim for Damages Form (Rev. 12/18)",
+  );
   // A bare title has no code to cut down to.
   expect(codeIn("Contest Form, City of Oakland")).toBe(
     "Contest Form, City of Oakland",

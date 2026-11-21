@@ -98,6 +98,12 @@ export default {
     /** Other places the same authority publishes the same file. */
     alternateUrls: v.optional(v.array(v.string())),
     /**
+     * When this address was last the one chosen for the form, over every
+     * other file found for it. Only a chosen address is remembered for the
+     * next case: a translation fetched along the way isn't.
+     */
+    chosenAt: v.optional(v.number()),
+    /**
      * The last fetch: every way and address tried, in order. A form that
      * can't be reached says so here, with why.
      */
@@ -110,6 +116,7 @@ export default {
     ),
   })
     .index("by_code", ["code"])
+    .index("by_jurisdiction_and_chosenAt", ["jurisdiction", "chosenAt"])
     .index("by_sourceUrl", ["sourceUrl"]),
 
   /**

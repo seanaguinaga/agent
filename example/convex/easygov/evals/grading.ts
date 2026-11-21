@@ -96,6 +96,107 @@ export function gradeResearch(
   };
 }
 
+// --- Forms ------------------------------------------------------------------
+
+/**
+ * Whether two ways of writing a form's code name one form: "IRS-FORM-12153"
+ * and "Form 12153", "SSA-3441-BK" and "SSA-3441", "DWC-1" and "DWC Form 1".
+ * One has to contain the other once the word "form" and the punctuation are
+ * gone, and the shorter has to be long enough to mean something.
+ */
+export function sameCode(a: string, b: string): boolean {
+  const key = (code: string) =>
+    code
+      .toUpperCase()
+      .replace(/\bFORMS?\b/g, "")
+      .replace(/[^A-Z0-9]/g, "");
+  const [short, long] = [key(a), key(b)].sort((x, y) => x.length - y.length);
+  return short === long || (short.length >= 4 && long.includes(short));
+}
+
+/** What an edition of a form prints, as far as telling two apart needs. */
+type Edition = { revision?: number; places: number; pages: number };
+
+/** A form that came back, and the file its PDF was fetched as, if any. */
+export type FoundForm = {
+  code: string;
+  url?: string;
+  editionId?: string;
+  facts?: Edition;
+};
+
+export function gradeForms(
+  expected: readonly { code: string }[],
+  found: readonly FoundForm[],
+  /** Each expected form's file as published now, where it could be fetched. */
+  published: readonly {
+    code: string;
+    editionId?: string;
+    facts?: Edition;
+  }[] = [],
+): Graded {
+  const match = (code: string) => found.filter((f) => sameCode(f.code, code));
+  const missing = expected.filter(({ code }) => !match(code).length);
+  const unlocated = expected.filter(
+    ({ code }) => match(code).length && !match(code).some((f) => f.url),
+  );
+  // A located form whose file isn't the published edition: a different form
+  // under the right name, or another revision. The same edition served from
+  // another address, or as an accessible copy, has other bytes and is fine.
+  const sameEdition = (a?: Edition, b?: Edition) =>
+    !!a &&
+    !!b &&
+    a.revision === b.revision &&
+    a.places === b.places &&
+    a.pages === b.pages;
+  const otherFile = published.filter(
+    ({ code, editionId, facts }) =>
+      editionId &&
+      match(code).some((f) => f.url) &&
+      !match(code).some(
+        (f) => f.editionId === editionId || sameEdition(f.facts, facts),
+      ),
+  );
+  const extra = found.filter(
+    (f) => !expected.some(({ code }) => sameCode(f.code, code)),
+  );
+  const list = (label: string, codes: string[]) =>
+    codes.length ? `${label}: ${codes.join(", ")}` : "";
+  return {
+    checks: {
+      // Every expected form is named, and its PDF was fetched.
+      named: missing.length === 0,
+      located: missing.length === 0 && unlocated.length === 0,
+      // Advisory: the published file can itself have moved on since the
+      // corpus was checked.
+      "~sameEdition": otherFile.length === 0,
+      // The corpus doesn't list every form a case could need.
+      "~noExtras": extra.length === 0,
+    },
+    detail:
+      [
+        list(
+          "missing",
+          missing.map((f) => f.code),
+        ),
+        list(
+          "not located",
+          unlocated.map((f) => f.code),
+        ),
+        list(
+          "other edition",
+          otherFile.map((f) => f.code),
+        ),
+        list(
+          "extra",
+          extra.map((f) => f.code),
+        ),
+      ]
+        .filter(Boolean)
+        .join("; ") || undefined,
+  };
+}
+
 // --- Draft ------------------------------------------------------------------
 
 const LEAK = /\b(?:the|research|these|those) notes?\b|\bthe research\b/i;

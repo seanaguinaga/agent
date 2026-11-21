@@ -1,5 +1,6 @@
 // The forms registry and its editions: what the test pages and the fill
 // action read and write. The PDF work itself is in `actions.ts`.
+import { isOfficialHost, sameFormCode } from "./sources";
 import { requireOperator } from "../operators";
 import { ConvexError, v, type Infer } from "convex/values";
 import { internal } from "../../_generated/api";
@@ -17,22 +18,6 @@ import { parseJurisdiction, vPackProfileLinks } from "../packs/schema";
 import { isReading, READINGS } from "../profile/vocabulary";
 import { mappingInputs, mappingQuestions } from "./mapping";
 import { vAttempt, vMapping, vTarget, vVia } from "./schema";
-
-/** Hosts a form may be fetched from: the authority's own. */
-export function isOfficialHost(url: string): boolean {
-  try {
-    const { protocol, hostname, username, password, port } = new URL(url);
-    return (
-      protocol === "https:" &&
-      !username &&
-      !password &&
-      (!port || port === "443") &&
-      /(?:^|\.)(?:gov|mil)$|\.(?:gov|us)$|(?:^|\.)ca\.gov$/.test(hostname)
-    );
-  } catch {
-    return false;
-  }
-}
 
 /** Adds a form to the registry, or changes where one is fetched from. */
 export const createForm = mutation({
@@ -557,6 +542,43 @@ export const registerSource = internalMutation({
   },
 });
 
+/**
+ * The addresses chosen for a form before, most recent first. A form is a
+ * fact about the world, not about a case: once its file has been found, the
+ * next case starts from it and doesn't depend on a search finding it again.
+ */
+export const knownSources = internalQuery({
+  args: { jurisdiction: v.string(), code: v.string() },
+  returns: v.array(v.string()),
+  handler: async (ctx, { jurisdiction, code }) => {
+    const rows = await ctx.db
+      .query("forms")
+      .withIndex("by_jurisdiction_and_chosenAt", (q) =>
+        q.eq("jurisdiction", jurisdiction).gt("chosenAt", 0),
+      )
+      .order("desc")
+      .take(500);
+    return rows
+      .filter((row) => sameFormCode(row.code, code))
+      .slice(0, 4)
+      .map((row) => row.sourceUrl);
+  },
+});
+
+/** Remembers the address chosen for a form, for the next case. */
+export const rememberChosen = internalMutation({
+  args: { sourceUrl: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { sourceUrl }) => {
+    const row = await ctx.db
+      .query("forms")
+      .withIndex("by_sourceUrl", (q) => q.eq("sourceUrl", sourceUrl))
+      .first();
+    if (row) await ctx.db.patch("forms", row._id, { chosenAt: Date.now() });
+    return null;
+  },
+});
+
 export const saveBlueprint = internalMutation({
   args: {
     editionId: v.id("formEditions"),
@@ -608,3 +630,5 @@ export const latestBlueprint = internalQuery({
       : null;
   },
 });
+
+export { isOfficialHost };

@@ -191,7 +191,13 @@ export const draftMapping = action({
 
 /** Pin this case's interpretation of the official bytes without changing the reviewed library mapping. */
 export const compileSource = internalAction({
-  args: { code: v.string(), sourceUrl: v.string(), jurisdiction: v.string() },
+  args: {
+    code: v.string(),
+    sourceUrl: v.string(),
+    jurisdiction: v.string(),
+    /** The edition already fetched from `sourceUrl`, to not fetch it twice. */
+    editionId: v.optional(v.id("formEditions")),
+  },
   returns: v.object({
     blueprintId: v.id("formBlueprints"),
     questions: vProcessPackQuestions,
@@ -203,14 +209,17 @@ export const compileSource = internalAction({
     blueprintId: Id<"formBlueprints">;
     questions: FormQuestion[];
   }> => {
-    const formId = await ctx.runMutation(
-      internal.easygov.forms.data.registerSource,
-      args,
-    );
-    const { editionId } = await ctx.runAction(
-      internal.easygov.forms.actions.fetchSource,
-      { formId },
-    );
+    const { editionId: fetched, ...source } = args;
+    const editionId =
+      fetched ??
+      (
+        await ctx.runAction(internal.easygov.forms.actions.fetchSource, {
+          formId: await ctx.runMutation(
+            internal.easygov.forms.data.registerSource,
+            source,
+          ),
+        })
+      ).editionId;
     const edition = await ctx.runQuery(
       internal.easygov.forms.data.readEdition,
       {

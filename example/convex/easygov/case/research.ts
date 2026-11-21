@@ -94,10 +94,12 @@ const pdf = (url: string) =>
  */
 export function codeIn(text: string): string {
   const line = oneLine(text);
-  const bracketed = line.match(/\(([^()]*\d[^()]*)\)/)?.[1];
-  if (bracketed) return bracketed.trim();
   const lead = line.split(/\s*[,:;–—]\s*|\s+-\s+/)[0];
-  return /\d/.test(lead) ? lead : line;
+  if (/\d/.test(lead.replace(/\([^()]*\)/g, ""))) return lead;
+  // Only a title outside the brackets: the code is what they hold, unless
+  // that is a revision date.
+  const bracketed = line.match(/\(([^()]*\d[^()]*)\)/)?.[1].trim();
+  return bracketed && !/^rev\b/i.test(bracketed) ? bracketed : line;
 }
 
 /** Research that is only its notes: no ways of filing and no forms known. */
@@ -279,4 +281,28 @@ export function filingQuestion(methods: Method[]) {
     question: `How do you want to do this: ${ways.slice(0, -1).join(", ")} or ${ways.at(-1)}?`,
     choices: methods.map((value) => ({ value, label: METHOD_LABEL[value] })),
   };
+}
+
+/**
+ * The addresses a search reports having read: from the call's metadata, not
+ * from anything the model wrote. The search model's provider lists them as
+ * `url_citation` annotations on the raw response, which the SDK's own
+ * `sources` leaves out, so both are read.
+ */
+export function pagesSearched(result: {
+  sources?: readonly unknown[];
+  response?: { body?: unknown };
+}): string[] {
+  const urls: string[] = [];
+  const walk = (value: unknown, depth: number) => {
+    if (depth > 6 || typeof value !== "object" || value === null) return;
+    if (Array.isArray(value)) return value.forEach((v) => walk(v, depth + 1));
+    for (const [key, inner] of Object.entries(value)) {
+      if (key === "url" && typeof inner === "string") urls.push(inner);
+      else if (key !== "content") walk(inner, depth + 1);
+    }
+  };
+  walk(result.sources ?? [], 0);
+  walk(result.response?.body ?? null, 0);
+  return [...new Set(urls)];
 }

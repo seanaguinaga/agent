@@ -33,13 +33,24 @@ import { chosen } from "../case/schema";
 import {
   choosePack,
   draftProcess,
+  fetchable,
   intakeReply,
   suggestAnswers,
   readRequest,
+  linkedPdfs,
+  locateForm,
   research,
+  subjectOf,
   tailorChecklist,
+  type ResearchTrace,
 } from "../case/agents";
-import { bareResearch, notesOf } from "../case/research";
+import { researchedPack, type Draft } from "../case/draft";
+import {
+  bareResearch,
+  formLeads,
+  isIdentified,
+  notesOf,
+} from "../case/research";
 import { chargeUsage } from "../limits";
 import { proposeMapping } from "../forms/agents";
 import { normalizeFormId, parseJurisdiction } from "../packs/schema";
@@ -48,6 +59,7 @@ import * as cases from "./cases";
 import {
   gradeAddress,
   gradeDraft,
+  gradeForms,
   gradeIntake,
   gradeMapping,
   gradePipeline,
@@ -155,6 +167,15 @@ function find<T extends { id: string }>(list: T[], id: string): T {
 
 type Result = Graded & { output: unknown };
 
+/** A draft that says nothing: the forms come from the research alone. */
+const NO_DRAFT: Draft = {
+  title: "-",
+  description: "-",
+  aliases: [],
+  inputQuestions: [],
+  output: { title: "-", checklist: ["-"] },
+};
+
 /** One trial: run the slice's step on the case's input, then grade it. */
 export const runTrial = internalAction({
   args: { trialId: v.id("easygovEvalTrials") },
@@ -254,6 +275,75 @@ const run: Record<
     const { subject, domain, facts } = find(cases.research, caseId);
     const notes = notesOf(await research(ctx, threadId, subject));
     return { ...gradeResearch({ domain, facts }, notes), output: notes };
+  },
+
+  // A goal to the forms it needs: the request is read, the process
+  // researched, and each form located, as a proposal would. The draft and
+  // the form mapping are left out: neither decides which forms come back.
+  async forms(ctx, caseId, threadId) {
+    const { goal, expect } = find(cases.forms, caseId);
+    const request = await readRequest(ctx, threadId, goal);
+    const jurisdiction = parseJurisdiction(request.jurisdiction ?? "");
+    if (!jurisdiction) throw new Error("No place was read from the goal");
+    const subject = subjectOf(request, goal, jurisdiction);
+    const trace: ResearchTrace = {};
+    const found = await research(ctx, threadId, subject, trace);
+    const packet = researchedPack(NO_DRAFT, subject, found).packetForms ?? [];
+    let links: ReturnType<typeof linkedPdfs> | undefined;
+    const linked = () => (links ??= linkedPdfs(found.sources));
+    const located = await Promise.all(
+      packet.map((form) =>
+        locateForm(ctx, threadId, form, subject, { linked }),
+      ),
+    );
+    const forms = packet.map(({ code, sourceUrl, when }, i) => ({
+      code,
+      when: when?.equals,
+      given: sourceUrl,
+      ...located[i],
+    }));
+    // The file each expected form was last published as, fetched now, to
+    // tell the right edition from another file found under the same name.
+    const published = await Promise.all(
+      expect.map(async ({ code, url }) => {
+        const got = await fetchable(ctx, jurisdiction, code, [url]);
+        const facts = got
+          ? await ctx
+              .runAction(internal.easygov.forms.actions.fileFacts, {
+                editionId: got.editionId,
+              })
+              .catch(() => undefined)
+          : undefined;
+        return { code, editionId: got?.editionId, facts };
+      }),
+    );
+    return {
+      ...gradeForms(expect, forms, published),
+      // Everything each step saw, so a rule can be judged across cases.
+      output: {
+        kind: request.kind,
+        // The model's reading and the decision model's, to compare.
+        kindRead: request.kindRead,
+        subject,
+        forms,
+        reported: formLeads(found).map(({ code, method, pdfUrl }) => ({
+          code,
+          method,
+          pdfUrl,
+          identified: isIdentified({ code, pdfUrl, requiredBy: "" }),
+        })),
+        raw: trace.raw && {
+          forms: trace.raw.forms,
+          methods: trace.raw.methods.map(({ method, forms }) => ({
+            method,
+            forms,
+          })),
+          sources: trace.raw.sources,
+        },
+        searched: trace.searched,
+        followUps: trace.followUps,
+      },
+    };
   },
 
   async draft(ctx, caseId, threadId, saved) {

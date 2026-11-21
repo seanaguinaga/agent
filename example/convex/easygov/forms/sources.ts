@@ -108,3 +108,125 @@ export function leadsFrom(url: string): string[] {
   ].map((variant) => variant + rest);
   return [...new Set([...variants, url])];
 }
+
+/** A link on an authority's page: where it goes, and what the page calls it. */
+export type LabelledLink = { url: string; label: string };
+
+/**
+ * The PDF links on a page, each with the words the page puts on it. Those
+ * words are the authority saying which form the file is: the one statement
+ * of that which doesn't have to be inferred from a filename.
+ */
+export function labelledPdfLinks(html: string, page: string): LabelledLink[] {
+  const words = (text: string) =>
+    text
+      .replace(/<[^>]*>/g, " ")
+      .replace(/&nbsp;|&#160;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&[a-z]+;|&#\d+;/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 160);
+  const found = new Map<string, string>();
+  const anchors = html.matchAll(
+    /<a\b([^>]*?)href\s*=\s*["']([^"'#]+)["']([^>]*)>([\s\S]*?)<\/a>/gi,
+  );
+  for (const [, before, href, after, inner] of anchors) {
+    let url: string;
+    try {
+      url = new URL(href.replace(/&amp;/g, "&"), page).href;
+    } catch {
+      continue;
+    }
+    if (!/pdf/i.test(url.split("?")[0])) continue;
+    const named = `${before} ${after}`.match(
+      /(?:title|aria-label)\s*=\s*["']([^"']+)["']/i,
+    )?.[1];
+    const label = words(inner) || words(named ?? "");
+    if (!found.get(url)) found.set(url, label);
+  }
+  return [...found].map(([url, label]) => ({ url, label }));
+}
+
+/**
+ * The links most likely to be a form, most likely first: those whose words
+ * or filename share the most parts with its code. This only narrows a long
+ * page to a list short enough to choose from; it decides nothing.
+ */
+export function shortlist(
+  links: LabelledLink[],
+  code: string,
+  limit = 15,
+): LabelledLink[] {
+  const parts = (text: string) =>
+    new Set(text.toUpperCase().match(/[A-Z]+|\d+/g) ?? []);
+  const wanted = [...parts(code.replace(/\bforms?\b/gi, ""))];
+  if (!wanted.length) return [];
+  return links
+    .map((link, index) => {
+      const file = link.url.split(/[?#]/)[0].split("/").pop() ?? "";
+      const seen = parts(`${link.label} ${file}`);
+      const hits = wanted.filter((part) => seen.has(part)).length;
+      return { link, index, hits };
+    })
+    .filter(({ hits }) => hits > 0)
+    .sort((a, b) => b.hits - a.hits || a.index - b.index)
+    .slice(0, limit)
+    .map(({ link }) => link);
+}
+
+/** A code cut at its separators, without the word "form". */
+function codeParts(text: string): string[] {
+  return text
+    .toUpperCase()
+    .replace(/FORMS?/g, "")
+    .split(/[^A-Z0-9]+/)
+    .filter(Boolean);
+}
+
+/** The parts after a leading one that is only letters: the agency. */
+function withoutAgency(parts: string[]): string[][] {
+  return /^[A-Z]+$/.test(parts[0] ?? "") && parts.length > 1
+    ? [parts.slice(1)]
+    : [];
+}
+
+/** A code as one string: whole, and without its agency if it names one. */
+function codeKeys(code: string): { whole: string; bare: string[] } {
+  const parts = codeParts(code);
+  return {
+    whole: parts.join(""),
+    bare: withoutAgency(parts).map((rest) => rest.join("")),
+  };
+}
+
+/**
+ * Whether two codes name one form, however each is written: "IRS-8822" and
+ * "Form 8822", "DL 410 FO" and "DL-410-FO", "USCIS-I-864" and "I-864". A
+ * suffix makes another form ("8822-B" is not "8822"), and so does another
+ * series: "DWC-1" and "RCI-1" share a number and nothing else. So the agency
+ * may be missing from one side, never dropped from both.
+ */
+export function sameFormCode(a: string, b: string): boolean {
+  const [x, y] = [codeKeys(a), codeKeys(b)];
+  if (!/\d/.test(x.whole) || !/\d/.test(y.whole)) return false;
+  return (
+    x.whole === y.whole || x.bare.includes(y.whole) || y.bare.includes(x.whole)
+  );
+}
+
+/** Hosts a form may be fetched from: the authority's own. */
+export function isOfficialHost(url: string): boolean {
+  try {
+    const { protocol, hostname, username, password, port } = new URL(url);
+    return (
+      protocol === "https:" &&
+      !username &&
+      !password &&
+      (!port || port === "443") &&
+      /(?:^|\.)(?:gov|mil)$|\.(?:gov|us)$|(?:^|\.)ca\.gov$/.test(hostname)
+    );
+  } catch {
+    return false;
+  }
+}

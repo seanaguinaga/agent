@@ -17,6 +17,7 @@ import { browserService, downloadViaBrowser } from "./browser";
 import { resolveMapping } from "./mapping";
 import { openForFilling, UnusablePdf } from "./open";
 import { fillPdf, inspectPdf, verifyPdf } from "./pdf";
+import { languageOf, revisionOf, type FormFacts } from "./facts";
 import {
   vFilledDocument,
   vLeft,
@@ -180,6 +181,43 @@ export const fetchSource = internalAction({
   args: fetchArgs,
   returns: vFetched,
   handler: async (ctx, args): Promise<Fetched> => await fetchEdition(ctx, args),
+});
+
+/**
+ * What a stored form's file says about itself: its pages, its places to
+ * write in, its language and the revision it prints.
+ */
+export const fileFacts = internalAction({
+  args: { editionId: v.id("formEditions") },
+  returns: v.object({
+    pages: v.number(),
+    places: v.number(),
+    language: v.union(
+      v.literal("en"),
+      v.literal("es"),
+      v.literal("both"),
+      v.literal("other"),
+      v.literal("unknown"),
+    ),
+    revision: v.optional(v.number()),
+  }),
+  handler: async (ctx, { editionId }): Promise<FormFacts> => {
+    const { storageId, targets } = await ctx.runQuery(
+      internal.easygov.forms.data.fillInput,
+      { editionId },
+    );
+    const blank = await ctx.storage.get(storageId);
+    if (!blank) throw new Error("The blank form is missing");
+    const { opening, pages, edition } = await inspectPdf(
+      new Uint8Array(await blank.arrayBuffer()),
+    );
+    return {
+      pages,
+      places: targets.length,
+      language: languageOf(opening),
+      revision: revisionOf(`${edition ?? ""} ${opening}`),
+    };
+  },
 });
 
 type Filled = typeof vFilledDocument.type;

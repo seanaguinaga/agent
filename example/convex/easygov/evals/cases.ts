@@ -2,7 +2,7 @@
 // reviewed like any other change; results live in the tables.
 //
 // A slice is one model call run on its own with fixed inputs ("intake",
-// "request", "choose", "research", "draft", "suggest", "tailor", "address"), the pack search with no model
+// "request", "choose", "research", "forms", "draft", "suggest", "tailor", "address"), the pack search with no model
 // ("search"), stage 1 end to end ("outcome"), or a whole case ("pipeline").
 import type { PilotOptions } from "../autopilot";
 import type { Candidate, Question, Subject } from "../case/agents";
@@ -229,6 +229,91 @@ export const research: {
     },
     domain: "irs.gov",
     facts: ["8822"],
+  },
+];
+
+// --- Forms: a goal in; the official forms it needs, each fetched, out -------
+//
+// What a person says, and the official forms the finished packet should
+// hold. Most are the cases of easy-gov's legal-intake corpus that expect an
+// official form (`packages/backend/evals/discovery/legal-intake-smoke-cases.json`
+// there, checked 2026-07-22), with the opening message as the goal. The
+// list isn't every form a case could need: a form found beyond it is
+// recorded, and isn't a failure.
+//
+// Two of that corpus's cases are left out: a car crash and a wage claim with
+// a lawyer's packet. The app reads both as matters for a lawyer and offers a
+// referral, so it never researches forms for them, and here they only
+// measured how the request was read. One message there never says where the
+// person is (the corpus learns it from an uploaded notice), so the state is
+// added: without it the right answer is a question, not a form.
+
+export const forms: {
+  id: string;
+  goal: string;
+  /** The forms that must come back. `url` is where each was last published. */
+  expect: { code: string; url: string }[];
+}[] = [
+  {
+    id: "ssdi-reconsideration-001",
+    goal: "SSA denied my disability claim. Please identify what you need and prepare the correct appeal packet.",
+    expect: [
+      { code: "SSA-561-U2", url: "https://www.ssa.gov/forms/ssa-561-u2.pdf" },
+      { code: "SSA-3441-BK", url: "https://www.ssa.gov/forms/ssa-3441.pdf" },
+      { code: "SSA-827", url: "https://www.ssa.gov/forms/ssa-827.pdf" },
+    ],
+  },
+  {
+    id: "va-initial-knee-claim-001",
+    goal: "I injured my knee in the Army and still receive treatment. Please identify what you need and prepare the initial VA disability claim.",
+    expect: [
+      {
+        code: "VA-21-526EZ",
+        url: "https://www.va.gov/find-forms/about-form-21-526ez/",
+      },
+    ],
+  },
+  {
+    id: "ca-workers-comp-back-001",
+    goal: "I work in California. I hurt my back lifting inventory at work and told my supervisor. Please identify what you need to prepare the employee claim and evidence packet.",
+    expect: [{ code: "DWC-1", url: "https://www.dir.ca.gov/dwc/DWCForm1.pdf" }],
+  },
+  {
+    id: "uscis-i485-rfe-i864-001",
+    goal: "USCIS sent an RFE on my I-485 for missing financial sponsorship evidence. Please identify what you need for an authorized immigration practitioner.",
+    expect: [
+      {
+        code: "USCIS-I-864",
+        url: "https://www.uscis.gov/sites/default/files/document/forms/i-864.pdf",
+      },
+    ],
+  },
+  {
+    id: "irs-cp90-cdp-001",
+    goal: "I received an IRS CP90 final notice of intent to levy. Please identify what you need for the correct hearing-request packet and tax-professional review.",
+    expect: [
+      {
+        code: "IRS-FORM-12153",
+        url: "https://www.irs.gov/pub/irs-pdf/f12153.pdf",
+      },
+    ],
+  },
+  {
+    id: "ca-dl-renewal",
+    goal: "I need to renew my California driver's license.",
+    expect: [
+      {
+        code: "DL-410-FO",
+        url: "https://www.dmv.ca.gov/portal/uploads/2025/12/DL-410-FO-R12-2025-ASB-WWW.pdf",
+      },
+    ],
+  },
+  {
+    id: "irs-address-change",
+    goal: "I moved and need to tell the IRS my new address.",
+    expect: [
+      { code: "IRS-8822", url: "https://www.irs.gov/pub/irs-pdf/f8822.pdf" },
+    ],
   },
 ];
 

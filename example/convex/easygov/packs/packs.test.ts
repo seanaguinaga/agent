@@ -320,6 +320,28 @@ describe("saving packs", () => {
   });
 });
 
+test("the one-off clearing leaves no current pack's form marked backed", async () => {
+  const { t } = await start();
+  const form = { code: "DL 44", sourceUrl: "https://www.dmv.ca.gov/dl44.pdf" };
+  const saved = await t.mutation(processPacks.createPack, {
+    ...renewal,
+    packetForms: [
+      { ...form, inputs: [], backed: true },
+      { ...form, code: "DL 410", inputs: [], backed: false },
+    ],
+  });
+  if (saved.kind !== "created") throw new Error("Expected a pack");
+
+  await t.mutation(processPacks.clearBacked, { cursor: null });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const pack = await t.run((ctx) => ctx.db.get("processPacks", saved.id));
+  expect(pack?.packetForms).toEqual([
+    { ...form, inputs: [] },
+    { ...form, code: "DL 410", inputs: [] },
+  ]);
+});
+
 describe("selecting a pack for a case", () => {
   test("the model compares the candidates and the case pins its choice", async () => {
     const { t, caseId } = await start();

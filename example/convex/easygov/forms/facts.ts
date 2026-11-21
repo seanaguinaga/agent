@@ -136,9 +136,10 @@ const LANGUAGE_ORDER: Record<Language, number> = {
  * Candidates for one form, best first: a file with places to write in before
  * one without, English (or bilingual) before a translation, a current file
  * before one that prints an expiry that has passed, and a file on the
- * authority's own sites before any other. Among the authority's own, the
- * latest revision printed comes first, even before the file its page links:
- * a page can go on linking an edition the authority has replaced. Among the
+ * authority's own site (see `ownSite`) before any other. Among the
+ * authority's own, the latest revision printed comes first, even before the
+ * file its page links: a page can go on linking an edition the authority has
+ * replaced, and only the linked file is confirmed (see `backs`). Among the
  * rest, the file the authority's link gives comes first, then the latest
  * revision. Ties keep the order they came in, which is the order the sources
  * can be trusted in.

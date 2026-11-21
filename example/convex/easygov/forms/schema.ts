@@ -169,25 +169,6 @@ const addressRow = {
   ),
 };
 
-/**
- * One of an authority's sites: a domain and everything under it, or, where
- * a state puts every agency on one domain ("oregon.gov"), the agency's path
- * there ("/odot").
- */
-export const vAuthoritySite = v.object({
-  domain: v.string(),
-  path: v.optional(v.string()),
-});
-
-/** Whose sites a row lists: one authority of one jurisdiction. */
-const authorityRow = {
-  /** The jurisdiction and the authority's name, as `authorityKey` makes it. */
-  key: v.string(),
-  jurisdiction: v.string(),
-  authority: v.string(),
-  sites: v.array(vAuthoritySite),
-};
-
 export const vPacketPdf = v.object({
   code: v.string(),
   sourceUrl: v.string(),
@@ -260,35 +241,13 @@ export default {
     kind: v.string(),
     organization: v.string(),
     suborganization: v.optional(v.string()),
+    /** Absent until the weekly import next reads the register. */
+    state: v.optional(v.string()),
     /** When the register last listed it. */
     at: v.number(),
   })
     .index("by_domain", ["domain"])
     .index("by_at", ["at"]),
-
-  /**
-   * Each authority's own sites (see `authorities.ts`): a link confirms a
-   * file as the form only if the page and the file are on them. Suggested
-   * from the pages research read, and binding only once an operator has
-   * approved them.
-   */
-  authoritySites: defineTable(
-    v.union(
-      v.object({
-        ...authorityRow,
-        status: v.literal("suggested"),
-        suggestedAt: v.number(),
-      }),
-      v.object({
-        ...authorityRow,
-        status: v.literal("approved"),
-        approvedAt: v.number(),
-        approvedBy: v.string(),
-      }),
-    ),
-  )
-    .index("by_key", ["key"])
-    .index("by_status", ["status"]),
 
   /** A hosted browser in use. Expires on its own if its work died. */
   browserLeases: defineTable({ expiresAt: v.number() }).index("by_expiresAt", [

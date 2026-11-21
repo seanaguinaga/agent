@@ -212,6 +212,8 @@ export function gradeForms(
       // Advisory: the published file can itself have moved on since the
       // corpus was checked.
       "~sameEdition": codes("wrongWarned", "wrongUnwarned").length === 0,
+      // Advisory: the right file, and the person is still asked to check it.
+      "~backed": codes("rightWarned").length === 0,
       // The corpus doesn't list every form a case could need.
       "~noExtras": extra.length === 0,
     },

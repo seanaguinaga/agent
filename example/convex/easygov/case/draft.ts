@@ -20,6 +20,7 @@ import {
   methodsOf,
   notesOf,
   pagesOf,
+  sameForm,
   tidy,
   type Research,
 } from "./research";
@@ -298,16 +299,24 @@ export function researchedPack(
     draft.deadline && cited.has(draft.deadline.sourceUrl)
       ? draft.deadline
       : undefined;
-  const packetForms = withCitedPdfs(
-    // A form known only by a title stays in the notes, for the checklist.
-    formLeads(found)
-      .filter(isIdentified)
-      .map(({ code, pdfUrl, method }) => ({
-        code,
-        sourceUrl: pdfUrl,
-        ...(filing && method && { when: { key: filing.key, equals: method } }),
-      })),
-    citedFormPdfs(subject.forms, [...cited]),
+  const packetForms = onePerForm(
+    withCitedPdfs(
+      // A form known only by a title stays in the notes, for the checklist.
+      formLeads(found)
+        .filter(isIdentified)
+        .map(({ code, pdfUrl, method }) => ({
+          code,
+          sourceUrl: pdfUrl,
+          ...(filing &&
+            method && { when: { key: filing.key, equals: method } }),
+        })),
+      citedFormPdfs(subject.forms, [...cited]),
+    ),
+    (a, b) =>
+      sameForm(
+        { code: a.code, pdfUrl: a.sourceUrl, requiredBy: "" },
+        { code: b.code, pdfUrl: b.sourceUrl, requiredBy: "" },
+      ),
   );
 
   const routes = [
@@ -423,6 +432,43 @@ function redactConfidential(
       ? "[complete by hand]"
       : token,
   );
+}
+
+/**
+ * One entry for each form. Entries that are the same form (`same`) become
+ * one: the one with a printed code, where only some have one. A form needed
+ * whichever way the person files is listed once, for everyone; a form only
+ * some ways need is listed once for each of those ways.
+ */
+export function onePerForm<T extends { code: string; when?: RouteCondition }>(
+  forms: T[],
+  same: (a: T, b: T) => boolean,
+): T[] {
+  const groups: T[][] = [];
+  for (const form of forms) {
+    const group = groups.find((members) =>
+      members.some((other) => same(other, form)),
+    );
+    if (group) group.push(form);
+    else groups.push([form]);
+  }
+  return groups.flatMap((group) => {
+    const coded = group.filter(({ code }) => /\d/.test(code));
+    const named = coded.length ? coded : group;
+    if (group.some(({ when }) => !when)) {
+      return [
+        named.find(({ when }) => !when) ?? { ...named[0], when: undefined },
+      ];
+    }
+    return named.filter(
+      (form, i) =>
+        named.findIndex(
+          (other) =>
+            other.when?.key === form.when?.key &&
+            other.when?.equals === form.when?.equals,
+        ) === i,
+    );
+  });
 }
 
 /** The drafted forms, then each cited PDF whose URL isn't among them yet. */

@@ -7,6 +7,7 @@
 // to work out again from prose. The notes are the same report written out as
 // plain text: what the drafting model reads, and what a case stores.
 import { z } from "zod/v4";
+import { sameAddress, sameFormCode } from "../forms/sources";
 
 /** The ways of filing a process, as answers to `FILING_METHOD`. */
 export const METHODS = ["online", "mail", "in_person"] as const;
@@ -94,7 +95,8 @@ const pdf = (url: string) =>
  */
 export function codeIn(text: string): string {
   const line = oneLine(text);
-  const lead = line.split(/\s*[,:;–—]\s*|\s+-\s+/)[0];
+  // Two spellings of one code ("SSA-561-U2 / SSA-561") are the first.
+  const lead = line.split(/\s*[,:;–—]\s*|\s+[-/]\s+/)[0];
   if (/\d/.test(lead.replace(/\([^()]*\)/g, ""))) return lead;
   // Only a title outside the brackets: the code is what they hold, unless
   // that is a revision date.
@@ -107,10 +109,17 @@ export function bareResearch(notes: string): Research {
   return { findings: notes, methods: [], forms: [], sources: [] };
 }
 
-/** Two entries for one form: the same code, or the same PDF. */
+/**
+ * Two entries for one form: the same code however each is written ("VA Form
+ * 21-526EZ", "VA-21-526EZ"), the same title, or the same PDF.
+ */
 export function sameForm(a: ResearchForm, b: ResearchForm) {
   const key = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  return key(a.code) === key(b.code) || (!!a.pdfUrl && a.pdfUrl === b.pdfUrl);
+  return (
+    key(a.code) === key(b.code) ||
+    sameFormCode(a.code, b.code) ||
+    sameAddress(a.pdfUrl, b.pdfUrl)
+  );
 }
 
 function tidyForms(forms: ResearchForm[]): ResearchForm[] {

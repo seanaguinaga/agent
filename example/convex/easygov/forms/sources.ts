@@ -1,27 +1,45 @@
-// Getting a form's bytes from its authority, by whatever way works. Pure:
-// the ways are passed in, so the order and the bookkeeping are tested
-// without a network.
-//
-// What's needed is the exact bytes the authority publishes, and to be able
-// to say where they came from. So every way starts from the authority's own
-// address: first a plain request, then a real browser opening the same
-// address. A person is never asked to fetch a form for us.
+// What counts as an official address, one address, one form and one file,
+// and when an address is asked again. Pure.
 
 /** How a form's bytes were got. */
 export type Via = "request" | "browser";
 
-/** One try at one address, and how it went. */
-export type Attempt = { via: Via; url: string; ok: boolean; note: string };
+/**
+ * Whether words carry a form's number: the longest number in its code,
+ * standing alone. A number under three digits is on every page, and says
+ * nothing.
+ */
+export function carriesNumber(code: string, text: string): boolean {
+  const [number] = (code.match(/\d+/g) ?? []).sort(
+    (a, b) => b.length - a.length,
+  );
+  return (
+    !!number &&
+    number.length >= 3 &&
+    new RegExp(`(?<!\\d)${number}(?!\\d)`).test(text)
+  );
+}
 
-export type Obtained = {
-  bytes: Uint8Array;
-  via: Via;
-  url: string;
-  attempts: Attempt[];
-};
-
-/** A way of fetching an address: its bytes, or a throw saying why not. */
-export type Fetcher = (url: string) => Promise<Uint8Array>;
+/**
+ * Whether a file is the form `code`. It is if it prints the whole code. It
+ * is also if the authority's own page links it as the form and both say so:
+ * the page's words for the link (`linkedAs`: the link's own and the heading
+ * it sits under, never its file name) carry the form's number, and so does
+ * the file. An authority renames a form ("SSA-561-U2" became "SSA-561") and
+ * goes on linking its file under the one heading, so the file may no longer
+ * print the code as it was asked for; but the page and the file each have
+ * to name it, so a link picked wrongly isn't let through by its file alone.
+ */
+export function isTheForm(
+  code: string,
+  opening: string,
+  linkedAs?: string,
+): boolean {
+  if (namesForm(code, opening)) return true;
+  return (
+    !!linkedAs && carriesNumber(code, linkedAs) && carriesNumber(code, opening)
+  );
+}
 
 /** Larger than any form we'd fill, small enough to hold in memory. */
 export const MAX_BYTES = 20 * 1024 * 1024;
@@ -47,39 +65,6 @@ export function namesForm(code: string, text: string): boolean {
     parts.length > 1 && /^[A-Za-z]+$/.test(parts[0]) ? parts.slice(1) : parts;
   const wanted = squash(own.join(""));
   return wanted.length > 0 && squash(text).includes(wanted);
-}
-
-/**
- * Tries each way at each address, cheapest way first, and stops at the first
- * usable PDF. Every try is kept, so a form that can't be reached says why.
- */
-export async function obtain(
-  urls: string[],
-  ways: { request: Fetcher; browser?: Fetcher },
-): Promise<Obtained | { attempts: Attempt[] }> {
-  const attempts: Attempt[] = [];
-  const order: [Via, Fetcher | undefined][] = [
-    ["request", ways.request],
-    ["browser", ways.browser],
-  ];
-  for (const [via, fetcher] of order) {
-    if (!fetcher) continue;
-    for (const url of urls) {
-      try {
-        const bytes = await fetcher(url);
-        const problem = notAPdf(bytes);
-        if (!problem) {
-          attempts.push({ via, url, ok: true, note: `${bytes.length} bytes` });
-          return { bytes, via, url, attempts };
-        }
-        attempts.push({ via, url, ok: false, note: problem });
-      } catch (error) {
-        const note = error instanceof Error ? error.message : String(error);
-        attempts.push({ via, url, ok: false, note: note.slice(0, 200) });
-      }
-    }
-  }
-  return { attempts };
 }
 
 const LANGUAGE = /[-_](?:SP|SPA|SPAN|SPANISH|ES|ESP)(?=[-_.])/i;
@@ -109,15 +94,52 @@ export function leadsFrom(url: string): string[] {
   return [...new Set([...variants, url])];
 }
 
-/** A link on an authority's page: where it goes, and what the page calls it. */
-export type LabelledLink = { url: string; label: string };
+/**
+ * An address as one place to fetch from: its host in lower case, without a
+ * fragment. The path is kept as written, since a server may tell two files
+ * apart by letter case alone.
+ */
+export function addressKey(url: string): string {
+  try {
+    const { host, pathname, search } = new URL(url.trim());
+    return host.toLowerCase() + pathname + search;
+  } catch {
+    return url.trim();
+  }
+}
 
 /**
- * The PDF links on a page, each with the words the page puts on it. Those
- * words are the authority saying which form the file is: the one statement
- * of that which doesn't have to be inferred from a filename.
+ * An address in any letter case. Two spellings of one address are usually
+ * one place, so the second is only asked if the first didn't serve a file.
  */
-export function labelledPdfLinks(html: string, page: string): LabelledLink[] {
+export function looseKey(url: string): string {
+  return addressKey(url).toLowerCase();
+}
+
+/** Whether two addresses are one place, as written. */
+export function sameAddress(a: string, b: string): boolean {
+  return !!a && !!b && addressKey(a) === addressKey(b);
+}
+
+/**
+ * A link on an authority's page: where it goes, what the page calls it, and
+ * what it sits under. A page that lists forms often puts the same words on
+ * every link ("English PDF", "Download") and names the form in the heading
+ * above it, so the heading is as much the page's word for the link as the
+ * link's own.
+ */
+export type LabelledLink = { url: string; label: string; under?: string };
+
+/** A link, and whether it goes to a PDF or to another page. */
+export type PageLink = LabelledLink & { pdf: boolean };
+
+/**
+ * The links on a page, each with the words the page puts on it. Those words
+ * are the authority saying what the link is: for a PDF, which form the file
+ * is, the one statement of that which doesn't have to be inferred from a
+ * filename; for a page, what a reader would find one link further on.
+ */
+export function labelledLinks(html: string, page: string): PageLink[] {
   const words = (text: string) =>
     text
       .replace(/<[^>]*>/g, " ")
@@ -127,25 +149,111 @@ export function labelledPdfLinks(html: string, page: string): LabelledLink[] {
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 160);
-  const found = new Map<string, string>();
+  // Each heading, where it starts: a link sits under the last one before it.
+  const headings = [
+    ...html.matchAll(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1\s*>/gi),
+  ].map((match) => ({ at: match.index, text: words(match[2]) }));
+  let heading = -1;
+  const found = new Map<string, PageLink>();
   const anchors = html.matchAll(
     /<a\b([^>]*?)href\s*=\s*["']([^"'#]+)["']([^>]*)>([\s\S]*?)<\/a>/gi,
   );
-  for (const [, before, href, after, inner] of anchors) {
+  for (const anchor of anchors) {
+    const [, before, href, after, inner] = anchor;
+    while (headings[heading + 1]?.at < anchor.index) heading++;
     let url: string;
     try {
       url = new URL(href.replace(/&amp;/g, "&"), page).href;
     } catch {
       continue;
     }
-    if (!/pdf/i.test(url.split("?")[0])) continue;
+    if (!/^https?:/.test(url)) continue;
     const named = `${before} ${after}`.match(
       /(?:title|aria-label)\s*=\s*["']([^"']+)["']/i,
     )?.[1];
     const label = words(inner) || words(named ?? "");
-    if (!found.get(url)) found.set(url, label);
+    // What the page says the link describes, where it says: often the
+    // heading's own name with the kind of file, as in "ssa-561 form".
+    const describes = `${before} ${after}`.match(
+      /aria-describedby\s*=\s*["']([^"']+)["']/i,
+    )?.[1];
+    const under = [headings[heading]?.text, describes && words(describes)]
+      .filter(Boolean)
+      .join(" · ");
+    const key = addressKey(url);
+    if (!found.get(key)?.label) {
+      found.set(key, {
+        url,
+        label,
+        pdf: /pdf/i.test(url.split("?")[0]),
+        ...(under && { under }),
+      });
+    }
   }
-  return [...found].map(([url, label]) => ({ url, label }));
+  return [...found.values()];
+}
+
+/**
+ * The pages most likely to be a form's own: those whose words or address
+ * carry the longest number in its code. An agency's name alone is on every
+ * link of its site, and says nothing about one form.
+ */
+export function pagesNaming<T extends LabelledLink>(
+  links: T[],
+  code: string,
+  limit = 2,
+): T[] {
+  const parts = (text: string) =>
+    new Set(text.toUpperCase().match(/[A-Z]+|\d+/g) ?? []);
+  const wanted = [...parts(code.replace(/\bforms?\b/gi, ""))];
+  const [number] = wanted
+    .filter((part) => /\d/.test(part))
+    .sort((a, b) => b.length - a.length);
+  if (!number) return [];
+  return links
+    .map((link, index) => {
+      const file = link.url
+        .split(/[?#]/)[0]
+        .replace(/\/$/, "")
+        .split("/")
+        .pop();
+      const seen = parts(`${link.label} ${link.under ?? ""} ${file ?? ""}`);
+      return {
+        link,
+        index,
+        hits: wanted.filter((part) => seen.has(part)).length,
+        numbered: seen.has(number),
+      };
+    })
+    .filter(({ numbered }) => numbered)
+    .sort((a, b) => b.hits - a.hits || a.index - b.index)
+    .slice(0, limit)
+    .map(({ link }) => link);
+}
+
+const HOUR = 60 * 60 * 1000;
+
+/**
+ * Whether what an address last answered still stands, so it isn't asked
+ * again. A page's links stand for a day. A failure stands for an hour, and
+ * twice as long each time it fails again, up to a week. A file never stands
+ * on its age: an authority can publish a new edition at the same address, so
+ * it is asked each time whether the file has changed.
+ */
+export function stands(
+  held: { outcome: string; checkedAt: number; failures: number },
+  now: number,
+): boolean {
+  const age = now - held.checkedAt;
+  if (held.outcome === "file") return false;
+  if (held.outcome === "page") return age < 24 * HOUR;
+  return age < Math.min(HOUR * 2 ** (held.failures - 1), 7 * 24 * HOUR);
+}
+
+/** Whether bytes that aren't a PDF are a web page. */
+export function isWebPage(bytes: Uint8Array): boolean {
+  const start = new TextDecoder().decode(bytes.slice(0, 2000)).toLowerCase();
+  return /<!doctype html|<html[\s>]|<head[\s>]|<body[\s>]/.test(start);
 }
 
 /**
@@ -165,7 +273,7 @@ export function shortlist(
   return links
     .map((link, index) => {
       const file = link.url.split(/[?#]/)[0].split("/").pop() ?? "";
-      const seen = parts(`${link.label} ${file}`);
+      const seen = parts(`${link.label} ${link.under ?? ""} ${file}`);
       const hits = wanted.filter((part) => seen.has(part)).length;
       return { link, index, hits };
     })
@@ -198,6 +306,16 @@ function codeKeys(code: string): { whole: string; bare: string[] } {
     whole: parts.join(""),
     bare: withoutAgency(parts).map((rest) => rest.join("")),
   };
+}
+
+/**
+ * A code without its agency, as one string: what forms are looked up by.
+ * Two codes for one form share it; so can two forms, which `sameFormCode`
+ * then tells apart.
+ */
+export function bareCode(code: string): string {
+  const { whole, bare } = codeKeys(code);
+  return bare[0] ?? whole;
 }
 
 /**

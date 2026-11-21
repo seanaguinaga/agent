@@ -1,7 +1,7 @@
 // Reading a page through the hosted browser, against a stand-in for the
 // service and the browser's connection.
 import { expect, test, vi } from "vitest";
-import { readViaBrowser } from "./browser";
+import { BrowserBusy, downloadViaBrowser, readViaBrowser } from "./browser";
 
 type Sent = {
   id: number;
@@ -149,4 +149,101 @@ test("gives up, and says where, when the browser never connects", async () => {
   await vi.advanceTimersByTimeAsync(21_000);
   await failed;
   vi.useRealTimers();
+});
+
+test("asks a busy service again, then says it is busy and learned nothing", async () => {
+  const fetchMock = vi.fn<typeof fetch>(
+    async () => new Response(null, { status: 429 }),
+  );
+  await expect(
+    readViaBrowser("https://www.ssa.gov/forms/", {
+      apiKey: "key",
+      fetch: fetchMock,
+      busyWaitMs: 1,
+    }),
+  ).rejects.toBeInstanceOf(BrowserBusy);
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+});
+
+test("a busy service that frees up is used", async () => {
+  const { Socket } = fakeBrowser(({ method, params }) => {
+    if (method === "Target.createTarget") return { targetId: "t1" };
+    if (method === "Target.attachToTarget") return { sessionId: "page1" };
+    if (String(params.expression).startsWith("location.href")) {
+      return { result: { value: "https://www.ssa.gov/forms/ complete" } };
+    }
+    return { result: { value: "<html></html>" } };
+  });
+  let asked = 0;
+  const fetchMock = vi.fn<typeof fetch>(async (input) =>
+    String(input).endsWith("/sessions")
+      ? ++asked === 1
+        ? new Response(null, { status: 429 })
+        : Response.json({ id: "s1", connectUrl: "wss://browser.example/s1" })
+      : Response.json({}),
+  );
+  const html = await readViaBrowser("https://www.ssa.gov/forms/", {
+    apiKey: "key",
+    fetch: fetchMock,
+    WebSocket: Socket,
+    pollMs: 1,
+    busyWaitMs: 1,
+  });
+  expect(html).toBe("<html></html>");
+});
+
+test("a download gives up, and says where, when the browser never connects", async () => {
+  vi.useFakeTimers();
+  class Silent {
+    addEventListener() {}
+    send() {}
+    close() {}
+  }
+  const { service, fetchMock } = fakeService(
+    Silent as unknown as typeof WebSocket,
+  );
+  const failed = expect(
+    downloadViaBrowser("https://www.ssa.gov/forms/ssa-561.pdf", service),
+  ).rejects.toThrow("The browser stalled while connecting to the browser.");
+  await vi.advanceTimersByTimeAsync(21_000);
+  await failed;
+  // The browser is still let go.
+  expect(String(fetchMock.mock.calls.at(-1)![0])).toMatch(/\/sessions\/s1$/);
+  vi.useRealTimers();
+});
+
+test("a download gives up when the service stops answering", async () => {
+  vi.useFakeTimers();
+  const { Socket } = fakeBrowser(() => ({}));
+  const fetchMock = vi.fn<typeof fetch>(async (input) =>
+    String(input).endsWith("/sessions")
+      ? Response.json({ id: "s1", connectUrl: "wss://browser.example/s1" })
+      : String(input).includes("/downloads?")
+        ? await new Promise<Response>(() => undefined)
+        : Response.json({}),
+  );
+  const failed = expect(
+    downloadViaBrowser("https://www.ssa.gov/forms/ssa-561.pdf", {
+      apiKey: "key",
+      fetch: fetchMock,
+      WebSocket: Socket,
+    }),
+  ).rejects.toThrow("The browser stalled while looking for the download.");
+  await vi.advanceTimersByTimeAsync(16_000);
+  await failed;
+  vi.useRealTimers();
+});
+
+test("a connection that closes without opening is a failure, not a wait", async () => {
+  class Closing {
+    addEventListener(type: string, listener: () => void) {
+      if (type === "close") setTimeout(listener, 0);
+    }
+    send() {}
+    close() {}
+  }
+  const { service } = fakeService(Closing as unknown as typeof WebSocket);
+  await expect(
+    readViaBrowser("https://www.ssa.gov/forms/", service),
+  ).rejects.toThrow("Couldn't connect to the browser.");
 });

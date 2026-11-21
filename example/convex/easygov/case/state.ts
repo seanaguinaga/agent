@@ -75,6 +75,25 @@ export function activeForms(c: Case) {
   );
 }
 
+/**
+ * The forms in play whose file no official page links as the form: found
+ * under the form's name, so possibly an older edition or a copy. A form
+ * that says nothing about it (an older pack) isn't one.
+ */
+export function unbackedForms(c: Case) {
+  return activeForms(c).filter((form) => form.backed === false);
+}
+
+/** What is left for the person to do about a form that isn't backed. */
+export function editionCheck(form: { code: string; sourceUrl: string }) {
+  return (
+    `Check that ${form.code} is the current edition on the authority’s own site before you file it. ` +
+    `The file used (${form.sourceUrl}) was found under the form’s name, ` +
+    `but no page of the authority that was read links it as this form, ` +
+    `so it may be an older edition or a copy.`
+  );
+}
+
 /** The accepted pack, as the case pinned it. */
 export function pinnedPack(c: Case) {
   const selection = currentSelection(c);

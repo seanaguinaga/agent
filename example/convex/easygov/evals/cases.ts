@@ -387,6 +387,153 @@ export const forms: {
       { code: "IRS-8822", url: "https://www.irs.gov/pub/irs-pdf/f8822.pdf" },
     ],
   },
+  // The cases below were each checked on 2026-11-21 against the authority's
+  // own page: the task, the code the form prints, and the address the page
+  // links. They are chosen for how differently the authorities publish.
+
+  // https://www.cms.gov/medicare/cms-forms/cms-forms/cms-forms-items/cms017339
+  // links the file. Checked 2026-11-21.
+  {
+    id: "medicare-part-b-enrollment",
+    goal: "I'm 67 and already have Medicare Part A, but I never took Part B. It's the general enrollment period and I want to sign up for Part B now.",
+    expect: [
+      {
+        code: "CMS-40B",
+        url: "https://www.cms.gov/medicare/cms-forms/cms-forms/downloads/cms40b-e.pdf",
+      },
+    ],
+  },
+  // https://www.archives.gov/veterans/military-service-records links
+  // /research/order/standard-form-180.pdf, which redirects to GSA's page
+  // https://www.gsa.gov/reference/forms/request-pertaining-to-military-records,
+  // and that page links the file. Checked 2026-11-21.
+  {
+    id: "nara-military-records-by-mail",
+    goal: "I'm a veteran and lost my discharge papers. I want to request a copy of my military service records from the National Archives by mail.",
+    expect: [
+      {
+        code: "SF-180",
+        url: "https://www.gsa.gov/system/files/2026-07/SF180-26a.pdf",
+      },
+    ],
+  },
+  // https://www.esd.whs.mil/Directives/forms/dd0001_0499/DD293/ links the
+  // file, from the DoD forms list at
+  // https://www.esd.whs.mil/Directives/forms/dd0001_0499/. Checked 2026-11-21.
+  {
+    id: "dod-discharge-review",
+    goal: "I left the Army six years ago with a general discharge. I want to apply to the Discharge Review Board to have my discharge reviewed and upgraded.",
+    expect: [
+      {
+        code: "DD-293",
+        url: "https://www.esd.whs.mil/portals/54/documents/dd/forms/dd/dd0293.pdf",
+      },
+    ],
+  },
+  // https://dmv.ny.gov/records/change-your-address links the file.
+  // Checked 2026-11-21.
+  {
+    id: "ny-dmv-address-change",
+    goal: "I moved within New York State and need to tell the DMV my new address for my driver license and car registration, by mail.",
+    expect: [{ code: "MV-232", url: "https://dmv.ny.gov/forms/mv232.pdf" }],
+  },
+  // https://www.pa.gov/services/dmv/replace-a-drivers-license links the file
+  // under its mail-in process. Checked 2026-11-21.
+  {
+    id: "pa-replace-license-by-mail",
+    goal: "I lost my Pennsylvania driver's license. It isn't a commercial license and hasn't expired, and I want to replace it by mail.",
+    expect: [
+      {
+        code: "DL-80",
+        url: "https://www.pa.gov/content/dam/copapwp-pagov/en/penndot/documents/public/dvspubsforms/bdl/bdl-form/dl-80.pdf",
+      },
+    ],
+  },
+  // https://dol.wa.gov/vehicles-and-boats/vehicles/vehicle-registration/vehicle-title/replace-lost-title-or-registration
+  // links the form finder (https://dol.wa.gov/forms/view?...field_form_id_value=420040),
+  // which links this address; it has no ".pdf" and redirects to
+  // /forms/view/420040/download?inline, a PDF. Checked 2026-11-21.
+  {
+    id: "wa-replace-lost-title",
+    goal: "I live in Washington State and lost the title to my car. I own it outright and want a replacement title.",
+    expect: [
+      { code: "TD-420-040", url: "https://dol.wa.gov/forms/view/420040" },
+    ],
+  },
+  // https://www.oregon.gov/odot/DMV/pages/vehicle/titlereg.aspx links the
+  // file under "Duplicate Title (Title is Lost)". Checked 2026-11-21.
+  {
+    id: "or-replace-lost-title",
+    goal: "I lost the title to my car in Oregon. Nothing about the ownership has changed and I need a duplicate title.",
+    expect: [
+      {
+        code: "735-515",
+        url: "https://www.oregon.gov/odot/Forms/DMV/515fill.pdf",
+      },
+    ],
+  },
+  // https://selfhelp.courts.ca.gov/fee-waiver links both files: the request,
+  // and the order whose item 1 the person fills out. The first address
+  // redirects to courts.ca.gov/sites/default/files/courts/default/2024-11/fw001.pdf.
+  // Checked 2026-11-21.
+  {
+    id: "ca-court-fee-waiver",
+    goal: "I'm filing a civil case in California superior court and can't afford the filing fee. I receive CalFresh. I want to ask the court to waive its fees.",
+    expect: [
+      { code: "FW-001", url: "https://www.courts.ca.gov/documents/fw001.pdf" },
+      {
+        code: "FW-003",
+        url: "https://courts.ca.gov/sites/default/files/courts/default/2024-11/fw003.pdf",
+      },
+    ],
+  },
+  // https://www.mass.gov/info-details/checklist-of-forms-change-of-name-for-adult
+  // lists both as required, each on its own page, which links the file:
+  // .../probate-and-family-court-petition-to-change-name-of-adult-cjp-27 and
+  // .../probate-and-family-court-court-activity-record-information-and-warrant-management-system-release-request-form-cjp-34.
+  // The addresses end in "/download", not ".pdf". Checked 2026-11-21.
+  {
+    id: "ma-adult-name-change",
+    goal: "I'm an adult living in Massachusetts and want to legally change my name through the Probate and Family Court.",
+    expect: [
+      {
+        code: "CJP-27",
+        url: "https://www.mass.gov/doc/petition-to-change-name-of-adult-cjp-27/download",
+      },
+      {
+        code: "CJP-34",
+        url: "https://www.mass.gov/doc/court-activity-record-information-and-warrant-management-system-release-request-form-cjp-34/download",
+      },
+    ],
+  },
+  // https://www.sdarcc.gov/content/arcc/home/divisions/assessor/property-tax-savings/homeowner-exemption.html
+  // and the Assessor's forms page
+  // https://www.sdarcc.gov/content/arcc/home/divisions/assessor/assessor-forms.html
+  // link the file. Checked 2026-11-21.
+  {
+    id: "san-diego-homeowners-exemption",
+    goal: "I bought a house in San Diego County, California and live in it as my main home. I want to claim the homeowners' property tax exemption with the county assessor.",
+    expect: [
+      {
+        code: "BOE-266",
+        url: "https://www.sdarcc.gov/content/dam/arcc/assessor/forms/property-tax-exemption-and-exclusion-forms/266HOXCLAIM.pdf",
+      },
+    ],
+  },
+  // https://www.nyc.gov/site/finance/vehicles/dispute-appeal-hearing.page
+  // names the application and links the forms page
+  // https://www.nyc.gov/site/finance/vehicles/forms-individual.page, which
+  // links the file. Checked 2026-11-21.
+  {
+    id: "nyc-parking-ticket-appeal",
+    goal: "A judge found me guilty at my New York City parking ticket hearing two weeks ago. I want to appeal that decision to the Department of Finance.",
+    expect: [
+      {
+        code: "PVO-0100",
+        url: "https://www.nyc.gov/assets/finance/downloads/pdf/adjudication/pvo-0100.pdf",
+      },
+    ],
+  },
 ];
 
 // --- Draft: a process and frozen notes in; a checklist and letter out -------

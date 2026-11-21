@@ -115,6 +115,13 @@ export const vPacketForm = v.object({
   blueprintId: v.optional(v.id("formBlueprints")),
   inputs: v.array(v.string()),
   openItem: v.optional(v.string()),
+  /**
+   * Whether the file at `sourceUrl` is one an official page links as this
+   * form. False: a file was found that names the form, but nothing from the
+   * authority says it is the one to use. Absent: not looked for yet, or a
+   * pack made before this was recorded.
+   */
+  backed: v.optional(v.boolean()),
 });
 export const vEligibility = v.array(
   v.object({

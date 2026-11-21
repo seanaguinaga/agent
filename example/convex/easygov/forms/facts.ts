@@ -101,13 +101,17 @@ function dateIn(text: string): number | undefined {
 
 /**
  * The revision a form prints, as YYYYMM: the date after "Rev.", "Revised" or
- * "Edition", wherever on the page it is. The latest, if it prints several.
+ * "Edition", or a month and year alone in brackets, wherever on the page it
+ * is. The latest, if it prints several.
  */
 export function revisionOf(words: string): number | undefined {
   const marked = [
     ...words.matchAll(
       /\b(?:rev(?:ised|ision)?|edition|ed)\b\.?[\s(:]*([^)\n]{0,24})/gi,
     ),
+    // A month and year alone in brackets, as beside a form's code:
+    // "Form SSA-561 (08-2025)".
+    ...words.matchAll(/\(\s*(\d{1,2}[/-](?:\d{4}|\d{2}))\s*\)/g),
   ].flatMap(([, after]) => dateIn(after) ?? []);
   return marked.length ? Math.max(...marked) : undefined;
 }

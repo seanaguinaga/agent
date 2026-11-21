@@ -1,10 +1,5 @@
 import { expect, test } from "vitest";
-import {
-  labelledPdfLinks,
-  leadsFrom,
-  shortlist,
-  sameFormCode,
-} from "./sources";
+import { labelledLinks, leadsFrom, shortlist, sameFormCode } from "./sources";
 
 test("an address with no language marker is tried as given", () => {
   const url = "https://agency.gov/uploads/2025/12/DL-410-FO-R12-2025.pdf";
@@ -44,7 +39,7 @@ test("letters inside a word are not a marker", () => {
   expect(leadsFrom(url)).toEqual([url]);
 });
 
-test("labelledPdfLinks gives each PDF link once, with the page's words for it", () => {
+test("labelledLinks gives each PDF link once, with the page's words for it", () => {
   const html = `
     <a href="/pub/irs-pdf/f8822.pdf"><span>Form 8822</span>, Change of&nbsp;Address</a>
     <a href='https://www.irs.gov/pub/irs-pdf/f8822.pdf'>again</a>
@@ -52,7 +47,9 @@ test("labelledPdfLinks gives each PDF link once, with the page's words for it", 
     <a class="x" title="Renewal by mail &amp; eligibility" href="/portal/file/dl-410-pdf/?a=1&amp;b=2"><img src="i.png"></a>
     <a href="#top">top</a>`;
   expect(
-    labelledPdfLinks(html, "https://www.irs.gov/faqs/address-changes"),
+    labelledLinks(html, "https://www.irs.gov/faqs/address-changes")
+      .filter(({ pdf }) => pdf)
+      .map(({ url, label }) => ({ url, label })),
   ).toEqual([
     {
       url: "https://www.irs.gov/pub/irs-pdf/f8822.pdf",

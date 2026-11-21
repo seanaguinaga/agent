@@ -195,8 +195,8 @@ export const compileSource = internalAction({
     code: v.string(),
     sourceUrl: v.string(),
     jurisdiction: v.string(),
-    /** The edition already fetched from `sourceUrl`, to not fetch it twice. */
-    editionId: v.optional(v.id("formEditions")),
+    /** The edition fetched from `sourceUrl`. */
+    editionId: v.id("formEditions"),
   },
   returns: v.object({
     blueprintId: v.id("formBlueprints"),
@@ -209,17 +209,7 @@ export const compileSource = internalAction({
     blueprintId: Id<"formBlueprints">;
     questions: FormQuestion[];
   }> => {
-    const { editionId: fetched, ...source } = args;
-    const sourced = fetched
-      ? undefined
-      : await ctx.runAction(internal.easygov.forms.actions.fetchSource, {
-          formId: await ctx.runMutation(
-            internal.easygov.forms.data.registerSource,
-            source,
-          ),
-        });
-    if (sourced && !sourced.ok) throw new Error(sourced.note);
-    const editionId = fetched ?? sourced!.editionId;
+    const { editionId } = args;
     const edition = await ctx.runQuery(
       internal.easygov.forms.data.readEdition,
       {

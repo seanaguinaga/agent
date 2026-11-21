@@ -79,6 +79,13 @@ export const vJudgeCheck = v.object({
   error: v.optional(v.string()),
 });
 
+/**
+ * How many `formAddresses` rows were held when a run started: none is a
+ * cold run. Counted up to `HELD_COUNT_CAP`.
+ */
+export const vHeld = v.object({ addresses: v.number() });
+export const HELD_COUNT_CAP = 5000;
+
 /** What a draft is written from: the frozen input of a draft eval. */
 export const draftInput = {
   process: v.string(),
@@ -98,6 +105,10 @@ export default {
     finishedTrials: v.number(),
     status: v.union(v.literal("running"), v.literal("done")),
     judgeCheck: v.optional(vJudgeCheck),
+    /** One trial at a time, in planned order: the next starts as one ends. */
+    serial: v.optional(v.boolean()),
+    /** Set a moment after the run starts, once the rows are counted. */
+    heldAtStart: v.optional(vHeld),
   }),
   easygovEvalTrials: defineTable(
     v.union(

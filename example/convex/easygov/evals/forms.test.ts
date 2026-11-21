@@ -1,5 +1,29 @@
 import { describe, expect, test } from "vitest";
+import { isOfficialHost } from "../forms/sources";
+import { forms } from "./cases";
 import { gradeForms, passes, sameCode } from "./grading";
+
+describe("the forms cases", () => {
+  const expected = forms.flatMap(({ id, expect }) =>
+    expect.map((form) => ({ id, ...form })),
+  );
+
+  test("each has its own id", () => {
+    expect(new Set(forms.map(({ id }) => id)).size).toBe(forms.length);
+  });
+
+  test.each(expected)(
+    "$id: $code is published on an official host",
+    ({ url }) => expect(isOfficialHost(url)).toBe(true),
+  );
+
+  test.each(forms)("$id: the goal doesn't name a form it expects", (c) => {
+    for (const { code } of c.expect) {
+      const number = code.replace(/^[A-Z]+-(?=.*\d)/, "");
+      expect(c.goal.toUpperCase()).not.toContain(number.toUpperCase());
+    }
+  });
+});
 
 describe("sameCode", () => {
   test.each([

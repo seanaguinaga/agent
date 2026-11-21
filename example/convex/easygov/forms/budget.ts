@@ -1,28 +1,27 @@
 // What finding a packet's forms may spend, and what it has spent. Pure.
 //
-// Every step that costs something (a download, a hosted browser, a search,
-// a decision) asks here first, so the ceiling is the packet's, not each
-// step's own: ten forms share one allowance, and a step that is refused goes
-// without, as it would if the thing it wanted weren't there.
+// Every step that costs something asks here first, so the ceiling is the
+// packet's, not each step's own: ten forms share one allowance, and a step
+// that can't be afforded goes without.
 
 export type Cost = {
   /** Requests for a form's file, whether or not one came back. */
   downloads: number;
-  /** Hosted browser sessions: to read a page, or to collect a file. */
+  /** Hosted browser sessions, and those of them that read a page. */
   browser: number;
-  /** Calls to the search model. */
+  browsedPages: number;
+  /** Calls to the search model, and to the decision model. */
   searches: number;
-  /** Calls to the decision model. */
   decisions: number;
   /** Official pages requested for the links they carry. */
   pages: number;
-  /** Files opened and read for what they say about themselves. */
-  reads: number;
-  /** Fetches answered from what was already held, with no request made. */
-  reused: number;
   /** Bytes of form files downloaded. */
   bytes: number;
-  /** Spending refused because the allowance had run out. */
+  /** Asks answered from what was held, with no request made. */
+  reused: number;
+  /** Files the server said hadn't changed: asked, not downloaded. */
+  unchanged: number;
+  /** Steps that went without because the allowance had run out. */
   refused: number;
 };
 
@@ -33,44 +32,38 @@ export type Budget = {
   spent: Cost;
   /** Whether one more of `kind` is allowed. Counts it if so. */
   take(kind: Kind): boolean;
+  /** Takes back one of `kind` that turned out not to be needed. */
+  giveBack(kind: Kind): void;
   /** Counts spending that has already happened. */
   add(cost: Partial<Cost>): void;
-  /** How many more of `kind` are allowed. */
-  left(kind: Kind): number;
-};
-
-export const NOTHING: Cost = {
-  downloads: 0,
-  browser: 0,
-  searches: 0,
-  decisions: 0,
-  pages: 0,
-  reads: 0,
-  reused: 0,
-  bytes: 0,
-  refused: 0,
 };
 
 /** A budget with these ceilings. A kind with none is only counted. */
 export function budget(limits: Limits = {}): Budget {
-  const spent = { ...NOTHING };
-  const left = (kind: Kind) =>
-    Math.max(0, (limits[kind] ?? Infinity) - spent[kind]);
+  const spent: Cost = {
+    downloads: 0,
+    browser: 0,
+    browsedPages: 0,
+    searches: 0,
+    decisions: 0,
+    pages: 0,
+    bytes: 0,
+    reused: 0,
+    unchanged: 0,
+    refused: 0,
+  };
   return {
     spent,
-    left,
     take(kind) {
-      if (left(kind) < 1) {
-        spent.refused++;
-        return false;
-      }
+      if (spent[kind] >= (limits[kind] ?? Infinity)) return false;
       spent[kind]++;
       return true;
     },
+    giveBack(kind) {
+      spent[kind] = Math.max(0, spent[kind] - 1);
+    },
     add(cost) {
-      for (const [kind, n] of Object.entries(cost)) {
-        spent[kind as Kind] += n;
-      }
+      for (const [kind, n] of Object.entries(cost)) spent[kind as Kind] += n;
     },
   };
 }

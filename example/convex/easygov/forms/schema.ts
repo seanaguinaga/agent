@@ -75,6 +75,43 @@ export const vAttempt = v.object({
   note: v.string(),
 });
 
+/** What a form's file says about itself. See `facts.ts`. */
+export const vFormFacts = v.object({
+  pages: v.number(),
+  places: v.number(),
+  language: v.union(
+    v.literal("en"),
+    v.literal("es"),
+    v.literal("both"),
+    v.literal("other"),
+    v.literal("unknown"),
+  ),
+  revision: v.optional(v.number()),
+});
+
+/** A link on a page: where it goes, the page's words for it, and its kind. */
+export const vPageLink = v.object({
+  url: v.string(),
+  label: v.string(),
+  pdf: v.boolean(),
+  /** The heading it sits under, and what the page says it describes. */
+  under: v.optional(v.string()),
+});
+
+/**
+ * How an address last answered a request for a file. "file": it served a
+ * PDF. "gone": it isn't there. "page": it is a web page, not a file.
+ * "unreachable": no way of asking got an answer. "unusable": what it served
+ * can't be read as a form.
+ */
+export const vAddressOutcome = v.union(
+  v.literal("file"),
+  v.literal("gone"),
+  v.literal("page"),
+  v.literal("unreachable"),
+  v.literal("unusable"),
+);
+
 export const vPacketPdf = v.object({
   code: v.string(),
   sourceUrl: v.string(),
@@ -98,12 +135,6 @@ export default {
     /** Other places the same authority publishes the same file. */
     alternateUrls: v.optional(v.array(v.string())),
     /**
-     * When this address was last the one chosen for the form, over every
-     * other file found for it. Only a chosen address is remembered for the
-     * next case: a translation fetched along the way isn't.
-     */
-    chosenAt: v.optional(v.number()),
-    /**
      * The last fetch: every way and address tried, in order. A form that
      * can't be reached says so here, with why.
      */
@@ -116,8 +147,52 @@ export default {
     ),
   })
     .index("by_code", ["code"])
-    .index("by_jurisdiction_and_chosenAt", ["jurisdiction", "chosenAt"])
     .index("by_sourceUrl", ["sourceUrl"]),
+
+  /**
+   * An official address, and how it last answered: with a file, a page of
+   * links, or neither. One row per address, so every form and case that
+   * leads to it shares what is known. See `stands` for when it is asked
+   * again.
+   */
+  formAddresses: defineTable({
+    key: v.string(),
+    url: v.string(),
+    checkedAt: v.number(),
+    outcome: vAddressOutcome,
+    note: v.optional(v.string()),
+    /** How many times in a row it gave neither a file nor a page. */
+    failures: v.number(),
+    /** The packet that last asked, which needn't ask again. */
+    packet: v.optional(v.string()),
+    /** A file: its hash, what it says about itself, and the copy kept. */
+    sha256: v.optional(v.string()),
+    opening: v.optional(v.string()),
+    facts: v.optional(vFormFacts),
+    editionId: v.optional(v.id("formEditions")),
+    etag: v.optional(v.string()),
+    lastModified: v.optional(v.string()),
+    /** A page: the links it carried. */
+    links: v.optional(v.array(vPageLink)),
+    /** The form a case chose this address for, remembered for the next. */
+    chosen: v.optional(
+      v.object({
+        jurisdiction: v.string(),
+        /** The code without its agency, to look the form up by. */
+        bare: v.string(),
+        code: v.string(),
+        at: v.number(),
+      }),
+    ),
+  })
+    .index("by_key", ["key"])
+    .index("by_sha256", ["sha256"])
+    .index("by_chosen", ["chosen.jurisdiction", "chosen.bare"]),
+
+  /** A hosted browser in use. Expires on its own if its work died. */
+  browserLeases: defineTable({ expiresAt: v.number() }).index("by_expiresAt", [
+    "expiresAt",
+  ]),
 
   /**
    * The bytes of a form as fetched, known by their hash. A form that changes
@@ -170,5 +245,7 @@ export default {
     // Kept beside the index below for its order: newest edition first.
     // eslint-disable-next-line @convex-dev/no-duplicate-indexes
     .index("by_formId", ["formId"])
-    .index("by_formId_and_sha256", ["formId", "sha256"]),
+    .index("by_formId_and_sha256", ["formId", "sha256"])
+    // The same bytes are one file, whichever address they came from.
+    .index("by_sha256", ["sha256"]),
 };

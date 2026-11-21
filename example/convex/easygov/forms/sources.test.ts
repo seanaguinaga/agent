@@ -1,82 +1,10 @@
 import { describe, expect, test } from "vitest";
 import { downloadViaBrowser } from "./browser";
-import { namesForm, notAPdf, obtain } from "./sources";
+import { namesForm, notAPdf } from "./sources";
 
 const pdf = new TextEncoder().encode("%PDF-1.7 a form");
 const page = new TextEncoder().encode("<html>Access denied</html>");
-const fails = (message: string) => async () => {
-  throw new Error(message);
-};
-
 describe("getting a form's bytes", () => {
-  test("a plain request that works is all that's tried", async () => {
-    let browsers = 0;
-    const got = await obtain(["https://a.gov/f.pdf"], {
-      request: async () => pdf,
-      browser: async () => (browsers++, pdf),
-    });
-    expect(got).toMatchObject({ via: "request", url: "https://a.gov/f.pdf" });
-    expect(browsers).toBe(0);
-  });
-
-  test("when the request is refused, a real browser opens the same address", async () => {
-    const got = await obtain(["https://a.gov/f.pdf"], {
-      request: fails("The source answered 403."),
-      browser: async () => pdf,
-    });
-    expect(got).toMatchObject({
-      via: "browser",
-      attempts: [
-        { via: "request", ok: false, note: "The source answered 403." },
-        { via: "browser", ok: true, note: "15 bytes" },
-      ],
-    });
-  });
-
-  test("every address is tried the cheap way before any is tried the dear way", async () => {
-    const tried: string[] = [];
-    const got = await obtain(["https://a.gov/f.pdf", "https://b.gov/f.pdf"], {
-      request: async (url) => {
-        tried.push(`request ${url}`);
-        if (url.includes("b.gov")) return pdf;
-        throw new Error("403");
-      },
-      browser: async (url) => (tried.push(`browser ${url}`), pdf),
-    });
-    expect(tried).toEqual([
-      "request https://a.gov/f.pdf",
-      "request https://b.gov/f.pdf",
-    ]);
-    expect(got).toMatchObject({ via: "request", url: "https://b.gov/f.pdf" });
-  });
-
-  test("a page that isn't the form doesn't count, and a form nobody can reach says why", async () => {
-    const got = await obtain(["https://a.gov/f.pdf"], {
-      request: async () => page,
-      browser: fails("The browser opened the address but downloaded nothing."),
-    });
-    expect("bytes" in got).toBe(false);
-    expect(got.attempts).toEqual([
-      {
-        via: "request",
-        url: "https://a.gov/f.pdf",
-        ok: false,
-        note: "It isn't a PDF.",
-      },
-      {
-        via: "browser",
-        url: "https://a.gov/f.pdf",
-        ok: false,
-        note: "The browser opened the address but downloaded nothing.",
-      },
-    ]);
-    // With no browser service set up, only the request is tried.
-    const plain = await obtain(["https://a.gov/f.pdf"], {
-      request: fails("403"),
-    });
-    expect(plain.attempts).toHaveLength(1);
-  });
-
   test("the bytes have to be a PDF, and name the form they're meant to be", () => {
     expect(notAPdf(pdf)).toBeNull();
     expect(notAPdf(page)).toBe("It isn't a PDF.");

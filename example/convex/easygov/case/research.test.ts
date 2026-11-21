@@ -158,6 +158,11 @@ test("codeIn keeps a form's code and drops its title", () => {
   // Seen across the eval corpus: a suffix or a revision date in brackets
   // is not the code.
   expect(codeIn("PLD-PI-001(1)")).toBe("PLD-PI-001(1)");
+  // A title in brackets after the code, with a comma of its own.
+  expect(codeIn("SF 180 (Standard Form 180, Military Records Requests)")).toBe(
+    "SF 180",
+  );
+  expect(codeIn("DD Form 214 (Certificate of Release)")).toBe("DD Form 214");
   expect(codeIn("Claim for Damages Form (Rev. 12/18)")).toBe(
     "Claim for Damages Form (Rev. 12/18)",
   );

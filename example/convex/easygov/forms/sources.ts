@@ -107,7 +107,10 @@ export function namesForm(code: string, text: string): boolean {
   const pattern = optional
     ? `(?:${parts[0]}${sep})?${spelled(rest)}`
     : spelled(parts);
-  return new RegExp(`(?<![A-Z0-9])${pattern}(?![A-Z0-9]|[-–][A-Z0-9])`).test(
+  // A short suffix is another form ("8822-B", "SSA-561-U2"); a word is how
+  // the authority labels its copy ("PVO-0100-online").
+  const suffix = "[-–](?![A-Z]{4,}(?![A-Z0-9]))[A-Z0-9]";
+  return new RegExp(`(?<![A-Z0-9])${pattern}(?![A-Z0-9]|${suffix})`).test(
     text.toUpperCase(),
   );
 }

@@ -362,7 +362,7 @@ const run: Record<
         const file = await fileAt(ctx, grading, { jurisdiction, code }, url);
         return file.ok
           ? { code, editionId: file.editionId, facts: file.facts }
-          : { code };
+          : { code, unfetched: `${file.why}: ${file.note}` };
       }),
     );
     const graded = gradeForms(expect, forms, published);

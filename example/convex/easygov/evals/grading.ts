@@ -138,6 +138,8 @@ export function gradeForms(
     code: string;
     editionId?: string;
     facts?: Edition;
+    /** Why the published file couldn't be fetched, when it couldn't. */
+    unfetched?: string;
   }[] = [],
 ): Graded & { forms: FormGrade[] } {
   // The same edition served from another address, or as an accessible copy,
@@ -230,6 +232,14 @@ export function gradeForms(
         list(
           "extra",
           extra.map((f) => f.code),
+        ),
+        // Without the published file, a form found only by title can't be
+        // matched to it.
+        list(
+          "published file not fetched",
+          published.flatMap((p) =>
+            p.unfetched ? [`${p.code} (${p.unfetched})`] : [],
+          ),
         ),
       ]
         .filter(Boolean)

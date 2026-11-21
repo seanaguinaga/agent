@@ -19,6 +19,10 @@ describe("getting a form's bytes", () => {
     expect(
       namesForm("IRS-8822", "Form 8821 Tax Information Authorization"),
     ).toBe(false);
+    // A word after the code labels the authority's copy of the same form.
+    expect(namesForm("PVO-0100", "PVO-0100-online (Rev. 02.5.2024)")).toBe(
+      true,
+    );
   });
 
   test.each([
@@ -26,6 +30,7 @@ describe("getting a form's bytes", () => {
     ["I-864", "Form I-864A Contract Between Sponsor and Household Member"],
     ["IRS-8822", "Form 8822-B Change of Address or Responsible Party"],
     ["SSA-561", "Form SSA-561-U2 (12-2016)"],
+    ["IRS-1040", "Form 1040-ES Estimated Tax"],
     ["DL 410 FO", "DL 410 ID"],
   ])(
     "%s is not named by %j: a stray number or a suffix is another form",

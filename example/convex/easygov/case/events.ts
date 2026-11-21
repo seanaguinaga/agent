@@ -30,6 +30,7 @@ import {
   newGoal,
   packReferral,
   lawyerDoor,
+  modelSuggestion,
   pinnedPack,
   referralKind,
   requiredInputs,
@@ -79,13 +80,16 @@ const EVENTS: {
   },
   "pack.reject": {
     during: ["pack"],
-    handle: (_ctx, c) => ({
-      selection: {
-        status: "rejected",
-        goalVersion: c.goal!.version,
-        reason: "person",
-      },
-    }),
+    handle: async (ctx, c) => {
+      await logCaseEvent(ctx, c._id, "pack.rejected");
+      return {
+        selection: {
+          status: "rejected",
+          goalVersion: c.goal!.version,
+          reason: "person",
+        },
+      };
+    },
   },
   // In review too: the changed answer sends the case back around.
   "answers.set": {
@@ -101,6 +105,7 @@ const EVENTS: {
       const checked = checkChoice(asked ?? {}, given);
       if ("problem" in checked) throw new ConvexError(checked.problem);
       const { value } = checked;
+      await logCorrection(ctx, c, key, value, asked ?? {});
       // An answer is the person's before it's the form's: it's kept for
       // their next form, unless they say it's only for this one.
       const followsProfile =
@@ -172,7 +177,10 @@ const EVENTS: {
   },
   "artifact.reassess": {
     during: ["review"],
-    handle: () => ({ reassess: true }),
+    handle: async (ctx, c) => {
+      await logCaseEvent(ctx, c._id, "artifact.reassessed");
+      return { reassess: true };
+    },
   },
   "artifact.accept": {
     during: ["review"],
@@ -329,4 +337,31 @@ function accept(c: Case): Partial<Case> {
       settled(c) ??
       (referral ? { kind: "advice", status: "offered" } : undefined),
   };
+}
+
+/**
+ * Records an answer the person changed in review, or gave instead of what a
+ * model read for it: the model got something wrong. Only the key is kept,
+ * not what either answer said.
+ */
+async function logCorrection(
+  ctx: MutationCtx,
+  c: Case,
+  key: string,
+  value: string,
+  asked: Parameters<typeof checkChoice>[0],
+) {
+  const before = c.answers?.[key];
+  if (waitingFor(c) === "review" && before !== undefined && before !== value) {
+    await logCaseEvent(ctx, c._id, "answer.changed", `${key}, in review`);
+    return;
+  }
+  // Only a first answer can differ from what was read: after that, the
+  // person is changing their own.
+  if (before !== undefined) return;
+  const suggested = modelSuggestion(c, key);
+  const read = suggested && checkChoice(asked, suggested);
+  if (read && "value" in read && read.value !== value) {
+    await logCaseEvent(ctx, c._id, "answer.changed", `${key}, not as read`);
+  }
 }

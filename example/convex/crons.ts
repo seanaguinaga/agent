@@ -37,4 +37,12 @@ crons.daily(
   { cursor: null },
 );
 
+// Agent spans are kept for 30 days (see debugging/spans.ts).
+crons.daily(
+  "pruneSpans",
+  { hourUTC: 5, minuteUTC: 17 },
+  internal.debugging.spans.prune,
+  {},
+);
+
 export default crons;

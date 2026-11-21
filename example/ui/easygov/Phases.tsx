@@ -39,7 +39,7 @@ const TRACK: Step[] = [
     label: "Accept the process",
     who: "person",
     doing: "Waiting for the person to accept the process, or reject it",
-    kinds: [],
+    kinds: ["pack.rejected"],
   },
   {
     phase: "suggesting",
@@ -53,7 +53,7 @@ const TRACK: Step[] = [
     label: "Answers and files",
     who: "person",
     doing: "Waiting for the person's answers and files",
-    kinds: [],
+    kinds: ["answer.changed"],
   },
   {
     phase: "filling",
@@ -67,7 +67,7 @@ const TRACK: Step[] = [
     label: "Review",
     who: "person",
     doing: "Waiting for the person to accept the document",
-    kinds: [],
+    kinds: ["artifact.reassessed"],
   },
   {
     phase: "consent",

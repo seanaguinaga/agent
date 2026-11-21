@@ -56,6 +56,7 @@ import { chargeUsage } from "../limits";
 import { proposeMapping } from "../forms/agents";
 import { normalizeFormId, parseJurisdiction } from "../packs/schema";
 import { addressFromText } from "../profile/agents";
+import { withTelemetry } from "../../debugging/spans";
 import * as cases from "./cases";
 import { references, type Reference } from "./references";
 import {
@@ -219,11 +220,10 @@ export const runTrial = internalAction({
         });
         return null;
       }
-      const { checks, detail, output, cost, forms } = await run[slice](
+      const { checks, detail, output, cost, forms } = await withTelemetry(
         ctx,
-        caseId,
         threadId,
-        saved,
+        () => run[slice](ctx, caseId, threadId, saved),
       );
       await ctx.runMutation(internal.easygov.evals.runner.finishTrial, {
         trialId,

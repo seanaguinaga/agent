@@ -1,49 +1,18 @@
 // See the docs at https://docs.convex.dev/agents/workflows
-import { OpenTelemetry } from "@ai-sdk/otel";
 import { createThread, saveMessage, stepCountIs } from "@convex-dev/agent";
 import { WorkflowId, WorkflowManager } from "@convex-dev/workflow";
-import { type TelemetryOptions } from "ai";
 import { v } from "convex/values";
 import { components, internal } from "../_generated/api";
 import { action, internalAction, mutation } from "../_generated/server";
 import { fashionAgent } from "../agents/fashion";
 import { weatherAgent } from "../agents/weather";
-import { tracerProvider } from "../debugging/telemetry";
+import { telemetryFor, withTelemetry } from "../debugging/spans";
 import { authorizeThreadAccess } from "../threads";
 import { getAuthUserId } from "../utils";
 import { outfitSchema } from "./outfit";
 import { weatherQuestion } from "./prompts";
 
 export { weatherQuestion };
-
-function telemetryFor(
-  functionId: string,
-  threadId: string,
-  promptMessageId?: string,
-): TelemetryOptions {
-  return {
-    functionId,
-    integrations: new OpenTelemetry({
-      tracer: tracerProvider.getTracer("gen_ai"),
-      agentSpanName: "functionId",
-      enrichSpan: () => ({
-        "convex.thread_id": threadId,
-        "convex.prompt_message_id": promptMessageId,
-      }),
-    }),
-    recordInputs: false,
-    recordOutputs: false,
-  };
-}
-
-async function flushTelemetry() {
-  try {
-    await tracerProvider.forceFlush();
-  } catch (error) {
-    // An exporter failure must not retry an already completed agent call.
-    console.error("Failed to flush chaining telemetry", error);
-  }
-}
 
 /**
  * OPTION 1: Chain agent calls in a single action.
@@ -60,7 +29,7 @@ export const getAdvice = action({
     await authorizeThreadAccess(ctx, threadId);
     const userId = await getAuthUserId(ctx);
 
-    try {
+    await withTelemetry(ctx, threadId, async () => {
       // Note: the message is saved automatically, and clients will get the
       // response via subscriptions automatically.
       await weatherAgent.generateText(
@@ -87,9 +56,7 @@ export const getAdvice = action({
           ),
         },
       );
-    } finally {
-      await flushTelemetry();
-    }
+    });
   },
 });
 
@@ -176,7 +143,8 @@ export const startWorkflow = mutation({
 });
 
 /**
- * Each durable step runs separately, so flush inside its action even on failure.
+ * Each durable step runs separately, so it saves its spans inside its action,
+ * even on failure.
  * Retries produce separate traces correlated by threadId and promptMessageId.
  *
  * The forecast streams: deltas are saved as they're generated, so clients
@@ -187,7 +155,7 @@ export const getForecast = internalAction({
   handler: async (ctx, { threadId, promptMessageId }) => {
     // A failed stream surfaces as a generic abort; keep the real cause.
     let streamError: unknown;
-    try {
+    return await withTelemetry(ctx, threadId, async () => {
       const result = await weatherAgent.streamText(
         ctx,
         { threadId },
@@ -221,15 +189,13 @@ export const getForecast = internalAction({
         warnings,
         savedMessageIds: result.savedMessages?.map((m) => m._id) ?? [],
       };
-    } finally {
-      await flushTelemetry();
-    }
+    });
   },
 });
 export const getFashionAdvice = internalAction({
   args: { threadId: v.string(), promptMessageId: v.string() },
   handler: async (ctx, { threadId, promptMessageId }) => {
-    try {
+    return await withTelemetry(ctx, threadId, async () => {
       const result = await fashionAgent.generateObject(
         ctx,
         { threadId },
@@ -251,8 +217,6 @@ export const getFashionAdvice = internalAction({
         warnings: result.warnings,
         savedMessageIds: result.savedMessages?.map((m) => m._id) ?? [],
       };
-    } finally {
-      await flushTelemetry();
-    }
+    });
   },
 });

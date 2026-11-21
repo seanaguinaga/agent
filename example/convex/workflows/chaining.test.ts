@@ -13,19 +13,22 @@ const state = vi.hoisted(() => ({
 vi.mock("../debugging/telemetry", async () => {
   const { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } =
     await import("@opentelemetry/sdk-trace-base");
+  const { spanBuffer } = await import("../debugging/spanBuffer");
   state.exporter = new InMemorySpanExporter();
   return {
     tracerProvider: new BasicTracerProvider({
-      spanProcessors: [new SimpleSpanProcessor(state.exporter)],
+      spanProcessors: [
+        new SimpleSpanProcessor(state.exporter),
+        new SimpleSpanProcessor(spanBuffer),
+      ],
     }),
   };
 });
 
 vi.mock("../modelsForDemo", async () => {
   const { MockLanguageModelV4 } = await import("ai/test");
-  const { streamFromGenerate } = await import(
-    "../../testing/streamFromGenerate"
-  );
+  const { streamFromGenerate } =
+    await import("../../testing/streamFromGenerate");
   const languageModel = new MockLanguageModelV4();
   languageModel.doGenerate = vi.fn();
   // getForecast streams: replay whatever doGenerate is scripted to return.
@@ -178,7 +181,7 @@ test("failed generation exports an error span and preserves the original error i
 
   expect(flush).toHaveBeenCalledOnce();
   expect(log).toHaveBeenCalledWith(
-    "Failed to flush chaining telemetry",
+    "Failed to flush telemetry",
     expect.any(Error),
   );
   expect(
@@ -232,4 +235,57 @@ test("a flush failure does not turn completed work into a retryable action failu
     }),
   ).resolves.toBeNull();
   expect(languageModel.doGenerate).toHaveBeenCalledTimes(2);
+});
+
+test("each action saves its thread's spans, and the summary reads them back", async () => {
+  const { t, threadId } = await setup();
+  const question = await t.run((ctx) =>
+    saveMessage(ctx, components.agent, { threadId, prompt: "Weather?" }),
+  );
+  await t.action(internal.workflows.chaining.getForecast, {
+    threadId,
+    promptMessageId: question.messageId,
+  });
+  vi.mocked(languageModel.doGenerate).mockRejectedValue(
+    new Error("model failed"),
+  );
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  await expect(
+    t.action(internal.workflows.chaining.getForecast, {
+      threadId,
+      promptMessageId: question.messageId,
+    }),
+  ).rejects.toThrow("model failed");
+
+  const saved = await t.run((ctx) =>
+    ctx.db
+      .query("spans")
+      .withIndex("by_threadId", (q) => q.eq("threadId", threadId))
+      .collect(),
+  );
+  const root = "invoke_agent workflows/chaining/getForecast";
+  expect(saved.filter((s) => s.name === root)).toHaveLength(2);
+  expect(saved.every((s) => s.promptMessageId === question.messageId)).toBe(
+    true,
+  );
+  expect(saved.some((s) => s.inputTokens === 3)).toBe(true);
+  for (const span of saved) {
+    expect(span.attributes).not.toContain("gen_ai.input.messages");
+  }
+
+  const { steps } = await t.query(internal.debugging.spans.summary, {});
+  const step = steps.find((s) => s.name === root)!;
+  expect(step).toMatchObject({
+    agent: "workflows/chaining/getForecast",
+    count: 2,
+    errors: 1,
+  });
+  // A model call is grouped under the agent that made it.
+  expect(saved.every((s) => s.agent === "workflows/chaining/getForecast")).toBe(
+    true,
+  );
+  expect(step.examples[0]).toMatchObject({
+    threadId,
+    error: expect.stringContaining("model failed"),
+  });
 });

@@ -116,6 +116,19 @@ function currentChatSuggestions(c: Case) {
     : undefined;
 }
 
+/**
+ * What a model read as the answer to `key`: from the conversation, or from
+ * a file the person attached. Not what the profile remembers.
+ */
+export function modelSuggestion(c: Case, key: string): string | undefined {
+  let found = currentChatSuggestions(c)?.answers?.[key];
+  for (const { read } of caseEvidence(c)) {
+    if (read.status === "read" && read.answers?.[key])
+      found = read.answers[key];
+  }
+  return found;
+}
+
 /** True while the conversation is being read for answers. */
 export function isSuggesting(c: Case): boolean {
   const suggest = currentChatSuggestions(c);

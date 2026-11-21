@@ -12,6 +12,7 @@ import {
   internalQuery,
   type MutationCtx,
 } from "../../_generated/server";
+import { withTelemetry } from "../../debugging/spans";
 import { readableAs, readDocument, type Question } from "./agents";
 import { offerFact } from "../profile/data";
 import { vFoundFacts } from "./schema";
@@ -230,11 +231,8 @@ export const read = internalAction({
       const blob = await ctx.storage.get(storageId);
       if (!blob) throw new Error("The file is gone");
       const bytes = await blob.arrayBuffer();
-      const parsed = await readDocument(
-        ctx,
-        threadId,
-        { name, mediaType, bytes },
-        questions,
+      const parsed = await withTelemetry(ctx, threadId, () =>
+        readDocument(ctx, threadId, { name, mediaType, bytes }, questions),
       );
       const { summary, answers, adverse } = parsed;
       facts = parsed.facts;

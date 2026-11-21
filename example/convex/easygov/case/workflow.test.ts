@@ -240,6 +240,87 @@ describe("answers and review", () => {
   });
 });
 
+describe("what a person corrects", () => {
+  afterEach(resetCases);
+
+  const kinds = async (
+    t: Awaited<ReturnType<typeof start>>["t"],
+    caseId: Awaited<ReturnType<typeof start>>["caseId"],
+  ) =>
+    (await t.query(api.easygov.dev.history, { caseId }))
+      .filter(({ kind }) =>
+        ["pack.rejected", "answer.changed", "artifact.reassessed"].includes(
+          kind,
+        ),
+      )
+      .map(({ kind, detail }) => [kind, detail]);
+
+  test("a rejected pack, an answer changed in review and a reassessed document are recorded", async () => {
+    const { t, caseId } = await start();
+    await send(t, caseId, { type: "goal.set", goal: "Something" });
+    await send(t, caseId, { type: "pack.reject" });
+    await send(t, caseId, { type: "goal.set", goal: "I moved" });
+    await send(t, caseId, { type: "pack.accept" });
+    // Answering for the first time corrects nothing.
+    expect((await answer(t, caseId, address)).waitingFor).toBe("review");
+    expect(await kinds(t, caseId)).toEqual([["pack.rejected", undefined]]);
+
+    const found = await answer(t, caseId, { fullName: "Ada King" });
+    expect(found.waitingFor).toBe("review");
+    await send(t, caseId, { type: "artifact.reassess" });
+    expect(await kinds(t, caseId)).toEqual([
+      ["pack.rejected", undefined],
+      ["answer.changed", "fullName, in review"],
+      ["artifact.reassessed", undefined],
+    ]);
+  });
+
+  test("an answer other than the one read from the chat is recorded, by key only", async () => {
+    const { t, caseId } = await start();
+    model.replies.push(
+      '{"reply":"Got it.","goal":"Tell the IRS my new address"}',
+    );
+    await chat(t, caseId, "I moved to 2 New Street and need to tell the IRS");
+    model.replies.push(
+      JSON.stringify({
+        answers: [{ key: "newAddress", value: "2 New Street" }],
+      }),
+    );
+    await t.mutation(api.easygov.case.public.sendMessage, {
+      caseId,
+      text: "Yes, that one",
+      messageKey: "while proposed",
+    });
+    await send(t, caseId, { type: "pack.accept" });
+    // The same answer as the one read is no correction.
+    await answer(t, caseId, { newAddress: "2 New Street" });
+    expect(await kinds(t, caseId)).toEqual([]);
+    await answer(t, caseId, { newAddress: "12 New Street" });
+    expect(await kinds(t, caseId)).toEqual([]);
+
+    const other = await start();
+    model.replies.push(
+      '{"reply":"Got it.","goal":"Tell the IRS my new address"}',
+    );
+    await chat(other.t, other.caseId, "I moved to 2 New Street");
+    model.replies.push(
+      JSON.stringify({
+        answers: [{ key: "newAddress", value: "2 New Street" }],
+      }),
+    );
+    await other.t.mutation(api.easygov.case.public.sendMessage, {
+      caseId: other.caseId,
+      text: "Yes",
+      messageKey: "while proposed",
+    });
+    await send(other.t, other.caseId, { type: "pack.accept" });
+    await answer(other.t, other.caseId, { newAddress: "3 Other Road" });
+    expect(await kinds(other.t, other.caseId)).toEqual([
+      ["answer.changed", "newAddress, not as read"],
+    ]);
+  });
+});
+
 describe("a busy person", () => {
   afterEach(resetCases);
 
@@ -533,18 +614,24 @@ describe("what a case may cost", () => {
   });
 });
 
-test("a partial packet records missing inputs and can be completed by editing the same case",async()=>{
+test("a partial packet records missing inputs and can be completed by editing the same case", async () => {
   try {
-    const {t,caseId}=await start();
-    await send(t,caseId,{type:"goal.set",goal:"Change my IRS address"});
-    await send(t,caseId,{type:"pack.accept"});
-    const partial=await send(t,caseId,{type:"artifact.prepare"});
+    const { t, caseId } = await start();
+    await send(t, caseId, { type: "goal.set", goal: "Change my IRS address" });
+    await send(t, caseId, { type: "pack.accept" });
+    const partial = await send(t, caseId, { type: "artifact.prepare" });
     expect(partial.phase).toBe("review");
     expect(partial.artifact?.openItems).toHaveLength(3);
-    const edited=await send(t,caseId,{type:"answers.set",key:"fullName",value:"Ada Example"});
+    const edited = await send(t, caseId, {
+      type: "answers.set",
+      key: "fullName",
+      value: "Ada Example",
+    });
     expect(edited.phase).toBe("answers");
-    const complete=await answer(t,caseId,address);
+    const complete = await answer(t, caseId, address);
     expect(complete.artifact?.revision).toBe(2);
     expect(complete.artifact?.openItems ?? []).toEqual([]);
-  } finally {resetCases();}
+  } finally {
+    resetCases();
+  }
 });

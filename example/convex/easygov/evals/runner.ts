@@ -53,6 +53,7 @@ import {
 } from "../case/research";
 import { chargeUsage } from "../limits";
 import { proposeMapping } from "../forms/agents";
+import { budget } from "../forms/budget";
 import { normalizeFormId, parseJurisdiction } from "../packs/schema";
 import { addressFromText } from "../profile/agents";
 import * as cases from "./cases";
@@ -165,7 +166,7 @@ function find<T extends { id: string }>(list: T[], id: string): T {
   return found;
 }
 
-type Result = Graded & { output: unknown };
+type Result = Graded & { output: unknown; cost?: Record<string, number> };
 
 /** A draft that says nothing: the forms come from the research alone. */
 const NO_DRAFT: Draft = {
@@ -195,7 +196,7 @@ export const runTrial = internalAction({
         });
         return null;
       }
-      const { checks, detail, output } = await run[slice](
+      const { checks, detail, output, cost } = await run[slice](
         ctx,
         caseId,
         threadId,
@@ -209,6 +210,7 @@ export const runTrial = internalAction({
           detail,
           output: JSON.stringify(output, null, 1).slice(0, 20000),
           ms: Date.now() - started,
+          cost,
         },
       });
     } catch (error) {
@@ -287,15 +289,25 @@ const run: Record<
     if (!jurisdiction) throw new Error("No place was read from the goal");
     const subject = subjectOf(request, goal, jurisdiction);
     const trace: ResearchTrace = {};
-    const found = await research(ctx, threadId, subject, trace);
+    // What finding the forms spends, apart from what grading them does.
+    const spend = budget();
+    const began = Date.now();
+    const found = await research(ctx, threadId, subject, trace, spend);
+    const researched = Date.now();
     const packet = researchedPack(NO_DRAFT, subject, found).packetForms ?? [];
     let links: ReturnType<typeof linkedPdfs> | undefined;
-    const linked = () => (links ??= linkedPdfs(found.sources));
+    const linked = () => (links ??= linkedPdfs(ctx, found.sources, spend));
     const located = await Promise.all(
       packet.map((form) =>
-        locateForm(ctx, threadId, form, subject, { linked }),
+        locateForm(ctx, threadId, form, subject, { linked, spend }),
       ),
     );
+    const cost = {
+      ...spend.spent,
+      forms: packet.length,
+      researchMs: researched - began,
+      locateMs: Date.now() - researched,
+    };
     const forms = packet.map(({ code, sourceUrl, when }, i) => ({
       code,
       when: when?.equals,
@@ -319,11 +331,10 @@ const run: Record<
     );
     return {
       ...gradeForms(expect, forms, published),
+      cost,
       // Everything each step saw, so a rule can be judged across cases.
       output: {
         kind: request.kind,
-        // The model's reading and the decision model's, to compare.
-        kindRead: request.kindRead,
         subject,
         forms,
         reported: formLeads(found).map(({ code, method, pdfUrl }) => ({
@@ -931,6 +942,65 @@ export const runs = query({
       });
     }
     return rows;
+  },
+});
+
+/**
+ * What a run's trials took, by slice: the mean time and the mean of each
+ * thing counted, over the trials that were graded. For comparing two runs.
+ */
+export const costs = query({
+  args: { runId: v.id("easygovEvalRuns") },
+  returns: v.record(
+    v.string(),
+    v.object({
+      trials: v.number(),
+      meanMs: v.number(),
+      maxMs: v.number(),
+      mean: v.record(v.string(), v.number()),
+    }),
+  ),
+  handler: async (ctx, { runId }) => {
+    await requireOperator(ctx);
+    const found = await ctx.db
+      .query("easygovEvalTrials")
+      .withIndex("by_runId", (q) => q.eq("runId", runId))
+      .take(1000);
+    const round = (n: number) => Math.round(n * 10) / 10;
+    const bySlice: Record<string, typeof found> = {};
+    for (const trial of found) (bySlice[trial.slice] ??= []).push(trial);
+    return Object.fromEntries(
+      Object.entries(bySlice).flatMap(([slice, all]) => {
+        const graded = all.flatMap((t) =>
+          t.status === "passed" || t.status === "failed" ? [t] : [],
+        );
+        if (!graded.length) return [];
+        const sums: Record<string, number> = {};
+        for (const { cost } of graded) {
+          for (const [key, n] of Object.entries(cost ?? {})) {
+            sums[key] = (sums[key] ?? 0) + n;
+          }
+        }
+        return [
+          [
+            slice,
+            {
+              trials: graded.length,
+              meanMs: Math.round(
+                graded.reduce((sum, t) => sum + t.ms, 0) / graded.length,
+              ),
+              maxMs: Math.max(...graded.map((t) => t.ms)),
+              mean: Object.fromEntries(
+                Object.entries(sums).map(([key, sum]) => [
+                  key,
+                  round(sum / graded.length),
+                ]),
+              ),
+            },
+          ],
+        ];
+      }),
+    );
   },
 });
 

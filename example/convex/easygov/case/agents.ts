@@ -56,6 +56,7 @@ import {
   type LabelledLink,
 } from "../forms/sources";
 import { rankForms, type FormFacts } from "../forms/facts";
+import { budget, type Budget } from "../forms/budget";
 import type { FormQuestion } from "../forms/mapping";
 import type { Id } from "../../_generated/dataModel";
 
@@ -174,7 +175,9 @@ const zRequest = z.object({
     .describe(
       "process: the person wants to understand, prepare for, or respond to a government or court matter, " +
         "e.g. make sense of a notice or make a checklist. " +
-        "referral: the person asks what they should do legally, whether to sue or settle, or wants a lawyer. " +
+        "referral: the person asks what they should do legally, whether to sue or settle, wants a lawyer, " +
+        "or is handing the matter to a lawyer or other practitioner to act for them. " +
+        "Wanting a professional to review something they will file themselves is still a process. " +
         "unclear: one question would settle where or what it is.",
     ),
   message: z
@@ -187,7 +190,8 @@ const zRequest = z.object({
     .string()
     .optional()
     .describe(
-      'Where it applies, narrowest known: "us" for federal, "us/ca" for a state, "us/ca/alameda" for a county.',
+      'Where it applies, narrowest known: "us" for federal, "us/ca" for a state, "us/ca/alameda" for a county. ' +
+        'A federal agency or program is "us" wherever the person lives, so name it even if they say no place.',
     ),
   authority: z
     .string()
@@ -245,34 +249,8 @@ export async function readRequest(
     },
     noStorage,
   );
-  // Whether this is something the person does themselves or a matter for a
-  // lawyer is the decision model's call. Over the evals it gave the same
-  // answer every time, where the model above changed its mind on a
-  // borderline request. "Unclear" stays the model's: it writes the question.
-  const decided = await decide(ctx, {
-    state: { goal },
-    instructions: "What kind of request is this person making?",
-    criteria: KIND_CRITERIA,
-  });
-  const settled =
-    decided && decided.choice !== "unclear" && output.kind !== "unclear";
-  return {
-    ...output,
-    kind: settled ? decided.choice : output.kind,
-    /** The two readings, for the evals to compare. */
-    kindRead: { model: output.kind, decided },
-  };
+  return output;
 }
-
-/** What each kind of request is, as the decision model is told it. */
-const KIND_CRITERIA: Record<z.infer<typeof zRequest>["kind"], string> = {
-  process:
-    "The person wants to understand, prepare for, or respond to a government or court matter " +
-    "themselves: file or renew something, answer a notice, make a checklist.",
-  referral:
-    "The person asks what they should do legally, whether to sue or settle, or wants a lawyer.",
-  unclear: "One question would settle where or what it is.",
-};
 
 /** A saved pack as the model sees it when comparing candidates. */
 export type Candidate = {
@@ -351,7 +329,9 @@ export async function research(
   subject: Subject,
   /** Filled with what each step saw, for the evals to study. */
   trace: ResearchTrace = {},
+  spend: Budget = budget(),
 ): Promise<Research> {
+  spend.take("searches");
   const result = await selectionAgent.generateText(
     ctx,
     { threadId },
@@ -398,12 +378,17 @@ export async function research(
   const extra = await Promise.all(
     bare.map(async ({ method }) => ({
       method,
-      forms: await methodForms(ctx, threadId, subject, method, trace).catch(
-        (error) => {
-          console.error("easygov form follow-up failed", method, error);
-          return [];
-        },
-      ),
+      forms: await methodForms(
+        ctx,
+        threadId,
+        subject,
+        method,
+        trace,
+        spend,
+      ).catch((error) => {
+        console.error("easygov form follow-up failed", method, error);
+        return [];
+      }),
     })),
   );
   return withMethodForms(found, extra);
@@ -418,6 +403,7 @@ export async function fetchable(
   jurisdiction: string,
   code: string,
   leads: string[],
+  spend: Budget = budget(),
 ): Promise<{ url: string; editionId: Id<"formEditions"> } | undefined> {
   for (const url of leads.filter(Boolean).flatMap(leadsFrom)) {
     try {
@@ -425,11 +411,13 @@ export async function fetchable(
         internal.easygov.forms.data.registerSource,
         { jurisdiction, code, sourceUrl: url },
       );
-      const { editionId } = await ctx.runAction(
+      const got = await ctx.runAction(
         internal.easygov.forms.actions.fetchSource,
         { formId },
       );
-      return { url, editionId };
+      spend.add(got.cost);
+      if (!got.ok) throw new Error(got.note);
+      return { url, editionId: got.editionId };
     } catch (error) {
       console.error("Form lead unavailable", code, url, error);
     }
@@ -448,7 +436,9 @@ async function methodForms(
   subject: Subject,
   method: Method,
   trace: ResearchTrace = {},
+  spend: Budget = budget(),
 ): Promise<ResearchForm[]> {
+  spend.take("searches");
   const result = await selectionAgent.generateText(
     ctx,
     { threadId },
@@ -485,7 +475,7 @@ async function methodForms(
         threadId,
         { code: form.code, sourceUrl: form.pdfUrl },
         subject,
-        { search: false },
+        { search: false, spend },
       );
       return got.url ? { ...form, pdfUrl: got.url } : null;
     }),
@@ -572,8 +562,28 @@ export async function draftProcess(
     : checklistPack(draft, subject);
 }
 
+/** As many refused pages as are read through the browser for one packet. */
+const MAX_BROWSED_PAGES = 3;
+
 /** The PDF links on official pages, with their words, as fetched now. */
-export async function linkedPdfs(pages: string[]): Promise<LabelledLink[]> {
+export async function linkedPdfs(
+  ctx: ActionCtx,
+  pages: string[],
+  spend: Budget = budget(),
+): Promise<LabelledLink[]> {
+  // A page that refuses a plain request is read through the hosted browser,
+  // which costs a session each: only so many per packet.
+  let browsed = 0;
+  const viaBrowser = async (page: string) => {
+    if (browsed >= MAX_BROWSED_PAGES) return [];
+    browsed++;
+    spend.take("browser");
+    const html: string | null = await ctx.runAction(
+      internal.easygov.forms.actions.readPage,
+      { url: page },
+    );
+    return html ? labelledPdfLinks(html, page) : [];
+  };
   const found = await Promise.all(
     pages
       // A PDF among the pages is itself a lead, tried as one: not a page.
@@ -583,11 +593,14 @@ export async function linkedPdfs(pages: string[]): Promise<LabelledLink[]> {
       .slice(0, 8)
       .map(async (page) => {
         try {
+          spend.take("pages");
           const response = await fetch(page, {
             headers: { "User-Agent": "Mozilla/5.0 (compatible; form-fetch)" },
             signal: AbortSignal.timeout(15000),
           });
-          if (!response.ok) return [];
+          // Gone is gone; anything else is the site turning the request away.
+          if (response.status === 404 || response.status === 410) return [];
+          if (!response.ok) return await viaBrowser(page);
           if (!/html/i.test(response.headers.get("content-type") ?? "")) {
             return [];
           }
@@ -623,7 +636,7 @@ const SURE = 0.5;
 /**
  * Which of an authority's own links is the form. The choice is among links
  * that exist, so no address can be made up, and it comes with a confidence,
- * so an unsure choice isn't acted on. Undefined if no link is the form.
+ * so an unsure choice isn't acted on. No `designated` if no link is the form.
  *
  * The decision model makes the choice. If it can't be reached, the ordinary
  * model picks a link by number, without a confidence.
@@ -634,14 +647,20 @@ async function chooseLink(
   code: string,
   subject: Pick<Subject, "jurisdiction" | "authority">,
   links: LabelledLink[],
-): Promise<Designated | undefined> {
-  if (!links.length) return undefined;
+  spend: Budget,
+): Promise<{
+  designated?: Designated;
+  /** What it picked when the pick wasn't acted on, and how sure it was. */
+  considered?: { choice: string; confidence?: number };
+}> {
+  if (!links.length) return {};
   const describe = ({ url, label }: LabelledLink) =>
     `${label || "(no words)"} [${decodeURI(url.split(/[?#]/)[0].split("/").pop() ?? "")}]`;
   const instructions =
     `Which link is the blank form ${code} itself, in English, for a person to fill in? ` +
     "Not its instructions, not a translation, and not another form with a similar name. " +
     "Choose none if no link is that form.";
+  spend.take("decisions");
   const decided = await decide(ctx, {
     state: {
       form: code,
@@ -659,8 +678,12 @@ async function chooseLink(
   if (decided) {
     const link = links[Number(decided.choice.replace(/^link/, "")) - 1];
     const sure = decided.confidence;
-    if (!link || (sure !== undefined && sure < SURE)) return undefined;
-    return { ...link, confidence: sure, by: "decision" };
+    const considered = {
+      choice: link ? `${link.label} [${link.url.split("/").pop()}]` : "none",
+      confidence: sure,
+    };
+    if (!link || (sure !== undefined && sure < SURE)) return { considered };
+    return { designated: { ...link, confidence: sure, by: "decision" } };
   }
   try {
     const { output } = await selectionAgent.generateText(
@@ -679,10 +702,10 @@ async function chooseLink(
       { contextOptions: { recentMessages: 0 }, ...noStorage },
     );
     const link = links[output.link - 1];
-    return link ? { ...link, by: "model" } : undefined;
+    return link ? { designated: { ...link, by: "model" } } : {};
   } catch (error) {
     console.error("Link choice unavailable", code, error);
-    return undefined;
+    return {};
   }
 }
 
@@ -708,6 +731,13 @@ export type Located = {
   facts?: FormFacts;
   /** The authority's own link chosen for the form, if one was. */
   designated?: Designated;
+  /** Why there is or isn't one: how many links there were to choose from. */
+  links?: {
+    onPages: number;
+    shortlisted: number;
+    chose: string;
+    considered?: { choice: string; confidence?: number };
+  };
   /** The other files that named the form, which this one was chosen over. */
   others?: { url: string; via: Via; facts: FormFacts }[];
 };
@@ -722,13 +752,15 @@ async function candidates(
   code: string,
   leads: { url: string; via: Via }[],
   /** The address the authority's own link gives for the form. */
-  designated?: string,
+  designated: string | undefined,
+  spend: Budget,
 ): Promise<FormFile[]> {
   const fetched = await Promise.all(
     leads.map(async ({ url, via }) => {
-      const got = await fetchable(ctx, jurisdiction, code, [url]);
+      const got = await fetchable(ctx, jurisdiction, code, [url], spend);
       if (!got) return [];
       try {
+        spend.take("reads");
         const facts = await ctx.runAction(
           internal.easygov.forms.actions.fileFacts,
           { editionId: got.editionId },
@@ -774,9 +806,12 @@ export async function locateForm(
     linked?: () => Promise<LabelledLink[]>;
     /** False to stop before asking the search model. */
     search?: boolean;
+    /** What the packet has spent, counted into. */
+    spend?: Budget;
   } = {},
 ): Promise<Located> {
   const { jurisdiction, authority } = subject;
+  const spend = options.spend ?? budget();
   const pick = async (found: FormFile[]): Promise<Located> => {
     const [best, ...others] = rankForms(found);
     if (best) {
@@ -799,15 +834,28 @@ export async function locateForm(
 
   // The authority's own link to the form, if its pages have one: the only
   // lead that states which form a file is.
-  const designated = options.linked
-    ? await chooseLink(
-        ctx,
-        threadId,
-        form.code,
-        subject,
-        shortlist(await options.linked(), form.code),
-      )
-    : undefined;
+  const onPages = options.linked ? await options.linked() : [];
+  const short = shortlist(onPages, form.code);
+  const { designated, considered } = await chooseLink(
+    ctx,
+    threadId,
+    form.code,
+    subject,
+    short,
+    spend,
+  );
+  const links = {
+    onPages: onPages.length,
+    shortlisted: short.length,
+    chose: designated
+      ? "a link"
+      : !onPages.length
+        ? "no links on the pages"
+        : !short.length
+          ? "no link shares the code"
+          : "none of the shortlist",
+    considered,
+  };
   // What earlier cases chose for this form, so a search that misses it
   // this time doesn't lose it.
   const remembered: string[] = await ctx.runQuery(
@@ -833,12 +881,14 @@ export async function locateForm(
             : "known",
     ),
     designated?.url,
+    spend,
   );
   if (found.length || options.search === false) {
-    return { ...(await pick(found)), designated };
+    return { ...(await pick(found)), designated, links };
   }
 
   try {
+    spend.take("searches");
     const result = await selectionAgent.generateText(
       ctx,
       { threadId },
@@ -866,13 +916,16 @@ export async function locateForm(
           jurisdiction,
           form.code,
           leads(unique(offered), () => "search"),
+          undefined,
+          spend,
         ),
       )),
       designated,
+      links,
     };
   } catch (error) {
     console.error("Official form lookup unavailable", form.code, error);
-    return { designated };
+    return { designated, links };
   }
 }
 
@@ -887,7 +940,7 @@ async function compilePacketForms(
   );
   // The pages are fetched for their links once, and only if a form needs it.
   let links: ReturnType<typeof linkedPdfs> | undefined;
-  const linked = () => (links ??= linkedPdfs(draft.output?.sources ?? []));
+  const linked = () => (links ??= linkedPdfs(ctx, draft.output?.sources ?? []));
   // The same form under two ways of filing is located and compiled once.
   const preparing = new Map<string, ReturnType<typeof prepare>>();
   async function prepare(form: { code: string; sourceUrl: string }) {

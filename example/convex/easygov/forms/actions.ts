@@ -13,7 +13,7 @@ import {
   internalAction,
   type ActionCtx,
 } from "../../_generated/server";
-import { browserService, downloadViaBrowser } from "./browser";
+import { browserService, downloadViaBrowser, readViaBrowser } from "./browser";
 import { resolveMapping } from "./mapping";
 import { openForFilling, UnusablePdf } from "./open";
 import { fillPdf, inspectPdf, verifyPdf } from "./pdf";
@@ -38,6 +38,13 @@ const vFetched = v.object({
   fresh: v.boolean(),
 });
 type Fetched = Infer<typeof vFetched>;
+/** What one fetch cost: see `budget.ts`. */
+const vFetchCost = v.object({
+  downloads: v.number(),
+  browser: v.number(),
+  bytes: v.number(),
+});
+type FetchCost = Infer<typeof vFetchCost>;
 
 /**
  * Fetches a form from its source and records what came back. The same bytes
@@ -47,6 +54,8 @@ type Fetched = Infer<typeof vFetched>;
 async function fetchEdition(
   ctx: ActionCtx,
   { formId, reinspect }: { formId: Id<"forms">; reinspect?: boolean },
+  /** Counted into as the fetch goes, so a fetch that throws still says. */
+  cost: FetchCost = { downloads: 0, browser: 0, bytes: 0 },
 ): Promise<Fetched> {
   const form: { urls: string[]; code: string } | null = await ctx.runQuery(
     internal.easygov.forms.data.formOf,
@@ -84,6 +93,11 @@ async function fetchEdition(
     },
     browser: service && ((url) => downloadViaBrowser(url, service)),
   });
+  for (const { via } of got.attempts) {
+    if (via === "browser") cost.browser++;
+    else cost.downloads++;
+  }
+  if ("bytes" in got) cost.bytes += got.bytes.length;
   const record = (ok: boolean, attempts = got.attempts) =>
     ctx.runMutation(internal.easygov.forms.data.recordAttempts, {
       formId,
@@ -176,11 +190,49 @@ export const fetchForm = action({
   },
 });
 
-/** `fetchEdition`, for a case's own work: no operator is signed in there. */
+const vSourced = v.union(
+  v.object({ ok: v.literal(true), ...vFetched.fields, cost: vFetchCost }),
+  v.object({ ok: v.literal(false), note: v.string(), cost: vFetchCost }),
+);
+
+/**
+ * `fetchEdition`, for a case's own work: no operator is signed in there. A
+ * form that can't be fetched is an answer here, not a throw, and either way
+ * it says what the try cost.
+ */
 export const fetchSource = internalAction({
   args: fetchArgs,
-  returns: vFetched,
-  handler: async (ctx, args): Promise<Fetched> => await fetchEdition(ctx, args),
+  returns: vSourced,
+  handler: async (ctx, args): Promise<Infer<typeof vSourced>> => {
+    const cost = { downloads: 0, browser: 0, bytes: 0 };
+    try {
+      return { ok: true, ...(await fetchEdition(ctx, args, cost)), cost };
+    } catch (error) {
+      const note =
+        error instanceof ConvexError ? String(error.data) : `${error}`;
+      return { ok: false, note: note.slice(0, 300), cost };
+    }
+  },
+});
+
+/**
+ * An official page's HTML, read through the hosted browser. For a page that
+ * refuses a plain request. Null if no browser is set up, the address isn't
+ * the authority's, or the page couldn't be read: the caller goes without.
+ */
+export const readPage = internalAction({
+  args: { url: v.string() },
+  returns: v.union(v.string(), v.null()),
+  handler: async (_ctx, { url }): Promise<string | null> => {
+    const service = browserService();
+    if (!service || !isOfficialHost(url)) return null;
+    try {
+      return (await readViaBrowser(url, service)).slice(0, 1_500_000);
+    } catch (error) {
+      console.error("Page could not be read in the browser", url, error);
+      return null;
+    }
+  },
 });
 
 /**

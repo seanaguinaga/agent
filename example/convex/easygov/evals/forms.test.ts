@@ -71,6 +71,21 @@ describe("gradeForms", () => {
         [{ code: "SSA-827", editionId: "other", facts: edition }],
       ).checks["~sameEdition"],
     ).toBe(true);
+    // A form named only by its title is found by its file.
+    const byTitle = gradeForms(
+      [{ code: "DL-410-FO" }],
+      [
+        {
+          code: "Renewal by Mail Eligibility Information",
+          url: "https://x.gov/dl.pdf",
+          editionId: "e9",
+          facts: edition,
+        },
+      ],
+      [{ code: "DL-410-FO", editionId: "e9", facts: edition }],
+    );
+    expect(byTitle.checks).toMatchObject({ named: true, located: true });
+    expect(byTitle.checks["~noExtras"]).toBe(true);
     // It is recorded, and doesn't fail the trial by itself.
     expect(passes(graded.checks)).toBe(true);
   });

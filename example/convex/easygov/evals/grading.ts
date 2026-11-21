@@ -135,30 +135,40 @@ export function gradeForms(
     facts?: Edition;
   }[] = [],
 ): Graded {
-  const match = (code: string) => found.filter((f) => sameCode(f.code, code));
-  const missing = expected.filter(({ code }) => !match(code).length);
-  const unlocated = expected.filter(
-    ({ code }) => match(code).length && !match(code).some((f) => f.url),
-  );
-  // A located form whose file isn't the published edition: a different form
-  // under the right name, or another revision. The same edition served from
-  // another address, or as an accessible copy, has other bytes and is fine.
+  // The same edition served from another address, or as an accessible copy,
+  // has other bytes and is the same form.
   const sameEdition = (a?: Edition, b?: Edition) =>
     !!a &&
     !!b &&
     a.revision === b.revision &&
     a.places === b.places &&
     a.pages === b.pages;
+  const isPublished = (f: FoundForm, code: string) =>
+    published.some(
+      (p) =>
+        p.code === code &&
+        !!p.editionId &&
+        !!f.url &&
+        (f.editionId === p.editionId || sameEdition(f.facts, p.facts)),
+    );
+  // A form is found under its code, or as its file: research sometimes
+  // names a form only by its title and still fetches the right one.
+  const match = (code: string) =>
+    found.filter((f) => sameCode(f.code, code) || isPublished(f, code));
+  const missing = expected.filter(({ code }) => !match(code).length);
+  const unlocated = expected.filter(
+    ({ code }) => match(code).length && !match(code).some((f) => f.url),
+  );
+  // A located form whose file isn't the published edition: a different form
+  // under the right name, or another revision.
   const otherFile = published.filter(
-    ({ code, editionId, facts }) =>
+    ({ code, editionId }) =>
       editionId &&
       match(code).some((f) => f.url) &&
-      !match(code).some(
-        (f) => f.editionId === editionId || sameEdition(f.facts, facts),
-      ),
+      !match(code).some((f) => isPublished(f, code)),
   );
   const extra = found.filter(
-    (f) => !expected.some(({ code }) => sameCode(f.code, code)),
+    (f) => !expected.some(({ code }) => match(code).includes(f)),
   );
   const list = (label: string, codes: string[]) =>
     codes.length ? `${label}: ${codes.join(", ")}` : "";

@@ -210,16 +210,16 @@ export const compileSource = internalAction({
     questions: FormQuestion[];
   }> => {
     const { editionId: fetched, ...source } = args;
-    const editionId =
-      fetched ??
-      (
-        await ctx.runAction(internal.easygov.forms.actions.fetchSource, {
+    const sourced = fetched
+      ? undefined
+      : await ctx.runAction(internal.easygov.forms.actions.fetchSource, {
           formId: await ctx.runMutation(
             internal.easygov.forms.data.registerSource,
             source,
           ),
-        })
-      ).editionId;
+        });
+    if (sourced && !sourced.ok) throw new Error(sourced.note);
+    const editionId = fetched ?? sourced!.editionId;
     const edition = await ctx.runQuery(
       internal.easygov.forms.data.readEdition,
       {

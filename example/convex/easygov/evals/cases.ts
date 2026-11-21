@@ -90,6 +90,78 @@ export const request: ({ id: string; goal: string } & RequestExpectation)[] = [
     kinds: ["unclear", "process"],
     jurisdictions: [null],
   },
+  // The opening messages of easy-gov's legal-intake corpus, as people wrote
+  // them. Each says who the packet is for: the person themselves ("prepare
+  // the claim") is a process, and a lawyer or other practitioner ("for
+  // employment counsel") is a referral. A place is expected only where the
+  // message settles one: a federal agency is "us".
+  {
+    id: "corpus: ssdi-reconsideration-001",
+    goal: "SSA denied my disability claim. Please identify what you need and prepare the correct appeal packet.",
+    kinds: ["process"],
+    jurisdictions: ["us"],
+  },
+  {
+    id: "corpus: va-initial-knee-claim-001",
+    goal: "I injured my knee in the Army and still receive treatment. Please identify what you need and prepare the initial VA disability claim.",
+    kinds: ["process"],
+    jurisdictions: ["us"],
+  },
+  {
+    id: "corpus: qui-tam-medicare-billing-001",
+    goal: "My employer billed Medicare for tests that were not performed. Please identify what you need for a lawyer to assess this before I disclose anything else.",
+    kinds: ["referral"],
+  },
+  {
+    id: "corpus: ca-medmal-surgery-001",
+    goal: "I needed emergency corrective surgery two days after an operation. Please identify what you need for a California malpractice lawyer.",
+    kinds: ["referral"],
+    jurisdictions: ["us/ca"],
+  },
+  {
+    id: "corpus: ca-insurance-wildfire-001",
+    goal: "My homeowners insurer denied my wildfire claim. Please identify what you need for legal review.",
+    // It names no place, so asking where is right too.
+    kinds: ["referral", "unclear"],
+  },
+  {
+    id: "corpus: ca-personal-injury-crash-001",
+    goal: "Another driver rear-ended me in Los Angeles. Please identify what you need for a lawyer to review the claim.",
+    kinds: ["referral"],
+  },
+  {
+    id: "corpus: ca-class-action-fee-001",
+    goal: "A company charged the same undisclosed fee to many California customers. Please identify what you need for class-action counsel to assess it.",
+    kinds: ["referral"],
+    jurisdictions: ["us/ca"],
+  },
+  {
+    id: "corpus: ca-wage-paga-001",
+    goal: "My employer's policy omits overtime and meal-break premiums. Please identify what you need for employment counsel.",
+    kinds: ["referral"],
+  },
+  {
+    id: "corpus: ca-workers-comp-back-001",
+    goal: "I hurt my back lifting inventory at work and told my supervisor. Please identify what you need to prepare the employee claim and evidence packet.",
+    kinds: ["process", "unclear"],
+  },
+  {
+    id: "corpus: uscis-i485-rfe-i864-001",
+    goal: "USCIS sent an RFE on my I-485 for missing financial sponsorship evidence. Please identify what you need for an authorized immigration practitioner.",
+    kinds: ["referral"],
+    jurisdictions: ["us"],
+  },
+  {
+    id: "corpus: irs-cp90-cdp-001",
+    goal: "I received an IRS CP90 final notice of intent to levy. Please identify what you need for the correct hearing-request packet and tax-professional review.",
+    kinds: ["process"],
+    jurisdictions: ["us"],
+  },
+  {
+    id: "corpus: ca-bankruptcy-intake-001",
+    goal: "I have credit-card and medical debt plus a wage garnishment. Please identify what you need for a bankruptcy lawyer in Los Angeles.",
+    kinds: ["referral"],
+  },
 ];
 
 // --- Choose: a goal and candidates in; a number, or 0 for none --------------

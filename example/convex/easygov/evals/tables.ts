@@ -38,6 +38,12 @@ const graded = {
   /** Why: the judge's reasoning, or what a code check tripped on. */
   detail: v.optional(v.string()),
   ms: v.number(),
+  /**
+   * What the step spent, by name, where the slice counts it: downloads,
+   * browser sessions, searches, and the time each stage took (see
+   * `forms/budget.ts`).
+   */
+  cost: v.optional(v.record(v.string(), v.number())),
 };
 
 /** A trial that crashed (model or network error): not a pass or a fail. */

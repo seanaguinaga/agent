@@ -7,6 +7,7 @@
 //   npx convex run easygov/evals/runner:start '{"note":"...","slices":["forms"],"serial":true}'
 //   npx convex run easygov/evals/runner:forgetFetched
 //   npx convex run easygov/evals/runner:runs
+//   npx convex run easygov/evals/runner:quality '{"runId":"..."}'
 //   npx convex run easygov/evals/runner:trials '{"runId":"...","failedOnly":true}'
 //
 // Like `dev.ts`, these are public and check nothing: they're for the test
@@ -72,10 +73,12 @@ import {
   outcomeOf,
   passes,
   type FilledForm,
+  type FormGrade,
   type Graded,
 } from "./grading";
 import {
   draftInput,
+  FORM_OUTCOMES,
   HELD_COUNT_CAP,
   SLICES,
   vHeld,
@@ -183,7 +186,11 @@ function find<T extends { id: string }>(list: T[], id: string): T {
   return found;
 }
 
-type Result = Graded & { output: unknown; cost?: Record<string, number> };
+type Result = Graded & {
+  output: unknown;
+  cost?: Record<string, number>;
+  forms?: FormGrade[];
+};
 
 /** A draft that says nothing: the forms come from the research alone. */
 const NO_DRAFT: Draft = {
@@ -213,7 +220,7 @@ export const runTrial = internalAction({
         });
         return null;
       }
-      const { checks, detail, output, cost } = await run[slice](
+      const { checks, detail, output, cost, forms } = await run[slice](
         ctx,
         caseId,
         threadId,
@@ -228,6 +235,7 @@ export const runTrial = internalAction({
           output: JSON.stringify(output, null, 1).slice(0, 20000),
           ms: Date.now() - started,
           cost,
+          forms,
         },
       });
     } catch (error) {
@@ -1078,6 +1086,53 @@ export const runs = query({
       });
     }
     return rows;
+  },
+});
+
+/**
+ * What the people in a run's forms trials ended up holding: how many of the
+ * forms they needed came out each way (see `FORM_OUTCOMES`), and how often
+ * a form came out as the same file in every trial of its case. `wrongUnwarned`
+ * is the one that harms a filer; a form that is a different file from one
+ * trial to the next can't be trusted even when each trial passes.
+ */
+export const quality = query({
+  args: { runId: v.id("easygovEvalRuns") },
+  returns: v.object({
+    forms: v.number(),
+    outcomes: v.record(v.string(), v.number()),
+    /** Forms asked for in two trials or more, and those the same each time. */
+    repeated: v.number(),
+    sameEachTime: v.number(),
+  }),
+  handler: async (ctx, { runId }) => {
+    await requireOperator(ctx);
+    const trials = await ctx.db
+      .query("easygovEvalTrials")
+      .withIndex("by_runId", (q) => q.eq("runId", runId))
+      .take(1000);
+    const outcomes: Record<string, number> = Object.fromEntries(
+      FORM_OUTCOMES.map((outcome) => [outcome, 0]),
+    );
+    // The file each trial chose, by case and form.
+    const chosen = new Map<string, (string | undefined)[]>();
+    for (const trial of trials) {
+      const graded = "forms" in trial ? (trial.forms ?? []) : [];
+      for (const { code, outcome, file } of graded) {
+        outcomes[outcome]++;
+        const key = `${trial.caseId}\n${code}`;
+        chosen.set(key, [...(chosen.get(key) ?? []), file]);
+      }
+    }
+    const repeated = [...chosen.values()].filter((files) => files.length > 1);
+    return {
+      forms: Object.values(outcomes).reduce((sum, n) => sum + n, 0),
+      outcomes,
+      repeated: repeated.length,
+      sameEachTime: repeated.filter(
+        (files) => files[0] !== undefined && new Set(files).size === 1,
+      ).length,
+    };
   },
 });
 

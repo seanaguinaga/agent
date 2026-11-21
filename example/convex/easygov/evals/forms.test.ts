@@ -54,6 +54,7 @@ describe("gradeForms", () => {
     expect(graded.checks).toEqual({
       named: true,
       located: true,
+      warnedIfWrong: true,
       "~sameEdition": true,
       "~noExtras": false,
     });
@@ -112,5 +113,67 @@ describe("gradeForms", () => {
     expect(byTitle.checks["~noExtras"]).toBe(true);
     // It is recorded, and doesn't fail the trial by itself.
     expect(passes(graded.checks)).toBe(true);
+  });
+
+  test("says what the person ends up holding for each form", () => {
+    const published = [
+      { code: "A-100", editionId: "a" },
+      { code: "B-200", editionId: "b" },
+      { code: "C-300", editionId: "c" },
+      { code: "D-400", editionId: "d" },
+      { code: "E-500", editionId: "e" },
+      // The case's own address gave no file for this one.
+      { code: "F-600" },
+    ];
+    const at = (code: string, editionId: string, backed: boolean) => ({
+      code,
+      url: `https://www.ssa.gov/${code}.pdf`,
+      editionId,
+      backed,
+    });
+    const graded = gradeForms(
+      published,
+      [
+        at("A-100", "a", true),
+        at("B-200", "b", false),
+        at("C-300", "old", false),
+        at("D-400", "old", true),
+        { code: "E-500" },
+        at("F-600", "f", true),
+      ],
+      published,
+    );
+    expect(graded.forms.map(({ outcome }) => outcome)).toEqual([
+      "rightBacked",
+      "rightWarned",
+      "wrongWarned",
+      "wrongUnwarned",
+      "missing",
+      "unverified",
+    ]);
+    expect(graded.forms[0].file).toBe("a");
+    // Only the wrong file handed over as the authority's own, and the form
+    // that never came, fail the trial: the rest the person was told about.
+    expect(graded.checks).toMatchObject({
+      located: false,
+      warnedIfWrong: false,
+      "~sameEdition": false,
+    });
+    expect(graded.detail).toBe(
+      "not located: E-500; other edition: C-300; other edition, no warning: D-400",
+    );
+    expect(
+      passes(
+        gradeForms(
+          published.slice(0, 3),
+          [
+            at("A-100", "a", true),
+            at("B-200", "b", false),
+            at("C-300", "old", false),
+          ],
+          published,
+        ).checks,
+      ),
+    ).toBe(true);
   });
 });

@@ -6,6 +6,7 @@ import { sourcesIn } from "../case/agents";
 import type { Mapping } from "../forms/schema";
 import type { vProcessPackDefinition } from "../packs/schema";
 import { isReading, type Address } from "../profile/vocabulary";
+import type { FormOutcome } from "./tables";
 
 export type Checks = Record<string, boolean>;
 export type Graded = { checks: Checks; detail?: string };
@@ -123,7 +124,12 @@ export type FoundForm = {
   url?: string;
   editionId?: string;
   facts?: Edition;
+  /** Whether an official page links the file as this form. */
+  backed?: boolean;
 };
+
+/** How one expected form came out, and the file chosen for it. */
+export type FormGrade = { code: string; outcome: FormOutcome; file?: string };
 
 export function gradeForms(
   expected: readonly { code: string }[],
@@ -134,7 +140,7 @@ export function gradeForms(
     editionId?: string;
     facts?: Edition;
   }[] = [],
-): Graded {
+): Graded & { forms: FormGrade[] } {
   // The same edition served from another address, or as an accessible copy,
   // has other bytes and is the same form.
   const sameEdition = (a?: Edition, b?: Edition) =>
@@ -155,17 +161,28 @@ export function gradeForms(
   // names a form only by its title and still fetches the right one.
   const match = (code: string) =>
     found.filter((f) => sameCode(f.code, code) || isPublished(f, code));
+  const forms = expected.map(({ code }): FormGrade => {
+    const located = match(code).filter((f) => f.url);
+    const file = located.find((f) => isPublished(f, code)) ?? located[0];
+    if (!file) return { code, outcome: "missing" };
+    const right = isPublished(file, code);
+    const known = published.some((p) => p.code === code && p.editionId);
+    const outcome = !known
+      ? "unverified"
+      : right
+        ? file.backed
+          ? "rightBacked"
+          : "rightWarned"
+        : file.backed
+          ? "wrongUnwarned"
+          : "wrongWarned";
+    return { code, outcome, file: file.editionId ?? file.url };
+  });
+  const codes = (...outcomes: FormOutcome[]) =>
+    forms.filter((f) => outcomes.includes(f.outcome)).map((f) => f.code);
   const missing = expected.filter(({ code }) => !match(code).length);
-  const unlocated = expected.filter(
-    ({ code }) => match(code).length && !match(code).some((f) => f.url),
-  );
-  // A located form whose file isn't the published edition: a different form
-  // under the right name, or another revision.
-  const otherFile = published.filter(
-    ({ code, editionId }) =>
-      editionId &&
-      match(code).some((f) => f.url) &&
-      !match(code).some((f) => isPublished(f, code)),
+  const unlocated = codes("missing").filter(
+    (code) => !missing.some((f) => f.code === code),
   );
   const extra = found.filter(
     (f) => !expected.some(({ code }) => match(code).includes(f)),
@@ -173,13 +190,16 @@ export function gradeForms(
   const list = (label: string, codes: string[]) =>
     codes.length ? `${label}: ${codes.join(", ")}` : "";
   return {
+    forms,
     checks: {
       // Every expected form is named, and its PDF was fetched.
       named: missing.length === 0,
-      located: missing.length === 0 && unlocated.length === 0,
+      located: codes("missing").length === 0,
+      // The person is never handed the wrong file as the authority's own.
+      warnedIfWrong: codes("wrongUnwarned").length === 0,
       // Advisory: the published file can itself have moved on since the
       // corpus was checked.
-      "~sameEdition": otherFile.length === 0,
+      "~sameEdition": codes("wrongWarned", "wrongUnwarned").length === 0,
       // The corpus doesn't list every form a case could need.
       "~noExtras": extra.length === 0,
     },
@@ -189,14 +209,9 @@ export function gradeForms(
           "missing",
           missing.map((f) => f.code),
         ),
-        list(
-          "not located",
-          unlocated.map((f) => f.code),
-        ),
-        list(
-          "other edition",
-          otherFile.map((f) => f.code),
-        ),
+        list("not located", unlocated),
+        list("other edition", codes("wrongWarned")),
+        list("other edition, no warning", codes("wrongUnwarned")),
         list(
           "extra",
           extra.map((f) => f.code),

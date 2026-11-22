@@ -42,9 +42,23 @@ it found. Paths are under `example/convex/easygov`.
     gateway's errors carry an HTTP status; Document AI end to end, including the
     shape of its answer and that its text indexes count as JavaScript's do; each
     reader's size limit (15 MB is sent at most).
-- [ ] **3. Measure, then choose which reader runs.** By the owner: one `world`
+- [x] **3. Measure, then choose which reader runs.** By the owner: one `world`
       eval run per reader. V62, SA100 and IR3 should be named by OCR; Document
       AI's seconds measured. Both readers stay in the switch (see the answers).
+  - _Measured 2026-11-22:_ with Gemini reading, the `world` run (`mx72ybws…`)
+    named V62 by OCR and confirmed it, the case taking 34.5 s end to end.
+  - Then each reader timed through `transcribe` itself, on V62 (a real scan) and
+    image-only copies of SA100 and IR3, twice each, first 3 pages: Document AI
+    13.2–13.8 s on V62, 3.3–3.8 s on the others; Gemini 2.5 Flash 17.2–18.1 s
+    and 2.3–4.0 s. Document AI named the code in 6 of 6 reads, Gemini in 5 of 6
+    (it dropped SA100's once). Both gave the same amount of text.
+  - **Chosen: Document AI** (`readerKind = "documentAi"`). Gemini stays in the
+    switch. Set up in the `easygov-development` Google Cloud project: Document
+    OCR processor `easygov-form-ocr` (us) and service account
+    `easygov-document-ai` (Document AI API User), whose key is in the dev
+    deployment's `DOCUMENT_AI_CREDENTIALS`. The organization blocks keys by
+    default; the block is lifted for that project only. Later: Workload Identity
+    Federation in place of the key.
 - [ ] **4. Fetch ways** (survey, row 1). Proof: `fetch.test.ts` unchanged and
       passing.
 - [ ] **5. Decision call** (survey, row 2).

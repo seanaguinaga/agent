@@ -97,11 +97,12 @@ the packet's form: the source of the words that name it, or the link.
   UK's V62 is two pictures. Its first 3 pages are given to a reader
   (`reader.ts`), which gives back their words and nothing else. They name the
   form by the rule any words are held to.
-  - **One reader runs**, chosen by `readerKind` in `convex/modelsForDemo.ts`: a
-    model through the gateway (`readerModel`), or Google's Document AI, which
-    needs `DOCUMENT_AI_CREDENTIALS` (a service account's key file, whole) and
-    `DOCUMENT_AI_PROCESSOR` (`projects/…/locations/us/processors/…`) on the
-    deployment. There is no fallback from one to the other.
+  - **One reader runs**, chosen by `readerKind` in `convex/modelsForDemo.ts`
+    (Document AI since 2026-11-22): a model through the gateway (`readerModel`),
+    or Google's Document AI, which needs `DOCUMENT_AI_CREDENTIALS` (a service
+    account's key file, whole) and `DOCUMENT_AI_PROCESSOR`
+    (`projects/…/locations/us/processors/…`) on the deployment. There is no
+    fallback from one to the other.
   - **Read once.** The words are kept with the file's hash. A read that didn't
     get an answer is tried again at the next ask; a packet may spend 3 reads.
   - **Never filled, and ranked last.** Its words have no place on the page, so

@@ -1,5 +1,6 @@
 // What counts as one address, one form and one file, what a page says of
 // its links and of itself, and when an address is asked again. Pure.
+import type { Words } from "./words";
 
 /** How a form's bytes were got. */
 export type Via = "request" | "browser";
@@ -21,8 +22,11 @@ export function carriesNumber(code: string, text: string): boolean {
   );
 }
 
-/** What says a file is a form: its own words, or the authority's link alone. */
-export type NamedBy = "text" | "link";
+/**
+ * What says a file is a form: its own words, by where they were read from,
+ * or the authority's link alone.
+ */
+export type NamedBy = Exclude<Words["from"], "none"> | "link";
 
 /**
  * What says a file is the form `code`: undefined if nothing does.
@@ -37,23 +41,23 @@ export type NamedBy = "text" | "link";
  * link picked wrongly isn't let through by its file alone.
  *
  * The link alone does only for a file with no words to read at all, such as
- * a scan (`opening` is empty): the link has to be `trusted` (see
+ * a scan (`words.from` is "none"): the link has to be `trusted` (see
  * `VERY_SURE`), and its words have to print the whole code. A file whose
  * words don't name the form is never the form, whatever links it.
  */
 export function namedBy(
   code: string,
-  opening: string,
+  words: Words,
   linkedAs = "",
   trusted = false,
 ): NamedBy | undefined {
-  if (!opening) {
+  if (words.from === "none") {
     return trusted && namesForm(code, linkedAs) ? "link" : undefined;
   }
   const says =
-    namesForm(code, opening) ||
-    (carriesNumber(code, linkedAs) && carriesNumber(code, opening));
-  return says ? "text" : undefined;
+    namesForm(code, words.opening) ||
+    (carriesNumber(code, linkedAs) && carriesNumber(code, words.opening));
+  return says ? words.from : undefined;
 }
 
 /** Larger than any form we'd fill, small enough to hold in memory. */

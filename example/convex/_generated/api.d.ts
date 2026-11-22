@@ -64,6 +64,7 @@ import type * as easygov_forms_open from "../easygov/forms/open.js";
 import type * as easygov_forms_pdf from "../easygov/forms/pdf.js";
 import type * as easygov_forms_sites from "../easygov/forms/sites.js";
 import type * as easygov_forms_sources from "../easygov/forms/sources.js";
+import type * as easygov_forms_words from "../easygov/forms/words.js";
 import type * as easygov_hash from "../easygov/hash.js";
 import type * as easygov_limits from "../easygov/limits.js";
 import type * as easygov_operators from "../easygov/operators.js";
@@ -178,6 +179,7 @@ declare const fullApi: ApiFromModules<{
   "easygov/forms/pdf": typeof easygov_forms_pdf;
   "easygov/forms/sites": typeof easygov_forms_sites;
   "easygov/forms/sources": typeof easygov_forms_sources;
+  "easygov/forms/words": typeof easygov_forms_words;
   "easygov/hash": typeof easygov_hash;
   "easygov/limits": typeof easygov_limits;
   "easygov/operators": typeof easygov_operators;

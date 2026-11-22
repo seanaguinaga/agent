@@ -98,8 +98,25 @@ export const vFormFacts = v.object({
   expired: v.optional(v.boolean()),
 });
 
+/** A file's words, and where they were read from: see `words.ts`. */
+export const vWords = v.union(
+  v.object({
+    from: v.union(v.literal("text"), v.literal("xfa")),
+    opening: v.string(),
+  }),
+  v.object({
+    from: v.literal("none"),
+    why: v.literal("noReader"),
+    note: v.string(),
+  }),
+);
+
 /** What says a file is a form: see `namedBy` in `sources.ts`. */
-export const vNamedBy = v.union(v.literal("text"), v.literal("link"));
+export const vNamedBy = v.union(
+  v.literal("text"),
+  v.literal("xfa"),
+  v.literal("link"),
+);
 
 /** A link on a page: where it goes, the page's words for it, and its kind. */
 export const vPageLink = v.object({
@@ -120,7 +137,7 @@ export const vPageLink = v.object({
 const fileAnswer = {
   outcome: v.literal("file"),
   sha256: v.string(),
-  opening: v.string(),
+  words: vWords,
   facts: vReadFacts,
   editionId: v.optional(v.id("formEditions")),
   etag: v.optional(v.string()),
@@ -326,7 +343,17 @@ export default {
    */
   formAddresses: defineTable(
     v.union(
-      v.object({ ...addressRow, ...fileAnswer }),
+      v.object({
+        ...addressRow,
+        ...fileAnswer,
+        /**
+         * A row kept before files had `words` has only its `opening`. Make
+         * `words` required and drop `opening` once `wordsFromOpening` has
+         * run everywhere.
+         */
+        words: v.optional(vWords),
+        opening: v.optional(v.string()),
+      }),
       v.object({ ...addressRow, ...pageAnswer }),
       v.object({ ...addressRow, ...failedAnswer }),
     ),

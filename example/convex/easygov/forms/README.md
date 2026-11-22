@@ -76,16 +76,19 @@ doesn't allow filling, the form is refused and says why.
 
 ## Reading a form's identity
 
-What says a file is the form is kept with the answer (`namedBy` in
-`sources.ts`), through to the packet's form:
+A file's words are asked for in one place, and kept with where they were read
+from (`Words` in `words.ts`; the plan is in [WORDS.md](./WORDS.md)). What says a
+file is the form is kept with the answer (`namedBy` in `sources.ts`), through to
+the packet's form: the source of the words that name it, or the link.
 
 - **Its text** (`"text"`). Its own words name the form (`namesForm`): those of
   the first page that has any, read by pdfjs.
-  - **XFA.** A form drawn only by XFA (Canada's IMM 5257) shows every reader but
-    Adobe's a single "Please wait..." page. Its words are in its XFA template
-    and data, and pdfjs reads them from there (`enableXfa`) as the pages they
-    make. They are used like any page's: for which form it is, and its revision,
-    language and expiry. No dependency was added.
+- **Its XFA** (`"xfa"`). A form drawn only by XFA (Canada's IMM 5257) shows
+  every reader but Adobe's a single "Please wait..." page. Its words are in its
+  XFA template and data, and pdfjs reads them from there (`enableXfa`) as the
+  pages they make, and says it did (`isPureXfa`). They are used like any page's:
+  for which form it is, and its revision, language and expiry. No dependency was
+  added.
   - **An XFA form can't be filled.** It has no fields a PDF library can set, and
     no page to draw on. It is found, and confirmed where its link is, with no
     places: the person completes it by hand, in Adobe's reader. Filling XFA
@@ -114,8 +117,8 @@ page links it. Nothing else is known of it, and it is treated so:
 - **Later checks.** The pack keeps `namedBy`, so its weekly check accepts the
   address only while the file there still has no words.
 
-Not yet: reading image-only pages by OCR. Such a file would then name itself.
-The plan, its stages and what has landed: [WORDS.md](./WORDS.md).
+Not yet: reading image-only pages by OCR (stage 2 in [WORDS.md](./WORDS.md)).
+Such a file would then name itself.
 
 ## Mapping
 
@@ -201,6 +204,7 @@ that work: [VOUCHING.md](VOUCHING.md).
 | `schema.ts`  | The registry, editions, targets and mappings                                |
 | `data.ts`    | Registry and edition queries, saving a mapping, publishing                  |
 | `sources.ts` | Pure: the ways to get a form's bytes, tried in order                        |
+| `words.ts`   | Pure: a file's words, and where they were read from (see `WORDS.md`)        |
 | `open.ts`    | In Node: read what a protected file allows, and open it if it may be filled |
 | `browser.ts` | In Node: open an address in a hosted browser, collect the file              |
 | `actions.ts` | In Node: fetch from the source, fill for a case                             |

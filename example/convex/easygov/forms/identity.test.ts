@@ -13,6 +13,7 @@ import {
   namedBy,
   sameAddress,
 } from "./sources";
+import type { Words } from "./words";
 
 describe("an address", () => {
   test("is one place whatever its host's case or fragment", () => {
@@ -152,6 +153,8 @@ describe("a page that lists forms", () => {
 });
 
 describe("a file the authority links as the form", () => {
+  const text = (opening: string): Words => ({ from: "text", opening });
+  const scan: Words = { from: "none", why: "noReader", note: "" };
   const renamed =
     "Form SSA-561 (08-2025) UF Discontinue Prior Editions Social Security Administration REQUEST FOR RECONSIDERATION";
   const heading =
@@ -159,19 +162,19 @@ describe("a file the authority links as the form", () => {
 
   test("is the form when the page's words and the file both carry its number", () => {
     // Renamed: the file no longer prints the code as it was asked for.
-    expect(namedBy("SSA-561-U2", renamed)).toBeUndefined();
-    expect(namedBy("SSA-561-U2", renamed, heading)).toBe("text");
+    expect(namedBy("SSA-561-U2", text(renamed))).toBeUndefined();
+    expect(namedBy("SSA-561-U2", text(renamed), heading)).toBe("text");
   });
 
   test("is not let through by its file alone, or by the page alone", () => {
     // Words that don't name the form: the link was chosen by its file name.
-    expect(namedBy("SSA-561-U2", renamed, "English PDF")).toBeUndefined();
+    expect(namedBy("SSA-561-U2", text(renamed), "English PDF")).toBeUndefined();
     // The page names the form, but the file is some other document.
     expect(
-      namedBy("SSA-561-U2", "Form SSA-827 (06-2024)", heading),
+      namedBy("SSA-561-U2", text("Form SSA-827 (06-2024)"), heading),
     ).toBeUndefined();
     expect(
-      namedBy("SSA-561-U2", "Form SSA-5610 (08-2025)", heading),
+      namedBy("SSA-561-U2", text("Form SSA-5610 (08-2025)"), heading),
     ).toBeUndefined();
   });
 
@@ -179,26 +182,28 @@ describe("a file the authority links as the form", () => {
     expect(carriesNumber("DWC 1", "page 1 of 4")).toBe(false);
     // A letter glued to the number is another form.
     expect(carriesNumber("I-864", "Form I-864A")).toBe(false);
-    expect(namedBy("DWC 1", "DWC 1 (Rev. 1/2016)", "Claim form")).toBe("text");
+    expect(namedBy("DWC 1", text("DWC 1 (Rev. 1/2016)"), "Claim form")).toBe(
+      "text",
+    );
   });
 
   // The UK's V62 is a scan: nothing on it can be read.
   const v62 = "Application for a vehicle registration certificate (V62)";
 
   test("with no words to read, is the form on a trusted link that prints its code: by the link alone", () => {
-    expect(namedBy("V62", "", v62, true)).toBe("link");
-    expect(namedBy("V62", "", v62)).toBeUndefined();
-    expect(namedBy("V62", "", "Download the form", true)).toBeUndefined();
-    expect(namedBy("V62", "", "Form V62B", true)).toBeUndefined();
+    expect(namedBy("V62", scan, v62, true)).toBe("link");
+    expect(namedBy("V62", scan, v62)).toBeUndefined();
+    expect(namedBy("V62", scan, "Download the form", true)).toBeUndefined();
+    expect(namedBy("V62", scan, "Form V62B", true)).toBeUndefined();
     // The number alone lets a renamed form through only with its file's.
-    expect(namedBy("SSA-561-U2", "", heading, true)).toBeUndefined();
+    expect(namedBy("SSA-561-U2", scan, heading, true)).toBeUndefined();
   });
 
   test("with words that name another form, is never the form, however trusted its link", () => {
-    expect(namedBy("V62", "V5C Registration certificate", v62, true)).toBe(
-      undefined,
-    );
-    expect(namedBy("V62", "V62 Application", v62, true)).toBe("text");
+    expect(
+      namedBy("V62", text("V5C Registration certificate"), v62, true),
+    ).toBe(undefined);
+    expect(namedBy("V62", text("V62 Application"), v62, true)).toBe("text");
   });
 
   test("prints its edition beside its code, and the later edition is known", () => {

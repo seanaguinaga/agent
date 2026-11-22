@@ -17,7 +17,7 @@ const served = (t: T, name: string, sha256 = name, revision = 201601) =>
     answer: {
       outcome: "file",
       sha256,
-      opening: "DWC 1",
+      words: { from: "text", opening: "DWC 1" },
       facts: { pages: 1, places: 3, language: "en", revision },
     },
   });
@@ -98,4 +98,36 @@ test("how an address answered is kept once, and failures are counted in a row", 
   expect(
     await t.run((ctx) => ctx.db.query("formAddresses").collect()),
   ).toHaveLength(1);
+});
+
+test("a file kept before it had words gets them from its opening: a scan as never read", async () => {
+  const t = initConvexTest();
+  const old = (key: string, opening: string) => ({
+    key,
+    url: `${dir}/${key}.pdf`,
+    checkedAt: 1,
+    failures: 0,
+    outcome: "file" as const,
+    sha256: key,
+    opening,
+    facts: { pages: 1, places: 0, language: "unknown" as const },
+  });
+  await t.run(async (ctx) => {
+    await ctx.db.insert("formAddresses", old("form", "DWC 1"));
+    await ctx.db.insert("formAddresses", old("scan", ""));
+  });
+  const text = { from: "text", opening: "DWC 1" };
+  const unread = { from: "none", why: "noReader" };
+  // Before the migration has run, each is already read as it will be kept.
+  expect(await t.query(data.addressOf, { key: "form" })).toMatchObject({
+    words: text,
+  });
+  expect(await t.mutation(data.keepFile, { sha256: "scan" })).toMatchObject({
+    words: unread,
+  });
+
+  await t.mutation(data.wordsFromOpening, { cursor: null });
+  const rows = await t.run((ctx) => ctx.db.query("formAddresses").collect());
+  expect(rows).toMatchObject([{ words: text }, { words: unread }]);
+  expect(rows.some((row) => "opening" in row)).toBe(false);
 });

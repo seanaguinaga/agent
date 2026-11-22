@@ -26,7 +26,9 @@ import {
   vReadFacts,
   vTarget,
   vVia,
+  vWords,
 } from "./schema";
+import type { Words } from "./words";
 
 /** Adds a form to the registry, or changes where one is fetched from. */
 export const createForm = mutation({
@@ -470,6 +472,17 @@ const addressRow = (ctx: QueryCtx, key: string) =>
     .withIndex("by_key", (q) => q.eq("key", key))
     .unique();
 
+/**
+ * A file's words as they are kept now. A row from before `words` has only
+ * its `opening`: those were its own words, and with none it was never read.
+ * Remove with `opening`, once `wordsFromOpening` has run everywhere.
+ */
+const wordsOf = (file: { words?: Words; opening?: string }): Words =>
+  file.words ??
+  (file.opening
+    ? { from: "text", opening: file.opening }
+    : { from: "none", why: "noReader", note: "Kept before scans were read." });
+
 /** How an address last answered, if it has been asked. */
 export const addressOf = internalQuery({
   args: { key: v.string() },
@@ -478,7 +491,9 @@ export const addressOf = internalQuery({
     const row = await addressRow(ctx, key);
     if (!row) return null;
     const { _id, _creationTime, key: _key, chosen: _chosen, ...held } = row;
-    return held;
+    if (held.outcome !== "file") return held;
+    const { opening: _old, ...file } = held;
+    return { ...file, words: wordsOf(held) };
   },
 });
 
@@ -541,7 +556,7 @@ export const keepFile = internalMutation({
     editionId: v.optional(v.id("formEditions")),
     /** True if this call kept it: otherwise the caller's copy isn't needed. */
     kept: v.boolean(),
-    opening: v.optional(v.string()),
+    words: v.optional(vWords),
     facts: v.optional(vReadFacts),
   }),
   handler: async (ctx, { sha256, fresh }) => {
@@ -556,7 +571,7 @@ export const keepFile = internalMutation({
     // Only a file is held by its hash.
     const known =
       read?.outcome === "file"
-        ? { opening: read.opening, facts: read.facts }
+        ? { words: wordsOf(read), facts: read.facts }
         : {};
     if (existing || !fresh) {
       return { editionId: existing?._id, kept: false, ...known };
@@ -682,6 +697,37 @@ export const clearChosenAt = internalMutation({
         {
           cursor: continueCursor,
         },
+      );
+    }
+    return null;
+  },
+});
+
+/**
+ * Turns each held file's old `opening` into its `words`, a batch at a time,
+ * so the schema can drop `opening`. Run once per deployment:
+ *   npx convex run easygov/forms/data:wordsFromOpening '{"cursor":null}'
+ */
+export const wordsFromOpening = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
+  returns: v.null(),
+  handler: async (ctx, { cursor }) => {
+    const { page, isDone, continueCursor } = await ctx.db
+      .query("formAddresses")
+      .paginate({ numItems: 50, cursor });
+    for (const row of page) {
+      if (row.outcome === "file" && !row.words) {
+        await ctx.db.patch("formAddresses", row._id, {
+          words: wordsOf(row),
+          opening: undefined,
+        });
+      }
+    }
+    if (!isDone) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.easygov.forms.data.wordsFromOpening,
+        { cursor: continueCursor },
       );
     }
     return null;

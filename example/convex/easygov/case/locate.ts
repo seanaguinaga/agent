@@ -965,6 +965,7 @@ export async function compilePacketForms(
 function unfilled({ backed, namedBy }: ChosenFile): string {
   switch (namedBy) {
     case "text":
+    case "xfa":
       return backed
         ? "EasyGov found the official form but could not fill it in."
         : "EasyGov found a file for it but could not fill it in.";

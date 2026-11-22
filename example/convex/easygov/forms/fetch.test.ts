@@ -29,6 +29,7 @@ import {
   xfaPdf,
 } from "./network.testkit";
 import { inspectPdf } from "./pdf";
+import { wordsIn } from "./words";
 
 vi.mock("../../modelsForDemo", async () =>
   (await import("../case/cases.testkit")).mockModels(),
@@ -105,8 +106,11 @@ const readLinks = (
 ) => t.action(actions.readLinks, { url, way: "request", spend: true, ...more });
 
 test("the generated form is read as a form: its words, its place to write and its revision", async () => {
-  const { opening, targets, pages } = await inspectPdf(ssa561);
-  expect(opening).toContain("Form SSA-561 (08-2025)");
+  const { words, xfa, targets, pages } = await inspectPdf(ssa561);
+  expect(wordsIn(words, xfa)).toEqual({
+    from: "text",
+    opening: expect.stringContaining("Form SSA-561 (08-2025)"),
+  });
   expect(targets).toHaveLength(1);
   expect(pages).toBe(1);
 });
@@ -532,7 +536,7 @@ describe("whether a file is the form", () => {
       { outcome: "file", facts: { places: 1 } },
     ]);
     expect(after.addresses[0]).toMatchObject({
-      opening: expect.stringContaining("SSA-827"),
+      words: { from: "text", opening: expect.stringContaining("SSA-827") },
     });
   });
 
@@ -556,6 +560,7 @@ describe("whether a file is the form", () => {
 
     expect(await fetchFile(t, address, { code: "IMM 5257" })).toMatchObject({
       ok: true,
+      namedBy: "xfa",
       facts: { pages: 1, places: 0, language: "en", revision: 202309 },
     });
     const [edition] = (await kept(t)).editions;
@@ -590,7 +595,12 @@ describe("whether a file is the form", () => {
       facts: { pages: 1, places: 0, language: "unknown" },
     });
     expect(answer.ok && answer.facts).not.toHaveProperty("revision");
-    expect((await kept(t)).editions).toHaveLength(1);
+    const after = await kept(t);
+    expect(after.editions).toHaveLength(1);
+    // Nothing read it: that is why it has no words, kept with the file.
+    expect(after.addresses).toMatchObject([
+      { words: { from: "none", why: "noReader" } },
+    ]);
     // Kept, it is still no form to a link that isn't trusted.
     expect(await fetchFile(t, address, v62)).toMatchObject({
       ok: false,

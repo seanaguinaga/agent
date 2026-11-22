@@ -68,6 +68,7 @@ import {
   stands,
   type PageLink,
 } from "./sources";
+import { openingOf, wordsIn, type Words } from "./words";
 
 // --- Asking an official address ---------------------------------------------
 //
@@ -320,9 +321,9 @@ async function linksWorthKeeping(ctx: ActionCtx, html: string, page: string) {
 }
 
 /** What a file says about itself now: as read, and whether it has expired. */
-const factsNow = (opening: string, facts: ReadFacts): FormFacts => ({
+const factsNow = (words: Words, facts: ReadFacts): FormFacts => ({
   ...facts,
-  ...(expiredBy(opening, Date.now()) && { expired: true }),
+  ...(expiredBy(openingOf(words), Date.now()) && { expired: true }),
 });
 
 /**
@@ -365,22 +366,22 @@ async function ask(
     });
   /** A file as the form it is wanted as. Undefined: it has yet to be kept. */
   const asFile = (file: {
-    opening: string;
+    words: Words;
     facts: ReadFacts;
     editionId?: Id<"formEditions">;
   }): Asked | undefined => {
     if (!form) return no("unusable", "It isn't a web page.");
-    const { editionId, opening } = file;
-    const named = namedBy(form.code, opening, form.linkedAs, form.trusted);
+    const { editionId, words } = file;
+    const named = namedBy(form.code, words, form.linkedAs, form.trusted);
     if (!named) {
       return no(
         "otherForm",
-        opening
-          ? `The file doesn't name ${form.code}.`
-          : `The file has no words to read, and no trusted link names it ${form.code}.`,
+        words.from === "none"
+          ? `The file has no words to read, and no trusted link names it ${form.code}.`
+          : `The file doesn't name ${form.code}.`,
       );
     }
-    const facts = factsNow(opening, file.facts);
+    const facts = factsNow(words, file.facts);
     return editionId
       ? { ok: true, file: { editionId, facts, namedBy: named }, cost }
       : undefined;
@@ -511,17 +512,17 @@ async function ask(
   const known = await ctx.runMutation(internal.easygov.forms.data.keepFile, {
     sha256,
   });
-  if (known.opening !== undefined && known.facts) {
+  if (known.words && known.facts) {
     // The same bytes as before: nothing to read again.
-    const { opening, facts } = known;
-    const answer = asFile({ opening, facts, editionId: known.editionId });
+    const { words, facts } = known;
+    const answer = asFile({ words, facts, editionId: known.editionId });
     if (answer) {
       await keep({
         outcome: "file",
         sha256,
         etag,
         lastModified,
-        opening,
+        words,
         facts,
         editionId: known.editionId,
       });
@@ -540,19 +541,25 @@ async function ask(
     await keep({ outcome: "unusable", note: why });
     return no("unusable", why);
   }
-  const { pages, edition, fillable, targets, opening } =
+  const { pages, edition, fillable, targets, ...read } =
     await inspectPdf(ready);
+  const own = wordsIn(read.words, read.xfa);
+  const words: Words =
+    own === "unread"
+      ? { from: "none", why: "noReader", note: "Nothing reads a scan yet." }
+      : own;
+  const opening = openingOf(words);
   const facts: ReadFacts = {
     pages,
-    // A place is known by the words beside it: with none to read, no place.
-    places: opening ? targets.length : 0,
+    // A place is known by the words printed beside it on its page.
+    places: words.from === "text" ? targets.length : 0,
     language: languageOf(opening),
     revision: revisionOf(`${edition ?? ""} ${opening}`),
   };
   // Whatever way it came, it has to be the form it's meant to be. A file
   // that isn't is still known for what it is, and isn't kept.
   let { editionId } = known;
-  if (namedBy(form.code, opening, form.linkedAs, form.trusted) && !editionId) {
+  if (namedBy(form.code, words, form.linkedAs, form.trusted) && !editionId) {
     // What's kept is the form ready to fill. Its identity is still the hash
     // of the bytes as the authority published them.
     const storageId = await ctx.storage.store(
@@ -585,12 +592,12 @@ async function ask(
     sha256,
     etag,
     lastModified,
-    opening,
+    words,
     facts,
     editionId,
   });
   // Not the form, or kept just now: either way there is an answer.
-  return asFile({ opening, facts, editionId })!;
+  return asFile({ words, facts, editionId })!;
 }
 
 const vFileAnswer = v.union(

@@ -9,9 +9,16 @@ it found. Paths are under `example/convex/easygov`.
 
 ## Stages
 
-- [ ] **1. `Words`, with no OCR.** `wordsIn`, `vWords`, `namedBy` over words,
-      the migration. Proof: every existing test passes; a scan is
-      `none/noReader` and is still named by its link.
+- [x] **1. `Words`, with no OCR.** `wordsIn`, `vWords`, `namedBy` over words,
+      the migration. Every existing test passes; a scan is `none/noReader` and
+      is still named by its link.
+  - `"xfa"` has its own `from`: pdfjs says a form is drawn only by XFA
+    (`isPureXfa`), at no cost. A form named by its XFA is never compiled.
+  - Rows kept before are read as they will be migrated (`wordsOf` in
+    `forms/data.ts`), so nothing waits on the migration. One that was XFA
+    becomes `"text"`: its row can't say. Run once per deployment, then make
+    `words` required and drop `opening` and `wordsOf`:
+    `npx convex run easygov/forms/data:wordsFromOpening '{"cursor":null}'`
 - [ ] **2. `transcribe`, with two readers.** Gemini 2.5 Flash through the
       gateway, and Google Document AI. Proof: tests for each reader and each
       outcome; a scan named by `"ocr"`; a held scan transcribed once; the

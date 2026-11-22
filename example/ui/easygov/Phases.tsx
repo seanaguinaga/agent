@@ -237,7 +237,12 @@ export function Phases({ c, guestKey }: { c: CaseView; guestKey?: string }) {
                     className={`ml-auto text-xs text-blue-700 ${state === "working" ? "animate-pulse" : ""}`}
                     role="status"
                   >
-                    {step.doing}
+                    {/* A scan being read says so in the header too, so it
+                        shows with the phase folded. */}
+                    {(c.run?.state === "running" &&
+                      c.run.reading?.at(-1) &&
+                      readingLine(c.run.reading.at(-1)!)) ||
+                      step.doing}
                     {state === "working" && "…"}
                   </span>
                 )}

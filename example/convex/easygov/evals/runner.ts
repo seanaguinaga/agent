@@ -303,11 +303,14 @@ const run: Record<
     return { ...gradeResearch({ domain, facts }, notes), output: notes };
   },
 
+  // The forms step, for the cases outside the US.
+  world: (...args) => run.forms(...args),
+
   // A goal to the forms it needs: the request is read, the process
   // researched, and each form located, as a proposal would. The draft and
   // the form mapping are left out: neither decides which forms come back.
   async forms(ctx, caseId, threadId) {
-    const { goal, expect } = find(cases.forms, caseId);
+    const { goal, expect } = find([...cases.forms, ...cases.world], caseId);
     const request = await readRequest(ctx, threadId, goal);
     const jurisdiction = parseJurisdiction(request.jurisdiction ?? "");
     if (!jurisdiction) throw new Error("No place was read from the goal");

@@ -84,7 +84,10 @@ function ownerOf(
         body: organization,
       };
     default:
-      throw new Error(`The register has a new kind of domain: ${kind}.`);
+      // A kind the register didn't have isn't guessed at: the domain is left
+      // out, and the rest of the register is still kept.
+      console.warn("The register has a new kind of domain", kind);
+      return undefined;
   }
 }
 

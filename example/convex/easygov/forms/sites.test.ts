@@ -66,10 +66,11 @@ test("the register is read for whose each domain is, and never its contacts", ()
     // A state's domain in no state is nobody's: it is left out.
   ]);
   expect(JSON.stringify(sites)).not.toContain("@");
-  // A kind of domain the register didn't have isn't guessed at.
-  expect(() =>
+  // A kind of domain the register didn't have isn't guessed at: that domain
+  // is left out, and the rest is kept.
+  expect(
     parseRegister(`${header}\nx.gov,Regional,Some Body,,,CA,`),
-  ).toThrow("new kind of domain");
+  ).toEqual([]);
 });
 
 describe("confirms", () => {

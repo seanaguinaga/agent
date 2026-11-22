@@ -8,7 +8,6 @@ import { api, internal } from "../../_generated/api";
 import type { Id } from "../../_generated/dataModel";
 import { initConvexTest } from "../../setup.test";
 import { read, resetCases, send, type T } from "../case/cases.testkit";
-import { isOfficialHost } from "./sources";
 import { inspectPdf } from "./pdf";
 
 vi.mock("../../modelsForDemo", async () =>
@@ -74,16 +73,6 @@ async function recorded(t: T, bytes = original) {
   ];
   return { formId, editionId, mapping, targets };
 }
-
-test("a form is fetched only from its authority's own site", () => {
-  expect(isOfficialHost("https://www.irs.gov/pub/irs-pdf/f8822.pdf")).toBe(
-    true,
-  );
-  expect(isOfficialHost("https://www.dmv.ca.gov/portal/x.pdf")).toBe(true);
-  expect(isOfficialHost("http://www.irs.gov/f.pdf")).toBe(false);
-  expect(isOfficialHost("https://irs.gov.example.com/f.pdf")).toBe(false);
-  expect(isOfficialHost("https://example.com/f8822.pdf")).toBe(false);
-});
 
 describe("an edition", () => {
   test("is known by its bytes: the same hash again is not a new edition", async () => {

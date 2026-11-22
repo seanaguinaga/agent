@@ -12,6 +12,8 @@ export type Cost = {
   /** Calls to the search model, and to the decision model. */
   searches: number;
   decisions: number;
+  /** Sites on a government's suffix judged whose they are. */
+  vouches: number;
   /** Official pages requested for the links they carry. */
   pages: number;
   /** Bytes of form files downloaded. */
@@ -44,6 +46,7 @@ export function budget(limits: Limits = {}): Budget {
     browser: 0,
     searches: 0,
     decisions: 0,
+    vouches: 0,
     pages: 0,
     bytes: 0,
     reused: 0,

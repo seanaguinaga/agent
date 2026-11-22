@@ -1,6 +1,7 @@
 // The forms registry and its editions: what the test pages and the fill
 // action read and write. The PDF work itself is in `actions.ts`.
-import { addressKey, bareCode, isOfficialHost, sameFormCode } from "./sources";
+import { mayRead, siteOn } from "./sites";
+import { addressKey, bareCode, sameFormCode } from "./sources";
 import { requireOperator } from "../operators";
 import { ConvexError, v, type Infer } from "convex/values";
 import { internal } from "../../_generated/api";
@@ -48,10 +49,12 @@ export const createForm = mutation({
     if (!code.trim() || !title.trim()) {
       throw new ConvexError("A form needs a code and a title.");
     }
-    if (![sourceUrl, ...(alternateUrls ?? [])].every(isOfficialHost)) {
-      throw new ConvexError(
-        "A form is fetched from its authority's own https site (.gov).",
-      );
+    for (const url of [sourceUrl, ...(alternateUrls ?? [])]) {
+      if (!mayRead(url, await siteOn(ctx, url, Date.now()))) {
+        throw new ConvexError(
+          "A form is fetched from a government's own https site.",
+        );
+      }
     }
     const form = {
       code: code.trim(),

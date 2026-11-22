@@ -127,8 +127,9 @@ Each item is replaced, never kept beside the new one:
 - A compromised government domain isn't detected, as with `.gov` today.
 - A government page linking an old copy on its own site isn't caught by the
   host. Expiry and latest-revision ranking remain the defence.
-- Unverified: whether `.gob.mx` and `.gouv.sn` are restricted, and whether the
-  UK publishes its `.gov.uk` names.
+- Unverified: whether `.gouv.sn` is restricted, and whether the UK publishes its
+  `.gov.uk` names.
+- A public name that resolves to a private address isn't detected.
 
 ## Stages
 
@@ -173,9 +174,57 @@ Each stage is one commit, with its proof.
     (where it is, that it has loaded, its link count) is the same on two polls,
     or when the time is up. Each page read through the browser so waits one poll
     longer, 2 seconds.
-- [ ] **2. Suffixes, owner judgment, `mayRead`.** `forms/governments.ts` holds
+- [x] **2. Suffixes, owner judgment, `mayRead`.** `forms/governments.ts` holds
       each country's suffixes, root and hand lines. _Proof:_ the 12 measured
       chains as fixtures, counting how many confirm with no link vouch.
+  - _Measured (`chains.test.ts`):_ 11 of the 12 chains are read to the end and
+    confirmed. Ireland's is not: gov.ie links revenue.ie, an open name nothing
+    vouches for yet, so only its front page is read (one link from gov.ie) and
+    the form, three links further on, is neither reached nor confirmed. Four
+    sites were judged, once each: `www.gov.uk`, `service.gov.uk`, `ird.govt.nz`
+    and `passportindia.gov.in`.
+  - _Suffixes cited:_ `.gov`, `.mil`, `.gov.uk`, `.gov.au`, `.govt.nz`,
+    `.gouv.fr`, `.gov.in` and `.gob.mx`, each with its page in `governments.ts`.
+    `.mil` and `.gouv.fr` have one owner, and are never judged. Two citations
+    are weaker than the rest:
+    - `.mil`: the registry's policy as RFC 1956, written by the DoD NIC. DoD
+      Instruction 8410.01, on esd.whs.mil, refuses plain requests.
+    - `.govt.nz`: the government's moderation policy refuses plain requests, so
+      it was read as the Wayback Machine's copy of 2021. InternetNZ's .nz Rules
+      of March 2026, read directly, say the government's moderator decides who
+      may use `.govt.nz`.
+  - _Not cited, so not listed:_ `.gouv.sn` (nic.sn serves no text to a plain
+    request). Not looked for: `.gc.ca`, `.gov.ie`, and the German states'.
+  - _Changed from the plan:_
+    - `Site` has a third shape beside vouched and declined: `unjudged`, a site
+      on a government's suffix that nobody has judged yet. It is never kept: it
+      is what a lookup gives. It may be read, and it confirms nothing.
+    - Whose a site is is judged when a form's link is to be confirmed: the site
+      of the page and the site of the file, not every site passed through. A
+      judgment below 0.8 is declined as unsure. Where the model gives no answer
+      nothing is kept, and the site is asked about again.
+    - A local body is judged without its region, and its body is its domain. So
+      a suffix site judged local confirms nothing yet: a local packet needs the
+      region. The register's local bodies are unaffected.
+    - A country's regions are listed in `governments.ts` as ISO 3166-2 codes.
+      The US has none: the register says whose each `.gov` domain is, so a
+      `.gov` site it doesn't list can only be judged national or local.
+    - `root` is only recorded, and checked to be a national hand line. Nothing
+      starts from it until stage 3.
+    - The site's title and footer come from one plain request for its front
+      page, paid for by the vouch. A site that refuses plain requests is judged
+      on its name and the linking page's words alone.
+    - The register's row for a domain is never replaced by a judgment, and only
+      register rows are forgotten when the register drops a domain.
+  - _Looser than before, on purpose:_ every link on a government's page is kept,
+    and one redirect off a government's site is followed. Both were refused
+    before. Nothing reached that way confirms.
+  - _Tighter than before:_ an address on a private or local name, or an IP
+    address, is never read. A file an earlier case chose on nobody's site is not
+    read again as a remembered lead: only as a page links it.
+  - _To do once before deploying:_ the `sites` rows written by stage 0 have no
+    `state`, and the `by_at` index is replaced. Clear the `sites` table, deploy,
+    then run `npx convex run easygov/forms/sites:importSites`.
 - [ ] **3. Measure.** Run the 15 forms through the app's own link chooser (the
       decision model), with the browser. This is paid. If the small model
       reaches few forms, finding is the bottleneck, not confirming.

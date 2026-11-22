@@ -1,19 +1,24 @@
-// Whose a government's site is. Every vouched site records its owner: a
-// national government, a region of one, or a local body (see VOUCHING.md).
-// A site is vouched by CISA's public register of .gov domains, which says
-// who each belongs to, or by a line kept by hand (see `HAND`). That decides,
-// with nobody's approval, whether a page that links a form and the file it
-// links are the packet's government's own (see `confirms`).
+// Whose a government's site is, and what may be read. Every vouched site
+// records its owner: a national government, a region of one, or a local body
+// (see VOUCHING.md). A site is vouched by CISA's public register of .gov
+// domains, which says who each belongs to; by a suffix its country keeps for
+// government, with the owner judged once; or by a line kept by hand (see
+// `governments.ts`). That decides, with nobody's approval, whether a page
+// that links a form and the file it links are the packet's government's own
+// (see `confirms`), and which addresses are read at all (see `mayRead`).
 import { v, type Infer } from "convex/values";
-import { getDomain } from "tldts";
+import { getDomain, parse } from "tldts";
 import { internal } from "../../_generated/api";
 import {
   internalAction,
   internalMutation,
   internalQuery,
+  type ActionCtx,
+  type QueryCtx,
 } from "../../_generated/server";
-import { vOwner, vRegistered } from "./schema";
-import { handFor } from "./sources";
+import type { Decision } from "../decisions";
+import { governed, GOVERNMENTS } from "./governments";
+import { vDeclined, vHandKept, vOwner, vRegistered, vSuffixed } from "./schema";
 
 const REGISTER =
   "https://raw.githubusercontent.com/cisagov/dotgov-data/main/current-full.csv";
@@ -24,18 +29,164 @@ export type Owner = Infer<typeof vOwner>;
 /** A site as the register vouches for it. */
 type Registered = Infer<typeof vRegistered>;
 
+/** What is kept of a site: the register's word, or a judgment of whose. */
+const vKept = v.union(vRegistered, vSuffixed, vDeclined);
+type Judged = Infer<typeof vSuffixed> | Infer<typeof vDeclined>;
+
 /**
- * A site a government publishes from, whose it is, and what vouches for
- * that: an official register, or a line kept by hand with its evidence.
+ * A site as it stands. Vouched: a government publishes from it, and this is
+ * whose it is and what says so. Declined: it was judged a contractor's, or
+ * nobody could tell whose. Unjudged: its suffix says it is a government's,
+ * and nobody has yet judged which one's.
  */
-const vSite = v.object({
-  ...vRegistered.fields,
-  via: v.union(
-    vRegistered.fields.via,
-    v.object({ kind: v.literal("hand"), note: v.string() }),
-  ),
-});
+export const vSite = v.union(
+  ...vKept.members,
+  vHandKept,
+  v.object({
+    state: v.literal("unjudged"),
+    domain: v.string(),
+    country: v.string(),
+    suffix: v.string(),
+  }),
+);
 export type Site = Infer<typeof vSite>;
+type Unjudged = Extract<Site, { state: "unjudged" }>;
+
+/**
+ * The host of an address that could be read: https, on a public name (not
+ * an IP address, nor a private or local name), with no credentials, on the
+ * default port. Undefined for any other address.
+ */
+function publicHost(url: string): string | undefined {
+  try {
+    const { protocol, hostname, username, password, port } = new URL(url);
+    const { isIp, isIcann } = parse(hostname);
+    const open =
+      protocol === "https:" && !username && !password && !port && !isIp;
+    return open && isIcann ? hostname : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a site is a government's own: vouched, or on its suffix. */
+function governments(site: Site | undefined): boolean {
+  switch (site?.state) {
+    case "vouched":
+    case "unjudged":
+      return true;
+    case "declined":
+    case undefined:
+      return false;
+  }
+}
+
+/**
+ * Whether an address may be read: a public https address (see `publicHost`)
+ * that is on a government's own site, or that a page on one links or
+ * redirects to. `site` is the site the address is on, and `from` the site of
+ * the page it was reached from, where it was reached from one. So an
+ * address only a search cited, on nobody's site, is never read, and nor is
+ * anything two steps from a government's page.
+ */
+export function mayRead(url: string, site?: Site, from?: Site): boolean {
+  return !!publicHost(url) && (governments(site) || governments(from));
+}
+
+/** Below this, a judgment of whose a site is is a guess: it vouches nothing. */
+const SURE = 0.8;
+
+/** Whose a site on a shared suffix can be judged to be. */
+type Verdict =
+  | "national"
+  | "local"
+  | "contractor"
+  | "unsure"
+  | `region:${string}`;
+
+/**
+ * What a site says of itself (its title and footer), and what the page that
+ * links it calls the link: the evidence for whose it is.
+ */
+export type Evidence = {
+  label?: string;
+  under?: string;
+  title?: string;
+  footer?: string;
+};
+
+/** The question of whose a site on a government's suffix is. */
+export function ownerQuestion(site: Unjudged, evidence: Evidence) {
+  const { domain, country, suffix } = site;
+  const place = country.toUpperCase();
+  const regions =
+    GOVERNMENTS.find((each) => each.country === country)?.regions?.split(" ") ??
+    [];
+  const criteria: Record<Verdict, string> = {
+    national: `The national government of ${place}, or a department or agency of it.`,
+    ...Object.fromEntries(
+      regions.map((code) => [
+        `region:${code}`,
+        `The government of the region ${place}-${code.toUpperCase()} (ISO 3166-2), or an agency of it.`,
+      ]),
+    ),
+    local: "A local body: a city, county, district or council.",
+    contractor:
+      "A contractor, a vendor, or anyone else who is not a government.",
+    unsure: "It can't be told from this, or it is a region not listed.",
+  };
+  return {
+    state: { site: domain, ...evidence },
+    instructions:
+      `The site ${domain} is on .${suffix}, which ${place} keeps for its governments. ` +
+      "Whose site is it? Go by what the site says of itself, and by what the page that links it calls it. " +
+      "Choose unsure rather than guess.",
+    criteria,
+  };
+}
+
+/**
+ * What a judgment makes of a site: vouched as the government chosen, where
+ * the choice was sure; declined as a contractor's; declined as unsure where
+ * it was a guess. Nothing, where the model gave no answer: nothing is kept
+ * on no word at all. `name` is what the site calls itself.
+ */
+export function judged(
+  site: Unjudged,
+  name: string,
+  decided: Decision<Verdict> | undefined,
+): Judged | undefined {
+  if (!decided) return undefined;
+  const { domain, country, suffix } = site;
+  const declined = (why: "contractor" | "unsure") =>
+    ({ state: "declined", domain, why }) as const;
+  if ((decided.confidence ?? 0) < SURE) return declined("unsure");
+  const owned = (owner: Owner) =>
+    ({
+      state: "vouched",
+      domain,
+      name,
+      owner,
+      via: { kind: "suffix", suffix },
+    }) as const;
+  const { choice } = decided;
+  switch (choice) {
+    case "national":
+      return owned({ level: "national", country });
+    case "local":
+      // Which region it is in isn't asked: see VOUCHING.md.
+      return owned({ level: "local", country, body: domain });
+    case "contractor":
+    case "unsure":
+      return declined(choice);
+    default:
+      return owned({
+        level: "region",
+        country,
+        region: `${country}-${choice.slice("region:".length)}`,
+      });
+  }
+}
 
 /** The fields of one line of a CSV file, quotes and all. */
 function fields(line: string): string[] {
@@ -117,6 +268,7 @@ export function parseRegister(csv: string): Registered[] {
     if (!owner) return [];
     return [
       {
+        state: "vouched" as const,
         domain: name,
         name: row[suborganization]?.trim() || body,
         owner,
@@ -156,7 +308,7 @@ export function confirms(
   page: Site | undefined,
   file: Site | undefined,
 ): boolean {
-  if (!page || !file) return false;
+  if (page?.state !== "vouched" || file?.state !== "vouched") return false;
   const [a, b] = [page.owner, file.owner];
   return (
     governs(a, jurisdiction) &&
@@ -168,38 +320,80 @@ export function confirms(
 /** As many hosts as are looked up at once. */
 const MAX_HOSTS = 50;
 
+/** As long as a site stays declined before it is judged again. */
+const DECLINED_FOR = 30 * 24 * 60 * 60 * 1000;
+
 /**
- * The vouched site each of these hosts is on: its hand-kept line (see
- * `HAND`), or the register's row for its registrable domain, which the
- * Public Suffix List tells. A host on neither is left out.
+ * The site a host is on, as it stands: what its name says (see `governed`),
+ * or what is kept for its registrable domain, which the Public Suffix List
+ * tells. A site declined long ago is as if never judged. A host on nobody's
+ * site has none.
  */
+export async function siteOn(
+  ctx: QueryCtx,
+  url: string,
+  now: number,
+): Promise<Site | undefined> {
+  const host = publicHost(url);
+  if (!host) return undefined;
+  const named = governed(host);
+  if (named?.state === "vouched") return named;
+  const domain = getDomain(host);
+  const row =
+    domain &&
+    (await ctx.db
+      .query("sites")
+      .withIndex("by_domain", (q) => q.eq("domain", domain))
+      .unique());
+  if (!row || (row.state === "declined" && row.at < now - DECLINED_FOR)) {
+    return named;
+  }
+  const { _id, _creationTime, at: _at, ...site } = row;
+  return site;
+}
+
+/** The site each of these hosts is on, where it is on one: see `siteOn`. */
 export const sitesOf = internalQuery({
-  args: { hosts: v.array(v.string()) },
+  args: { hosts: v.array(v.string()), now: v.number() },
   returns: v.array(v.object({ host: v.string(), site: vSite })),
-  handler: async (ctx, { hosts }) => {
+  handler: async (ctx, { hosts, now }) => {
     const found = await Promise.all(
-      [...new Set(hosts)].slice(0, MAX_HOSTS).map(async (host) => {
-        const hand = handFor(host);
-        if (hand) return [{ host, site: hand }];
-        const domain = getDomain(host);
-        const row =
-          domain &&
-          (await ctx.db
-            .query("sites")
-            .withIndex("by_domain", (q) => q.eq("domain", domain))
-            .unique());
-        if (!row) return [];
-        const { _id, _creationTime, at: _at, ...site } = row;
-        return [{ host, site }];
+      hosts.slice(0, MAX_HOSTS).map(async (host) => {
+        const site = await siteOn(ctx, `https://${host}/`, now);
+        return site ? [{ host, site }] : [];
       }),
     );
     return found.flat();
   },
 });
 
-/** Keeps a batch of the register: new domains added, changed ones replaced. */
+/**
+ * The site each of these addresses is on, for an action: none for an
+ * address that isn't a public https one.
+ */
+export async function sitesAt(
+  ctx: Pick<ActionCtx, "runQuery">,
+  urls: string[],
+): Promise<(url: string) => Site | undefined> {
+  const hosts = [...new Set(urls.flatMap((url) => publicHost(url) ?? []))];
+  const found = await ctx.runQuery(internal.easygov.forms.sites.sitesOf, {
+    hosts,
+    now: Date.now(),
+  });
+  const sites = new Map(found.map(({ host, site }) => [host, site]));
+  return (url) => sites.get(publicHost(url) ?? "");
+}
+
+const registered = (site: { state: string; via?: { kind: string } }) =>
+  site.state === "vouched" && site.via?.kind === "register";
+
+/**
+ * Keeps what is known of some sites: a batch of the register, or a
+ * judgment. New domains are added and changed ones replaced, but the
+ * register's word is never replaced by a judgment.
+ */
 export const putSites = internalMutation({
-  args: { sites: v.array(vRegistered), at: v.number() },
+  args: { sites: v.array(vKept), at: v.number() },
   returns: v.null(),
   handler: async (ctx, { sites, at }) => {
     for (const site of sites) {
@@ -207,8 +401,10 @@ export const putSites = internalMutation({
         .query("sites")
         .withIndex("by_domain", (q) => q.eq("domain", site.domain))
         .unique();
-      if (row) await ctx.db.replace("sites", row._id, { ...site, at });
-      else await ctx.db.insert("sites", { ...site, at });
+      if (!row) await ctx.db.insert("sites", { ...site, at });
+      else if (registered(site) || !registered(row)) {
+        await ctx.db.replace("sites", row._id, { ...site, at });
+      }
     }
     return null;
   },
@@ -221,7 +417,9 @@ export const dropSites = internalMutation({
   handler: async (ctx, { before }) => {
     const stale = await ctx.db
       .query("sites")
-      .withIndex("by_at", (q) => q.lt("at", before))
+      .withIndex("by_via_kind_and_at", (q) =>
+        q.eq("via.kind", "register").lt("at", before),
+      )
       .take(BATCH);
     for (const row of stale) await ctx.db.delete("sites", row._id);
     return stale.length === BATCH;

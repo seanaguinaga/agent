@@ -31,8 +31,8 @@ IRS Form 8822 and checks the blanks found against where its fields were.
 
 `forms` is a small registry, added to by hand: a code, and the address the
 authority publishes it at (`sourceUrl`, plus any `alternateUrls` on the same
-authority's sites). Only an authority's own https site is accepted
-(`isOfficialHost`).
+authority's sites). Only an address on a government's own https site is accepted
+(`mayRead`, see [VOUCHING.md](./VOUCHING.md)).
 
 What's needed is the exact bytes the authority publishes, and to be able to say
 where they came from. `sources.ts` tries the ways to get them in order, cheapest

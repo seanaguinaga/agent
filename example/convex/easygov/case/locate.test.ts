@@ -75,6 +75,7 @@ const ctxOf = (t: T) =>
 async function withSites() {
   const t = initConvexTest();
   const row = (domain: string, owner: Owner, name = domain) => ({
+    state: "vouched" as const,
     domain,
     name,
     owner,
@@ -849,6 +850,63 @@ test("a link confirms a file only where the page and the file are on the packet'
   expect(
     await located(nevada, "https://dmv.nv.gov/forms/", "DL-44", "us/ca"),
   ).toMatchObject({ url: nevada, backed: false });
+});
+
+test("a site on a suffix governments share is judged whose it is: once, and from the packet's allowance", async () => {
+  const page = "https://www.gov.uk/government/publications/sa100";
+  const file = "https://assets.publishing.service.gov.uk/media/1/SA100.pdf";
+  const net = fakeNetwork({
+    [file]: servePdf(await formPdf(["Form SA100 (2026)"])),
+    "https://www.gov.uk/": servePage("<title>GOV.UK</title>"),
+  });
+  const t = await withSites();
+  decideMock.mockImplementation((async (
+    _ctx: ActionCtx,
+    question: { criteria: Offered },
+  ) => ({
+    choice: "national" in question.criteria ? "national" : "link1",
+    confidence: 0.9,
+  })) as never);
+  const located = async (finder: ReturnType<typeof newFinder>) =>
+    (
+      await locateForm(
+        ctxOf(t),
+        "thread",
+        { code: "SA100", leads: [] },
+        { jurisdiction: "gb" },
+        finder,
+        {
+          links: async () => [
+            { url: file, label: "SA100", pdf: true, on: page },
+          ],
+        },
+      )
+    ).file;
+
+  // With nothing to spend on it, the form is found and not confirmed.
+  const poor = finderWith({ vouches: 0 });
+  expect(await located(poor)).toMatchObject({ url: file, backed: false });
+  expect(poor.spend.spent).toMatchObject({ vouches: 0, refused: 2 });
+  expect(decideMock).toHaveBeenCalledTimes(1);
+
+  // The page's site and the file's are each judged, with the page's words
+  // for its link to the file, and the form is confirmed.
+  const finder = finderWith();
+  expect(await located(finder)).toMatchObject({ url: file, backed: true });
+  expect(finder.spend.spent).toMatchObject({ vouches: 2, refused: 0 });
+  expect(decideMock.mock.calls.map(([, { state }]) => state)).toEqual([
+    expect.anything(),
+    expect.anything(),
+    { site: "www.gov.uk", title: "GOV.UK" },
+    { site: "service.gov.uk", label: "SA100" },
+  ]);
+  expect(net.asked("https://www.gov.uk/")).toBe(1);
+
+  // What was judged is kept: the next packet pays nothing, and asks nobody.
+  const next = finderWith();
+  expect(await located(next)).toMatchObject({ backed: true });
+  expect(next.spend.spent.vouches).toBe(0);
+  expect(decideMock).toHaveBeenCalledTimes(5);
 });
 
 test("a later edition on the authority's own site is chosen over the old one its page links, and isn't confirmed", async () => {

@@ -19,6 +19,7 @@ import {
   openViaBrowser,
   type Opened,
 } from "./browser";
+import { decide } from "../decisions";
 import { resolveMapping } from "./mapping";
 import { openForFilling, UnusablePdf } from "./open";
 import { fillPdf, inspectPdf, verifyPdf } from "./pdf";
@@ -39,22 +40,25 @@ import {
   vMapping,
   vPacketPdf,
 } from "./schema";
+import { judged, mayRead, ownerQuestion, sitesAt, vSite } from "./sites";
 import {
   addressKey,
-  isOfficialHost,
   isTheForm,
   isWebPage,
   labelledLinks,
   MAX_BYTES,
   notAPdf,
   readUpTo,
+  selfDescribed,
   stands,
   type PageLink,
 } from "./sources";
 
 // --- Asking an official address ---------------------------------------------
 //
-// Every fetch goes through `ask`: a case finding its forms, a case reading a
+// An address is read only if it may be (see `mayRead`): it is on a
+// government's own site, or a page on one links or redirects to it. Every
+// fetch goes through `ask`: a case finding its forms, a case reading a
 // page for its links, and an operator fetching a registry entry. What an
 // address answered is kept (`formAddresses`), a file is known by its hash
 // wherever it came from, and each ask says what it cost.
@@ -100,9 +104,12 @@ const askArgs = {
   way: v.union(v.literal("request"), v.literal("browser")),
   /** False to answer only from what is held, spending nothing. */
   spend: v.boolean(),
+  /** The page that links the address, where it was come by from one. */
+  from: v.optional(v.string()),
 };
 type Ask = {
   url: string;
+  from?: string;
   way: "request" | "browser";
   spend: boolean;
   /** The form the address is wanted as. Without one, it is wanted as a page. */
@@ -132,9 +139,20 @@ type AddressAnswer = Infer<typeof vAddressAnswer>;
 /** As much of a page as is read for its links. */
 const MAX_PAGE = 2_000_000;
 
-/** One plain request, following redirects on official sites only. */
+/** Whether an address may be read, reached from the page `from` if any. */
+async function readable(ctx: ActionCtx, url: string, from?: string) {
+  const on = await sitesAt(ctx, [url, ...(from ? [from] : [])]);
+  return mayRead(url, on(url), from ? on(from) : undefined);
+}
+
+/**
+ * One plain request, following redirects only where each may be read: onto
+ * a government's own site, or one step from one.
+ */
 async function request(
+  ctx: ActionCtx,
   url: string,
+  from: string | undefined,
   ms: number,
   /** The most bytes taken: a body longer than this is cut there. */
   limit: number,
@@ -158,7 +176,7 @@ async function request(
   const signal = AbortSignal.timeout(ms);
   try {
     for (let redirects = 0; redirects <= 5; redirects++) {
-      if (!isOfficialHost(address)) {
+      if (!(await readable(ctx, address, from))) {
         return {
           got: "unusable",
           note: "The form link left the authority’s permitted sites.",
@@ -176,6 +194,7 @@ async function request(
       const { status } = response;
       if (status === 304) return { got: "unchanged", note: "" };
       if (status >= 300 && status < 400 && response.headers.has("location")) {
+        from = address;
         address = new URL(response.headers.get("location")!, address).href;
         continue;
       }
@@ -223,11 +242,13 @@ async function browserLease(ctx: ActionCtx) {
 /** As many links of each kind as are kept from a page. */
 const MAX_LINKS = 200;
 
-/** The links worth keeping from a page: official ones, PDFs first. */
-function linksWorthKeeping(html: string, page: string) {
-  const links = labelledLinks(html.slice(0, MAX_PAGE), page).filter(
-    ({ url }) => isOfficialHost(url) && url.length <= 500,
+/** The links worth keeping from a page: those that may be read, PDFs first. */
+async function linksWorthKeeping(ctx: ActionCtx, html: string, page: string) {
+  const all = labelledLinks(html.slice(0, MAX_PAGE), page).filter(
+    ({ url }) => url.length <= 500,
   );
+  const on = await sitesAt(ctx, [page, ...all.map(({ url }) => url)]);
+  const links = all.filter(({ url }) => mayRead(url, on(url), on(page)));
   return [
     ...links.filter(({ pdf }) => pdf).slice(0, MAX_LINKS),
     ...links.filter(({ pdf }) => !pdf).slice(0, MAX_LINKS),
@@ -250,7 +271,7 @@ const factsNow = (opening: string, facts: ReadFacts): FormFacts => ({
  */
 async function ask(
   ctx: ActionCtx,
-  { url, way, spend, form, packet, again }: Ask,
+  { url, from, way, spend, form, packet, again }: Ask,
 ): Promise<Asked> {
   const cost = {
     downloads: 0,
@@ -263,8 +284,9 @@ async function ask(
   };
   const no = (why: Infer<typeof vWhyNot>, note: string) =>
     ({ ok: false, why, note, cost }) as const;
-  if (!isOfficialHost(url))
-    return no("unusable", "Not the authority’s own site.");
+  if (!(await readable(ctx, url, from))) {
+    return no("unusable", "Not a government’s own site, nor linked from one.");
+  }
   const key = addressKey(url);
   const held = await ctx.runQuery(internal.easygov.forms.data.addressOf, {
     key,
@@ -318,7 +340,9 @@ async function ask(
     // Only a file that is still kept can be told "the same as before".
     const kept = held?.outcome === "file" && held.editionId ? held : undefined;
     const answered = await request(
+      ctx,
       url,
+      from,
       form ? 45_000 : 15_000,
       form ? MAX_BYTES : MAX_PAGE,
       form && kept,
@@ -371,7 +395,12 @@ async function ask(
         })
         .catch(() => undefined);
     }
-    if (opened.got === "page" && !isOfficialHost(opened.at)) {
+    // Where the browser ended up is one redirect from where it was sent.
+    if (
+      opened.got === "page" &&
+      new URL(opened.at).host !== new URL(url).host &&
+      !(await readable(ctx, opened.at, url))
+    ) {
       const note = "The page left the authority’s permitted sites.";
       await keep({ outcome: "unusable", note });
       return no("unusable", note);
@@ -395,7 +424,11 @@ async function ask(
     }
     // A page is read for its links, not downloaded from. Its links are
     // relative to where it was served from.
-    const links = linksWorthKeeping(new TextDecoder().decode(bytes), at);
+    const links = await linksWorthKeeping(
+      ctx,
+      new TextDecoder().decode(bytes),
+      at,
+    );
     await keep({ outcome: "page", links });
     return asPage(links);
   }
@@ -510,9 +543,9 @@ export const fetchFile = internalAction({
   returns: vFileAnswer,
   handler: async (
     ctx,
-    { url, way, spend, packet, ...form },
+    { url, from, way, spend, packet, ...form },
   ): Promise<FileAnswer> => {
-    const answer = await ask(ctx, { url, way, spend, packet, form });
+    const answer = await ask(ctx, { url, from, way, spend, packet, form });
     if (!answer.ok) return answer;
     if (!("file" in answer)) throw new Error("A form was asked for");
     return { ok: true, ...answer.file, cost: answer.cost };
@@ -534,6 +567,47 @@ export const readLinks = internalAction({
     if (!answer.ok) return answer;
     if (!("links" in answer)) throw new Error("A page was asked for");
     return answer;
+  },
+});
+
+/**
+ * Judges whose a site on a government's suffix is, once: the site's front
+ * page is read for what it says of itself, the decision model is asked with
+ * that and with what the page linking it calls the link (`label`, `under`),
+ * and the answer is kept (see `judged`). Gives the site as it then stands.
+ */
+export const judgeSite = internalAction({
+  args: {
+    url: v.string(),
+    label: v.optional(v.string()),
+    under: v.optional(v.string()),
+  },
+  returns: v.union(vSite, v.null()),
+  handler: async (ctx, { url, ...link }) => {
+    const site = (await sitesAt(ctx, [url]))(url);
+    if (site?.state !== "unjudged") return site ?? null;
+    const front = await request(
+      ctx,
+      new URL("/", url).href,
+      undefined,
+      15_000,
+      MAX_PAGE,
+    );
+    const says =
+      front.got === "body"
+        ? selfDescribed(new TextDecoder().decode(front.bytes))
+        : {};
+    const kept = judged(
+      site,
+      says.title ?? site.domain,
+      await decide(ctx, ownerQuestion(site, { ...link, ...says })),
+    );
+    if (!kept) return site;
+    await ctx.runMutation(internal.easygov.forms.sites.putSites, {
+      sites: [kept],
+      at: Date.now(),
+    });
+    return kept;
   },
 });
 

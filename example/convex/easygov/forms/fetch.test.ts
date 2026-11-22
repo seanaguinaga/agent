@@ -82,6 +82,7 @@ const fetchFile = (
   more: {
     code?: string;
     linkedAs?: string;
+    from?: string;
     way?: "request" | "browser";
     spend?: boolean;
   } = {},
@@ -97,7 +98,7 @@ const fetchFile = (
 const readLinks = (
   t: T,
   url: string,
-  more: { way?: "request" | "browser"; spend?: boolean } = {},
+  more: { from?: string; way?: "request" | "browser"; spend?: boolean } = {},
 ) => t.action(actions.readLinks, { url, way: "request", spend: true, ...more });
 
 test("the generated form is read as a form: its words, its place to write and its revision", async () => {
@@ -359,21 +360,62 @@ describe("an address that gives no file", () => {
     expect(net.requests).toHaveLength(0);
   });
 
-  test("a redirect off the authority's sites is not followed", async () => {
+  const cdn = "https://cdn.example.com/ssa-561.pdf";
+  const mirror = "https://mirror.example.org/ssa-561.pdf";
+  const to = (location: string) => () =>
+    new Response(null, { status: 302, headers: { location } });
+
+  test("a redirect is followed one step off a government's site, and no further", async () => {
     const t = initConvexTest();
     const net = fakeNetwork({
-      [address]: () =>
-        new Response(null, {
-          status: 302,
-          headers: { location: "https://cdn.example.com/ssa-561.pdf" },
-        }),
-      "https://cdn.example.com/ssa-561.pdf": servePdf(ssa561),
+      [address]: to(cdn),
+      [cdn]: servePdf(ssa561),
+      [`${ssa}/moved.pdf`]: to("https://cdn.example.com/again"),
+      "https://cdn.example.com/again": to(mirror),
+      [mirror]: servePdf(ssa561),
     });
-    expect(await fetchFile(t, address)).toMatchObject({
+    expect(await fetchFile(t, address)).toMatchObject({ ok: true });
+    expect(await fetchFile(t, `${ssa}/moved.pdf`)).toMatchObject({
       ok: false,
       why: "unusable",
     });
-    expect(net.asked("https://cdn.example.com/ssa-561.pdf")).toBe(0);
+    expect(net.asked(mirror)).toBe(0);
+  });
+
+  test("an address on nobody's site is read only as a government's page links it", async () => {
+    const t = initConvexTest();
+    const net = fakeNetwork({
+      [cdn]: servePdf(ssa561),
+      [mirror]: to(cdn),
+      "https://www.dmv.org/": servePage('<a href="/reg-343.pdf">REG 343</a>'),
+    });
+    const unread = { ok: false, why: "unusable", cost: { downloads: 0 } };
+    // Come by from a search, or from a page that is itself on nobody's site.
+    expect(await fetchFile(t, cdn)).toMatchObject(unread);
+    expect(await fetchFile(t, cdn, { from: mirror })).toMatchObject(unread);
+    expect(await readLinks(t, "https://www.dmv.org/")).toMatchObject({
+      ok: false,
+      why: "unusable",
+    });
+    expect(net.requests).toHaveLength(0);
+    // Linked from a government's page, it is read: but not where it then
+    // redirects, off to another site that is nobody's.
+    expect(await fetchFile(t, mirror, { from: `${ssa}/` })).toMatchObject({
+      ok: false,
+      why: "unusable",
+    });
+    expect(net.asked(cdn)).toBe(0);
+    expect(await fetchFile(t, cdn, { from: `${ssa}/` })).toMatchObject({
+      ok: true,
+    });
+    // A page on nobody's site keeps only its links onto governments' sites.
+    net.routes["https://www.dmv.org/"] = servePage(
+      `<a href="/reg-343.pdf">A copy</a><a href="${address}">SSA-561</a>`,
+    );
+    const links = await readLinks(t, "https://www.dmv.org/", {
+      from: `${ssa}/`,
+    });
+    expect(links.ok && links.links.map(({ url }) => url)).toEqual([address]);
   });
 
   test("a redirect within the authority's sites is followed to the file", async () => {
@@ -433,11 +475,17 @@ test("a lead that is a web page answers as a page, and its links are kept for re
     ok: true,
     cost: { pages: 0, held: 1, reused: 1 },
   });
-  // Only the authority's own links are kept.
+  // A government's page vouches for one link: every link on it is kept.
   expect(links.ok && links.links).toEqual([
     {
       url: address,
       label: "Download PDF",
+      pdf: true,
+      under: "Form SSA-561 | Request for Reconsideration",
+    },
+    {
+      url: "https://example.com/ssa-561.pdf",
+      label: "A copy elsewhere",
       pdf: true,
       under: "Form SSA-561 | Request for Reconsideration",
     },
@@ -687,7 +735,7 @@ describe("a page's links", () => {
       ok: true,
       cost: { pages: 1, held: 0, reused: 0 },
     });
-    // PDFs first; a link off the authority's sites is left out.
+    // PDFs first; a link off the government's sites is one link from it.
     expect(answer.ok && answer.links).toEqual([
       {
         url: `${ssa}/ssa-561.pdf`,
@@ -712,6 +760,12 @@ describe("a page's links", () => {
         label: "All forms",
         pdf: false,
         under: "Forms",
+      },
+      {
+        url: "https://www.adobe.com/reader",
+        label: "Get a PDF reader",
+        pdf: false,
+        under: "Form SSA-827 | Authorization to Disclose Information",
       },
     ]);
   });
@@ -860,13 +914,14 @@ describe("an address that refuses a plain request, opened in the browser", () =>
     expect(net.service).toHaveLength(asked);
   });
 
-  test("is unusable when the browser ends up off the authority's sites", async () => {
+  test("is unusable when the browser ends up two steps off a government's sites", async () => {
     restoreKey();
     restoreKey = browserKey("key");
     vi.useFakeTimers();
     const t = initConvexTest();
+    const linked = "https://forms.example.org/ssa-561.html";
     fakeNetwork(
-      { [page]: serveStatus(403) },
+      { [linked]: serveStatus(403) },
       {
         page: {
           at: "https://forms.example.com/ssa-561.html",
@@ -876,7 +931,9 @@ describe("an address that refuses a plain request, opened in the browser", () =>
     );
 
     expect(
-      await withoutWaiting(readLinks(t, page, { way: "browser" })),
+      await withoutWaiting(
+        readLinks(t, linked, { from: page, way: "browser" }),
+      ),
     ).toMatchObject({ ok: false, why: "unusable" });
     expect((await kept(t)).addresses).toMatchObject([{ outcome: "unusable" }]);
   });

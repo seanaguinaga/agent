@@ -1,6 +1,5 @@
-// What counts as an official address, one address, one form and one file,
-// and when an address is asked again. Pure.
-import type { Site } from "./sites";
+// What counts as one address, one form and one file, what a page says of
+// its links and of itself, and when an address is asked again. Pure.
 
 /** How a form's bytes were got. */
 export type Via = "request" | "browser";
@@ -185,6 +184,29 @@ export type LabelledLink = {
 /** A link, and whether it goes to a PDF or to another page. */
 export type PageLink = LabelledLink & { pdf: boolean };
 
+/** The words of a piece of a page, without its markup. */
+const words = (text: string) =>
+  text
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;|&#160;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&[a-z]+;|&#\d+;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+
+/** What a site says of itself on a page: its title, and its footer's words. */
+export function selfDescribed(html: string) {
+  const piece = (tag: string) =>
+    words(
+      html.match(
+        new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}\\s*>`, "i"),
+      )?.[1] ?? "",
+    );
+  const [title, footer] = [piece("title"), piece("footer")];
+  return { ...(title && { title }), ...(footer && { footer }) };
+}
+
 /**
  * The links on a page, each with the words the page puts on it. Those words
  * are the authority saying what the link is: for a PDF, which form the file
@@ -192,15 +214,6 @@ export type PageLink = LabelledLink & { pdf: boolean };
  * filename; for a page, what a reader would find one link further on.
  */
 export function labelledLinks(html: string, page: string): PageLink[] {
-  const words = (text: string) =>
-    text
-      .replace(/<[^>]*>/g, " ")
-      .replace(/&nbsp;|&#160;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&[a-z]+;|&#\d+;/gi, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 160);
   // Each heading, where it starts: a link sits under the last one before it.
   const headings = [
     ...html.matchAll(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1\s*>/gi),
@@ -345,61 +358,4 @@ export function sameFormCode(a: string, b: string): boolean {
   return (
     x.whole === y.whole || x.bare.includes(y.whole) || y.bare.includes(x.whole)
   );
-}
-
-/**
- * Governments' own sites that no register vouches for. Each is a line added
- * here by hand, with the evidence that the government itself publishes from
- * it. Never a site that only looks official, such as dmv.org.
- */
-const HAND: Site[] = [
-  {
-    domain: "mil",
-    name: "US Department of Defense",
-    owner: { level: "national", country: "us" },
-    via: { kind: "hand", note: ".mil is only ever the US military's." },
-  },
-  {
-    domain: "acgov.org",
-    name: "Alameda County",
-    owner: {
-      level: "local",
-      country: "us",
-      region: "us-ca",
-      body: "Alameda County",
-    },
-    via: {
-      kind: "hand",
-      note: "alamedacountyca.gov, the county's registered site, and acgov.org link each other.",
-    },
-  },
-];
-
-/** The hand-kept site a host is on, if it is on one of `HAND`. */
-export function handFor(host: string): Site | undefined {
-  const name = host.toLowerCase();
-  return HAND.find(
-    ({ domain }) => name === domain || name.endsWith(`.${domain}`),
-  );
-}
-
-/**
- * Whether an address is on a government's own site: https, on a .gov host
- * or one kept by hand (`HAND`). .gov is only ever registered to verified US
- * government bodies, so the name is the proof; an open name such as .us or
- * .org is not. Which government's site it is, is `sites.ts`'s to say.
- */
-export function isOfficialHost(url: string): boolean {
-  try {
-    const { protocol, hostname, username, password, port } = new URL(url);
-    return (
-      protocol === "https:" &&
-      !username &&
-      !password &&
-      (!port || port === "443") &&
-      (hostname.endsWith(".gov") || !!handFor(hostname))
-    );
-  } catch {
-    return false;
-  }
 }

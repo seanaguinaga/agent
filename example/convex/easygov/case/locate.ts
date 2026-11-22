@@ -14,7 +14,9 @@
 //    the form, chosen with confidence: looked for on the pages research read
 //    and, failing that, one link further on, and no further. The page and
 //    the file have to be on sites of the packet's government, or of one
-//    above it (see `confirms`): nobody approves a site.
+//    above it (see `confirms`): nobody approves a site. An address is read
+//    only on a government's own site, or one link from one (see `mayRead`):
+//    never because a search cited it.
 // 6. A file that prints an expiry that has passed is never given as
 //    confirmed, and is chosen only when no current file serves the form.
 // 7. Among the authority's own files, the latest revision is chosen, even
@@ -31,10 +33,9 @@ import type { FileAnswer, LinksAnswer } from "../forms/actions";
 import { budget, type Budget, type Limits } from "../forms/budget";
 import { rankForms, type FormFacts } from "../forms/facts";
 import type { FormQuestion } from "../forms/mapping";
-import { confirms, type Site } from "../forms/sites";
+import { confirms, mayRead, sitesAt, type Site } from "../forms/sites";
 import {
   addressKey,
-  isOfficialHost,
   leadsFrom,
   looseKey,
   shortlist,
@@ -56,6 +57,7 @@ const PACKET_LIMITS: Limits = {
   browser: 10,
   searches: 4,
   decisions: 10,
+  vouches: 2,
   pages: 12,
 };
 
@@ -69,12 +71,15 @@ export type Finder = {
    * what it was asked as, and the answer.
    */
   asked: Map<string, Promise<{ url: string; as: string; answer: Answer }>>;
+  /** Each site judged whose it is in this packet, by its domain. */
+  judging: Map<string, Promise<Site>>;
 };
 
 export const newFinder = (limits: Limits = PACKET_LIMITS): Finder => ({
   spend: budget(limits),
   id: crypto.randomUUID(),
   asked: new Map(),
+  judging: new Map(),
 });
 
 type Answer = FileAnswer | LinksAnswer;
@@ -175,6 +180,8 @@ export async function fileAt(
     linkedAs?: string;
   },
   url: string,
+  /** The page that links the address, where it was come by from one. */
+  from?: string,
 ): Promise<FileAnswer> {
   return await ask(
     finder,
@@ -184,6 +191,7 @@ export async function fileAt(
       ctx.runAction(internal.easygov.forms.actions.fetchFile, {
         ...form,
         url,
+        from,
         way,
         spend,
         packet: finder.id,
@@ -196,10 +204,12 @@ async function linksAt(
   ctx: ActionCtx,
   finder: Finder,
   page: string,
+  from?: string,
 ): Promise<PageLink[]> {
   const answer = await ask(finder, page, PAGE, (way, spend) =>
     ctx.runAction(internal.easygov.forms.actions.readLinks, {
       url: page,
+      from,
       way,
       spend,
       packet: finder.id,
@@ -222,17 +232,21 @@ function eachOnce<T extends { url: string }>(items: T[]): T[] {
   );
 }
 
-/** The links on official pages, with their words, as read now. */
+/**
+ * The links on governments' own pages, with their words, as read now. A page
+ * research only cited, on nobody's site, isn't read.
+ */
 async function linksOn(
   ctx: ActionCtx,
   finder: Finder,
   pages: string[],
 ): Promise<PageLink[]> {
+  const on = await sitesAt(ctx, pages);
   const found = await Promise.all(
     pages
       // A PDF among the pages is itself a lead, tried as one: not a page.
       .filter(
-        (page) => isOfficialHost(page) && !/pdf/i.test(page.split("?")[0]),
+        (page) => mayRead(page, on(page)) && !/pdf/i.test(page.split("?")[0]),
       )
       .slice(0, MAX_PAGES)
       .map((page) => linksAt(ctx, finder, page)),
@@ -254,15 +268,42 @@ type Designated = {
   further: boolean;
 };
 
-/** The vouched site each of these hosts is on, where it is on one. */
-async function sitesOf(
+/**
+ * A site, judged first if it is on a government's suffix and nobody has
+ * judged whose it is: once in a packet, and only while the packet can afford
+ * it. `words` are what the page linking `url` calls the link.
+ */
+async function judgedNow(
   ctx: ActionCtx,
-  hosts: string[],
-): Promise<Map<string, Site>> {
-  const found = await ctx.runQuery(internal.easygov.forms.sites.sitesOf, {
-    hosts,
-  });
-  return new Map(found.map(({ host, site }) => [host, site]));
+  finder: Finder,
+  site: Site | undefined,
+  url: string,
+  words?: { label: string; under?: string },
+): Promise<Site | undefined> {
+  if (site?.state !== "unjudged") return site;
+  const { spend, judging } = finder;
+  if (!judging.has(site.domain)) {
+    const paid = spend.take("vouches");
+    if (!paid) spend.add({ refused: 1 });
+    judging.set(
+      site.domain,
+      paid
+        ? ctx
+            .runAction(internal.easygov.forms.actions.judgeSite, {
+              url,
+              ...words,
+            })
+            .then(
+              (judged) => judged ?? site,
+              (error) => {
+                console.error("Site not judged", url, error);
+                return site;
+              },
+            )
+        : Promise.resolve(site),
+    );
+  }
+  return await judging.get(site.domain);
 }
 
 const hostOf = (url: string) => new URL(url).hostname;
@@ -299,21 +340,22 @@ async function chooseLink(
   // The page's words for the link: its own, and the heading it sits under.
   // Then who owns the file's site and the page's: any government's page can
   // link a form, and only the authority's own says which file is its form.
-  const sites = await sitesOf(
+  const sites = await sitesAt(
     ctx,
-    links.flatMap(({ url, on }) => [url, ...(on ? [on] : [])]).map(hostOf),
+    links.flatMap(({ url, on }) => [url, ...(on ? [on] : [])]),
   );
-  const whose = (host: string) => {
-    const site = sites.get(host);
-    return site ? `${site.name} (${host})` : host;
+  const whose = (url: string) => {
+    const site = sites(url);
+    const host = hostOf(url);
+    return site?.state === "vouched" ? `${site.name} (${host})` : host;
   };
   const describe = ({ url, label, under, on }: LabelledLink) => {
-    const { hostname, pathname } = new URL(url);
+    const { pathname } = new URL(url);
     return (
       `${label || "(no words)"}` +
       (under ? `, under the heading "${under}"` : "") +
-      ` [a file of ${whose(hostname)}: …/${decodeURI(pathname.split("/").pop() ?? "")}` +
-      (on ? `, linked from a page of ${whose(hostOf(on))}]` : "]")
+      ` [a file of ${whose(url)}: …/${decodeURI(pathname.split("/").pop() ?? "")}` +
+      (on ? `, linked from a page of ${whose(on)}]` : "]")
     );
   };
   const decided = await decide(ctx, {
@@ -353,7 +395,12 @@ async function chooseLink(
 
 /** How an address for a form was come by, most trusted first. */
 type Via = "linked" | "given" | "variant" | "known" | "search";
-type Lead = { url: string; via: Via };
+type Lead = {
+  url: string;
+  via: Via;
+  /** The page that links it, where a page does: see `mayRead`. */
+  from?: string;
+};
 
 /** A file fetched for a form, and what it says about itself. */
 type FormFile = {
@@ -368,7 +415,12 @@ type FormFile = {
 type Failure = { url: string; via: Via; why: string; note: string };
 
 /** What asking some leads for a form gave. */
-type Tried = { files: FormFile[]; pages: string[]; failed: Failure[] };
+type Tried = {
+  files: FormFile[];
+  /** The leads that were pages, each with the page it was come by from. */
+  pages: { url: string; from?: string }[];
+  failed: Failure[];
+};
 
 /** The file chosen for a form. */
 type ChosenFile = {
@@ -411,7 +463,7 @@ async function tryLeads(
   const answers = await Promise.all(
     eachOnce(leads.filter(({ url }) => url)).map(async (lead) => ({
       lead,
-      answer: await fileAt(ctx, finder, form, lead.url),
+      answer: await fileAt(ctx, finder, form, lead.url, lead.from),
     })),
   );
   return {
@@ -429,10 +481,12 @@ async function tryLeads(
         : [],
     ),
     pages: answers.flatMap(({ lead, answer }) =>
-      !answer.ok && answer.why === "page" ? [lead.url] : [],
+      !answer.ok && answer.why === "page"
+        ? [{ url: lead.url, from: lead.from }]
+        : [],
     ),
-    failed: answers.flatMap(({ lead, answer }) =>
-      answer.ok ? [] : [{ ...lead, why: answer.why, note: answer.note }],
+    failed: answers.flatMap(({ lead: { url, via }, answer }) =>
+      answer.ok ? [] : [{ url, via, why: answer.why, note: answer.note }],
     ),
   };
 }
@@ -497,16 +551,29 @@ export async function locateForm(
   const { jurisdiction, authority } = subject;
   const { code } = form;
   const asForm = (linkedAs?: string) => ({ jurisdiction, code, linkedAs });
-  const as = (via: Via) => (url: string) => ({ url, via });
+  const as = (via: Via, from?: string) => (url: string) => ({ url, via, from });
   // Which of these addresses are, with the page that links the form, the
   // packet's government's own (see `confirms`): none, where no page does.
-  const ownTo = async (page: string | undefined, urls: string[]) => {
+  // The sites of the link's two ends are judged first, where they have to be.
+  const ownTo = async (
+    link: Omit<Designated, "further"> | undefined,
+    urls: string[],
+  ) => {
+    const page = link?.on;
     if (!page) return () => false;
-    const official = [page, ...urls].filter(isOfficialHost);
-    const sites = await sitesOf(ctx, official.map(hostOf));
-    const on = (url: string) =>
-      official.includes(url) ? sites.get(hostOf(url)) : undefined;
-    return (url: string) => confirms(jurisdiction, on(page), on(url));
+    const on = await sitesAt(ctx, [page, link.url, ...urls]);
+    const ends = [
+      await judgedNow(ctx, finder, on(page), page),
+      await judgedNow(ctx, finder, on(link.url), link.url, {
+        label: link.label,
+        under: link.under,
+      }),
+    ];
+    const now = (url: string) => {
+      const site = on(url);
+      return ends.find((end) => end && end.domain === site?.domain) ?? site;
+    };
+    return (url: string) => confirms(jurisdiction, now(page), now(url));
   };
 
   /** Chooses the form's link among these, and asks it as the form. */
@@ -518,7 +585,9 @@ export async function locateForm(
           ctx,
           finder,
           asForm(`${chosen.designated.label} ${chosen.designated.under ?? ""}`),
-          leadsFrom(chosen.designated.url).map(as("linked")),
+          leadsFrom(chosen.designated.url).map(
+            as("linked", chosen.designated.on),
+          ),
         )
       : undefined;
     return { short, ...chosen, tried };
@@ -548,7 +617,7 @@ export async function locateForm(
   ];
   const linkGave = filesOf(first.tried ? [first.tried] : []);
   const own = await ownTo(
-    first.designated?.on,
+    linkGave.length ? first.designated : undefined,
     [...linkGave, ...others].map(({ url }) => url),
   );
   const leads = await tryLeads(
@@ -564,14 +633,14 @@ export async function locateForm(
   const sofar = [first.tried, leads].filter((tried) => tried !== undefined);
   const beyond = filesOf(sofar).some(({ designated }) => designated)
     ? []
-    : eachOnce(sofar.flatMap(({ pages }) => pages.map((url) => ({ url }))))
-        .slice(0, MAX_FURTHER)
-        .map(({ url }) => url);
+    : eachOnce(sofar.flatMap(({ pages }) => pages)).slice(0, MAX_FURTHER);
   const further = beyond.length
     ? await follow(
         eachOnce(
           (
-            await Promise.all(beyond.map((url) => linksAt(ctx, finder, url)))
+            await Promise.all(
+              beyond.map(({ url, from }) => linksAt(ctx, finder, url, from)),
+            )
           ).flat(),
         ),
       )
@@ -609,7 +678,7 @@ export async function locateForm(
   const failed = eachOnce(tries.flatMap((tried) => tried.failed));
 
   const ownNow = await ownTo(
-    linked?.on,
+    linked,
     files.map(({ url }) => url),
   );
   const [best, ...rest] = rankForms(

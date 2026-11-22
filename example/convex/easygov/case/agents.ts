@@ -49,7 +49,7 @@ import {
   type Research,
   type ResearchForm,
 } from "./research";
-import { isOfficialHost } from "../forms/sources";
+import { mayRead, sitesAt } from "../forms/sites";
 import {
   compilePacketForms,
   locateForm,
@@ -355,7 +355,8 @@ export async function research(
   trace.searched = pagesSearched(result);
   // The pages a report rests on are the ones the search says it read, where
   // it names any on an official site, not the ones the model wrote down.
-  const read = trace.searched.filter(isOfficialHost);
+  const on = await sitesAt(ctx, trace.searched);
+  const read = trace.searched.filter((url) => mayRead(url, on(url)));
   const found = tidy({
     ...output,
     sources: read.length ? read : output.sources,

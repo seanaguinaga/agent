@@ -193,14 +193,38 @@ export const vOwner = v.union(
   }),
 );
 
-/** A site as an official register vouches for it. */
-export const vRegistered = v.object({
+const vouched = {
+  state: v.literal("vouched"),
   /** The registrable domain: every host under it is the site. */
   domain: v.string(),
   /** Who publishes from it, in words: the agency, where one is named. */
   name: v.string(),
   owner: vOwner,
+};
+
+/** A site as an official register vouches for it. */
+export const vRegistered = v.object({
+  ...vouched,
   via: v.object({ kind: v.literal("register"), register: v.literal("cisa") }),
+});
+
+/** A site on a suffix its country keeps for government, judged whose. */
+export const vSuffixed = v.object({
+  ...vouched,
+  via: v.object({ kind: v.literal("suffix"), suffix: v.string() }),
+});
+
+/** A site on a hand-kept line, with its evidence. See `governments.ts`. */
+export const vHandKept = v.object({
+  ...vouched,
+  via: v.object({ kind: v.literal("hand"), note: v.string() }),
+});
+
+/** A site judged not to be a government's, or not to be told whose. */
+export const vDeclined = v.object({
+  state: v.literal("declined"),
+  domain: v.string(),
+  why: v.union(v.literal("contractor"), v.literal("unsure")),
 });
 
 export default {
@@ -261,16 +285,19 @@ export default {
     ]),
 
   /**
-   * The sites a register vouches for, by registrable domain (see `sites.ts`):
-   * what decides whether a page or a file is a government's own.
+   * What is kept of sites, by registrable domain (see `sites.ts`): those a
+   * register vouches for, and those on a government's suffix as they were
+   * judged. `at` is when the register last listed it, or when it was judged.
    */
-  sites: defineTable({
-    ...vRegistered.fields,
-    /** When the register last listed it. */
-    at: v.number(),
-  })
+  sites: defineTable(
+    v.union(
+      v.object({ ...vRegistered.fields, at: v.number() }),
+      v.object({ ...vSuffixed.fields, at: v.number() }),
+      v.object({ ...vDeclined.fields, at: v.number() }),
+    ),
+  )
     .index("by_domain", ["domain"])
-    .index("by_at", ["at"]),
+    .index("by_via_kind_and_at", ["via.kind", "at"]),
 
   /** A hosted browser in use. Expires on its own if its work died. */
   browserLeases: defineTable({ expiresAt: v.number() }).index("by_expiresAt", [

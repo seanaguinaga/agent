@@ -249,6 +249,17 @@ export const vLinked = v.object({
     /** How many links it is from a register, suffix or hand site. */
     steps: v.number(),
   }),
+  /** True once a re-check found what vouched for it gone: see `rechecked`. */
+  missed: v.optional(v.boolean()),
+});
+
+/**
+ * A linked site two re-checks in a row found no longer its government's.
+ * Kept, so it is never vouched again unasked: only a hand line restores it.
+ */
+export const vRevoked = v.object({
+  state: v.literal("revoked"),
+  domain: v.string(),
 });
 
 /**
@@ -328,7 +339,7 @@ export default {
    * What is kept of sites, by registrable domain (see `sites.ts`): those a
    * register vouches for, and those on a government's suffix or linked from
    * its pages as they were judged. `at` is when the register last listed
-   * it, or when it was judged.
+   * it, or when it was judged: a linked site's vouch lapses 90 days on.
    */
   sites: defineTable(
     v.union(
@@ -336,6 +347,7 @@ export default {
       v.object({ ...vSuffixed.fields, at: v.number() }),
       v.object({ ...vLinked.fields, at: v.number() }),
       v.object({ ...vDeclined.fields, at: v.number() }),
+      v.object({ ...vRevoked.fields, at: v.number() }),
     ),
   )
     .index("by_domain", ["domain"])

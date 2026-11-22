@@ -231,52 +231,84 @@ Each stage is one commit, with its proof.
 - [x] **4. Link vouching.** _Proof:_ acgov.org and formulare-bfinv.de are
       vouched; iorder.com.au, taxadmin.org, careeronestop.org and auspost.com.au
       are declined; the hand list shrinks to dgid.sn.
-  - _Measured (`chains.test.ts`):_ on each site's front page as a plain
-    request got it on 2026-11-21, kept in `fixtures/sites` cut down to its
-    title, footer and links, with the decision model replaced.
+  - _Measured (`chains.test.ts`):_ on each site's front page as a plain request
+    got it on 2026-11-21, kept in `fixtures/sites` cut down to its title, footer
+    and links, with the decision model replaced.
     - Vouched, each one link from its government's page and linking it back:
-      acgov.org (from alamedacountyca.gov), formulare-bfinv.de (from the
-      finance ministry's forms page) and revenue.ie (from gov.ie). All 12
-      measured chains now confirm.
-    - Declined as a contractor's: iorder.com.au. It links the ATO back, so
-      the model is asked, and says it is a vendor's.
-    - Declined as unsupported, with no model call: taxadmin.org (it links
-      the states' sites, not the nation's), careeronestop.org (it refuses the
+      acgov.org (from alamedacountyca.gov), formulare-bfinv.de (from the finance
+      ministry's forms page) and revenue.ie (from gov.ie). All 12 measured
+      chains now confirm.
+    - Declined as a contractor's: iorder.com.au. It links the ATO back, so the
+      model is asked, and says it is a vendor's.
+    - Declined as unsupported, with no model call: taxadmin.org (it links the
+      states' sites, not the nation's), careeronestop.org (it refuses the
       request) and auspost.com.au (it links no government).
-    - ato.gov.au and gov.ie refuse plain requests. Their two linking pages
-      are stand-ins in the test, carrying the links the measurement found.
+    - ato.gov.au and gov.ie refuse plain requests. Their two linking pages are
+      stand-ins in the test, carrying the links the measurement found.
   - _The hand list_ doesn't shrink to dgid.sn. acgov.org's line is gone. What
     remains:
-    - canada.ca, gov.ie, bund.de and primature.sn: each country's portal on
-      an open name. Nothing vouched links a root.
+    - canada.ca, gov.ie, bund.de and primature.sn: each country's portal on an
+      open name. Nothing vouched links a root.
     - dgid.sn: it links no government's site back (decision 3).
-    - bundesfinanzministerium.de, new. Only bund.de's sites link it, which
-      are one site, and its front page links none of them back. Without it
-      no vouched page links formulare-bfinv.de.
+    - bundesfinanzministerium.de, new. Only bund.de's sites link it, which are
+      one site, and its front page links none of them back. Without it no
+      vouched page links formulare-bfinv.de.
   - _Changed from the plan:_
-    - A site is judged once the form's link is chosen and before it is
-      followed: the site of the page and of what it links. A site on a
-      suffix is so judged even where the link then gives no file.
-    - A linked site is the linking page's government's or nobody's: the
-      model is asked whether it is that government's own, a contractor's, or
-      unsure, and never which government's.
-    - The model isn't asked where nothing supports the site, or it is more
-      than 2 links out: it couldn't vouch.
-    - Support is read from the front page of the host that was linked (a
-      link back), from the pages the packet read (a second site's link), and
-      from where a vouched address was served (a redirect).
+    - A site is judged once the form's link is chosen and before it is followed:
+      the site of the page and of what it links. A site on a suffix is so judged
+      even where the link then gives no file.
+    - A linked site is the linking page's government's or nobody's: the model is
+      asked whether it is that government's own, a contractor's, or unsure, and
+      never which government's.
+    - The model isn't asked where nothing supports the site, or it is more than
+      2 links out: it couldn't vouch.
+    - Support is read from the front page of the host that was linked (a link
+      back), from the pages the packet read (a second site's link), and from
+      where a vouched address was served (a redirect).
     - `from`, the page said to link an address, is no longer taken on the
-      caller's word: the page has to have been read, and to keep a link to
-      the address's site. That holds for reading and for vouching.
-    - A redirect within one site is no step further from a government's
-      page. A page keeps the links to its own site, whoever's it is: they
-      are read only once the site is vouched.
+      caller's word: the page has to have been read, and to keep a link to the
+      address's site. That holds for reading and for vouching.
+    - A redirect within one site is no step further from a government's page. A
+      page keeps the links to its own site, whoever's it is: they are read only
+      once the site is vouched.
     - Declined sites are listed, latest first, by
       `npx convex run easygov/forms/sites:toReview`.
-  - _Limit:_ a site is vouched only when a page the packet read, on a
-    vouched site, links it. Pages research cites on a site nobody vouches
-    yet aren't read, so the first packet reaches such a site only through a
-    government's page that links it.
-- [ ] **5. Re-check and revoke.** Link vouches expire after 90 days and the
+  - _Limit:_ a site is vouched only when a page the packet read, on a vouched
+    site, links it. Pages research cites on a site nobody vouches yet aren't
+    read, so the first packet reaches such a site only through a government's
+    page that links it.
+- [x] **5. Re-check and revoke.** Link vouches expire after 90 days and the
       weekly job re-checks them. Evidence gone twice means revoked. _Proof:_ a
       test with a removed link.
+  - _Proved (`sites.test.ts`, `freshness.test.ts`):_
+    - a vouch 91 days old vouches nothing;
+    - one near lapsing, with its evidence still there, is renewed for two plain
+      requests and one question;
+    - with its link back removed it is marked on the first check and still
+      stands, and is revoked on the second, with no question asked;
+    - the same when the page that linked it no longer does;
+    - a revoked site never confirms, isn't read, and isn't judged again, even
+      with its link back restored;
+    - a site that is down isn't marked;
+    - one run checks at most 20 sites;
+    - a pack whose form is on a revoked site is stale at its next check.
+  - _Changed from the plan:_
+    - A vouch is re-checked in its last 14 days, so by two weekly runs. The job
+      that imports the register starts the run, which takes the 20 soonest to
+      lapse: each costs at most three plain requests and one question. The rest
+      wait a week, or lapse.
+    - A re-check is the first judgment made again. The pages that linked the
+      site are asked again by plain request. One that can't be asked (gov.ie
+      refuses) stands as it was last read.
+    - Nothing changes where nothing could be judged: the site's front page
+      didn't answer, the model didn't, or the site that vouched for it has
+      itself lapsed. Such a vouch lapses at 90 days, and the next packet that
+      needs the site judges it afresh.
+    - A site marked once keeps its date: it lapses when it would have.
+    - Only a hand line restores a revoked site. Revoked sites are listed with
+      the declined ones by `sites:toReview`.
+    - `packs/freshness.ts` needed no change. A file on a site that is revoked,
+      or whose vouch lapsed, may not be read, so the pack's weekly check finds
+      the form lost and the pack stale.
+  - _Limit:_ a pack doesn't record the page that linked its file. If only the
+    page's site is revoked, the pack isn't marked until its form is next found.

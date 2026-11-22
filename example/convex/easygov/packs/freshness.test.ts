@@ -131,3 +131,49 @@ test("a pack whose form changed at the authority is marked stale, and says what 
     expect.stringContaining("SSA-561 is no longer at"),
   ]);
 });
+
+test("a pack whose form is on a site since revoked is marked stale at its next check", async () => {
+  vi.useFakeTimers();
+  const t = initConvexTest();
+  const url = "https://forms.partner.org/ssa-561.pdf";
+  fakeNetwork({ [url]: servePdf(await formPdf(["Form SSA-561 (08-2025)"])) });
+  const site = (state: object) =>
+    t.mutation(internal.easygov.forms.sites.putSites, {
+      sites: [{ domain: "partner.org", ...state } as never],
+      at: Date.now(),
+    });
+  // A link vouched for the site when the pack was made.
+  await site({
+    state: "vouched",
+    name: "Partner",
+    owner: { level: "national", country: "us" },
+    via: {
+      kind: "link",
+      from: "https://www.ssa.gov/forms/",
+      support: "back",
+      steps: 1,
+    },
+  });
+  const saved = await t.mutation(internal.easygov.packs.data.createPack, {
+    ...ssaAppeal,
+    packetForms: [
+      { code: "SSA-561", sourceUrl: url, inputs: [], backed: true },
+    ],
+    reviewedPackIds: [],
+  });
+  if (saved.kind !== "created") throw new Error("Expected a pack");
+  const staleness = async () => {
+    await t.mutation(internal.easygov.packs.freshness.sweepPacks, {
+      cursor: null,
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    return await t.run((ctx) => stalenessOf(ctx, saved.id));
+  };
+  expect(await staleness()).toEqual([]);
+
+  vi.setSystemTime(Date.now() + 8 * 24 * 60 * 60 * 1000);
+  await site({ state: "revoked" });
+  expect(await staleness()).toEqual([
+    expect.stringContaining("check the authority’s site"),
+  ]);
+});

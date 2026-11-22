@@ -15,6 +15,7 @@ import {
   mayRead,
   ownerQuestion,
   parseRegister,
+  rechecked,
   sitesAt,
   type Linked,
   type Owner,
@@ -194,6 +195,7 @@ function deployment() {
         also?: string;
       } = {},
     ) => t.action(internal.easygov.forms.actions.judgeSite, { url, ...link }),
+    recheck: () => t.action(internal.easygov.forms.actions.recheckSites, {}),
     read: (url: string) =>
       t.action(internal.easygov.forms.actions.readLinks, {
         url,
@@ -585,6 +587,143 @@ describe("whose a site a government's page links is", () => {
   });
 });
 
+describe("a link's vouch, 90 days on", () => {
+  const from = "https://www.ssa.gov/a";
+  const file = "https://partner.org/x.pdf";
+  const front = "https://partner.org/";
+  const back = servePage(`<title>Partner</title><a href="${from}">SSA</a>`);
+  const linked = {
+    state: "vouched",
+    domain: "partner.org",
+    name: "Partner",
+    owner: national,
+    via: { kind: "link", from, support: "back", steps: 1 },
+  } as const;
+  const declined = { state: "declined", domain: "partner.org" } as const;
+
+  test("is renewed, marked once and then revoked, or left alone: by what a fresh judgment says", () => {
+    const held = { ...linked, at: 5 };
+    expect(rechecked(held, linked, 9)).toEqual({ site: linked, at: 9 });
+    const gone = { ...declined, why: "unsupported" } as const;
+    // Once: it still stands, and still lapses when it would have.
+    const missed = { ...linked, missed: true };
+    expect(rechecked(held, gone, 9)).toEqual({ site: missed, at: 5 });
+    // Twice in a row.
+    expect(rechecked({ ...missed, at: 5 }, gone, 9)).toEqual({
+      site: { state: "revoked", domain: "partner.org" },
+      at: 9,
+    });
+    expect(rechecked(held, undefined, 9)).toBeUndefined();
+  });
+
+  test("lapses unless checked again; with its link back gone on two checks it is revoked, and never confirms or is judged again", async () => {
+    const { t, judge, put, read, recheck, siteOf } = deployment();
+    await put(parseRegister(csv), 1);
+    const net = fakeNetwork({
+      [from]: servePage(`<a href="${file}">A form</a>`),
+      [front]: back,
+    });
+    judging({ "partner.org": "own" });
+    await read(from);
+    expect(await judge(file, { from })).toEqual(linked);
+    const ssa = await siteOf(from);
+    const aged = (days: number, site: Site = linked) =>
+      put([site], Date.now() - days * DAY);
+    const row = () =>
+      t.run((ctx) =>
+        ctx.db
+          .query("sites")
+          .withIndex("by_domain", (q) => q.eq("domain", "partner.org"))
+          .unique(),
+      );
+
+    // Not yet near lapsing, it isn't checked; lapsed, it vouches nothing.
+    await aged(70);
+    await recheck();
+    expect(net.requests).toHaveLength(2);
+    await aged(91);
+    expect(await siteOf(file)).toBeUndefined();
+    await recheck();
+    expect(net.requests).toHaveLength(2);
+
+    // Near lapsing, it is judged again, for two requests and one question:
+    // with its evidence still there it is renewed.
+    await aged(80);
+    await recheck();
+    expect(net.requests).toHaveLength(4);
+    expect(decideMock).toHaveBeenCalledTimes(2);
+    expect((await row())?.at).toBeGreaterThan(Date.now() - DAY);
+
+    // A site that is down isn't struck for it.
+    await aged(80);
+    net.routes[front] = () => new Response(null, { status: 503 });
+    await recheck();
+    expect(await row()).not.toHaveProperty("missed");
+
+    // Its link back gone: marked once, it still stands, and lapses no later.
+    net.routes[front] = servePage("<title>Partner</title>");
+    await recheck();
+    expect(await row()).toMatchObject({ missed: true });
+    expect((await row())?.at).toBeLessThan(Date.now() - 79 * DAY);
+    expect(confirms("us", ssa, await siteOf(file))).toBe(true);
+    // Gone again the week after: revoked.
+    await recheck();
+    const revoked = { state: "revoked", domain: "partner.org" };
+    expect(await siteOf(file)).toEqual(revoked);
+    expect(confirms("us", ssa, await siteOf(file))).toBe(false);
+    expect(mayRead(file, await siteOf(file))).toBe(false);
+    // The model wasn't asked about a site nothing supported.
+    expect(decideMock).toHaveBeenCalledTimes(2);
+
+    // Its link back restored, it still isn't judged again, however long
+    // after: only a hand line restores it. It is listed for review.
+    net.routes[front] = back;
+    await aged(400, revoked as Site);
+    expect(await judge(file, { from })).toEqual(revoked);
+    await recheck();
+    expect(await siteOf(file)).toEqual(revoked);
+    expect(decideMock).toHaveBeenCalledTimes(2);
+    expect(
+      await t.query(internal.easygov.forms.sites.toReview, {}),
+    ).toMatchObject([revoked]);
+  });
+
+  test("a page that no longer links it counts against it, and one run checks no more than 20", async () => {
+    const { t, put, read, recheck, siteOf } = deployment();
+    await put(parseRegister(csv), 1);
+    const net = fakeNetwork({
+      [from]: servePage(`<a href="${file}">A form</a>`),
+      [front]: back,
+    });
+    await read(from);
+    await put([linked], Date.now() - 80 * DAY);
+    net.routes[from] = servePage("<a href='/b'>Elsewhere</a>");
+    await recheck();
+    await recheck();
+    expect(await siteOf(file)).toMatchObject({ state: "revoked" });
+    expect(decideMock).not.toHaveBeenCalled();
+
+    // Thirty more near lapsing: a run takes the 20 soonest to lapse.
+    const sites = Array.from({ length: 30 }, (_, i) => ({
+      ...linked,
+      domain: `partner${i}.org`,
+    }));
+    await put(sites.slice(0, 15), Date.now() - 85 * DAY);
+    await put(sites.slice(15), Date.now() - 80 * DAY);
+    const due = await t.query(internal.easygov.forms.sites.linkedDue, {
+      now: Date.now(),
+    });
+    expect(due.map(({ domain }) => domain)).toEqual(
+      sites.slice(0, 20).map(({ domain }) => domain),
+    );
+    const before = net.requests.length;
+    await recheck();
+    // Each cost one request, for the page that linked it, and no question.
+    expect(net.requests).toHaveLength(before + 20);
+    expect(decideMock).not.toHaveBeenCalled();
+  });
+});
+
 test("a host is looked up by its registrable domain, and the register's word stands", async () => {
   const { t, put, sitesAt } = deployment();
   const sites = parseRegister(csv);
@@ -621,7 +760,7 @@ test("a host is looked up by its registrable domain, and the register's word sta
     "Alameda County",
     { choice: "own", confidence: 0.9 },
   )!;
-  await put([acgov], 1);
+  await put([acgov], Date.now());
   const both = await sitesAt([county, "https://www.acgov.org/"]);
   expect(
     confirms("us/ca/alameda", both("https://www.acgov.org/"), both(county)),

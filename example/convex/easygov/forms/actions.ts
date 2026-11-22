@@ -46,9 +46,13 @@ import {
   mayRead,
   ownedBy,
   ownerQuestion,
+  rechecked,
   sitesAt,
   vSite,
+  type Evidence,
+  type Judged,
   type Linked,
+  type Unjudged,
 } from "./sites";
 import {
   addressKey,
@@ -152,20 +156,21 @@ const MAX_PAGE = 2_000_000;
 const domainOf = (url: string) => getDomain(new URL(url).hostname);
 
 /**
- * How the page `from`, as it was last read, leads to the site `url` is on:
- * it links it, or a redirect had it served from there. Undefined where it
- * doesn't, or was never read: nobody's word is taken for what a page links.
+ * How the page `from`, as it was last read, leads to a site: by the address
+ * there that it links, or that a redirect had it served from. Undefined
+ * where it doesn't, or was never read: nobody's word is taken for what a
+ * page links.
  */
-async function leadsTo(ctx: ActionCtx, from: string, url: string) {
+async function leadsTo(ctx: ActionCtx, from: string, site: string | null) {
   const held = await ctx.runQuery(internal.easygov.forms.data.addressOf, {
     key: addressKey(from),
   });
-  if (held?.outcome !== "page") return undefined;
-  const site = domainOf(url);
-  if (held.at && domainOf(held.at) === site) return "redirect";
-  return held.links.some((link) => domainOf(link.url) === site)
-    ? "link"
-    : undefined;
+  if (held?.outcome !== "page" || !site) return undefined;
+  if (held.at && domainOf(held.at) === site) {
+    return { by: "redirect" as const, url: held.at };
+  }
+  const link = held.links.find(({ url }) => domainOf(url) === site);
+  return link && { by: "link" as const, url: link.url };
 }
 
 /**
@@ -184,7 +189,7 @@ async function readable(
   return (
     !!from &&
     mayRead(url, on(url), on(from)) &&
-    (redirected || !!(await leadsTo(ctx, from, url)))
+    (redirected || !!(await leadsTo(ctx, from, domainOf(url))))
   );
 }
 
@@ -629,13 +634,12 @@ export const readLinks = internalAction({
  */
 async function supportFor(
   ctx: ActionCtx,
-  { by, from, also }: Linked,
-  url: string,
+  { domain, by, from, also }: Linked,
   html: string,
 ): Promise<Linked["support"]> {
-  const led = await leadsTo(ctx, from, url);
-  if (led !== "link") return led;
-  const hosts = labelledLinks(html, url).map(
+  const led = await leadsTo(ctx, from, domain);
+  if (led?.by !== "link") return led?.by;
+  const hosts = labelledLinks(html, led.url).map(
     (link) => `https://${new URL(link.url).hostname}/`,
   );
   const on = await sitesAt(ctx, [...(also ? [also] : []), ...hosts]);
@@ -644,21 +648,61 @@ async function supportFor(
   return second &&
     second.domain !== by.domain &&
     ownedBy(second, by.owner) &&
-    (await leadsTo(ctx, also, url))
+    (await leadsTo(ctx, also, domain))
     ? "second"
     : undefined;
 }
 
 /**
- * Judges whose a site is, once: a site on a government's suffix, or one
- * nothing is kept of that the page `from`, on a vouched site, leads to (see
- * `leadsTo`). The site's front page is read for what it says of itself and,
- * for a linked site, for what supports it: it links back to a site of the
- * same government, a second such site's page (`also`) links it, or a
- * redirect from the government's host led to it. The decision model is
- * asked with that and with what the linking page calls the link (`label`,
- * `under`), and the answer is kept (see `judged`). Gives the site as it
- * then stands.
+ * Whose a site is (see `judged`): a site on a government's suffix, or one
+ * a vouched site's page leads to. The front page of the host at `url` is
+ * read for what the site says of itself and, for a linked site, for what
+ * supports it: it links back to a site of the same government, a second
+ * such site's page links it, or a redirect from the government's host led
+ * to it. The decision model is asked with that and with what the linking
+ * page calls the link, where its answer could vouch. Nothing, where the
+ * model gave no answer or, checking `again`, the front page couldn't be
+ * read: a site isn't struck for being down.
+ */
+async function judge(
+  ctx: ActionCtx,
+  candidate: Unjudged | Linked,
+  url: string,
+  link: Evidence,
+  again = false,
+): Promise<Judged | undefined> {
+  const front = await request(
+    ctx,
+    new URL("/", url).href,
+    candidate.state === "linked" ? candidate.from : undefined,
+    15_000,
+    MAX_PAGE,
+  );
+  if (again && front.got !== "body") return undefined;
+  const html =
+    front.got === "body" ? new TextDecoder().decode(front.bytes) : "";
+  const says = selfDescribed(html);
+  const site =
+    candidate.state === "linked"
+      ? { ...candidate, support: await supportFor(ctx, candidate, html) }
+      : candidate;
+  const name = says.title ?? site.domain;
+  return (
+    judged(site, name, undefined) ??
+    judged(
+      site,
+      name,
+      await decide(ctx, ownerQuestion(site, { ...link, ...says })),
+    )
+  );
+}
+
+/**
+ * Judges whose a site is, once, and keeps the answer (see `judge`): a site
+ * on a government's suffix, or one nothing is kept of that the page `from`,
+ * on a vouched site, leads to; `also` is a page of a second site that links
+ * it, and `label` and `under` what the linking page calls the link. Gives
+ * the site as it then stands.
  */
 export const judgeSite = internalAction({
   args: {
@@ -672,42 +716,67 @@ export const judgeSite = internalAction({
   handler: async (ctx, { url, from, also, ...link }) => {
     const on = await sitesAt(ctx, [url, ...(from ? [from] : [])]);
     const [site, by, domain] = [on(url), from && on(from), domainOf(url)];
-    const judging =
+    const candidate =
       site?.state === "unjudged"
         ? site
         : !site && by && by.state === "vouched" && from && domain
           ? { state: "linked" as const, domain, by, from, also }
           : undefined;
-    if (!judging) return site ?? null;
-    const front = await request(
-      ctx,
-      new URL("/", url).href,
-      from,
-      15_000,
-      MAX_PAGE,
-    );
-    const html =
-      front.got === "body" ? new TextDecoder().decode(front.bytes) : "";
-    const says = selfDescribed(html);
-    const candidate =
-      judging.state === "linked"
-        ? { ...judging, support: await supportFor(ctx, judging, url, html) }
-        : judging;
-    const name = says.title ?? candidate.domain;
-    // Asked only where the answer could vouch: see `judged`.
-    const kept =
-      judged(candidate, name, undefined) ??
-      judged(
-        candidate,
-        name,
-        await decide(ctx, ownerQuestion(candidate, { ...link, ...says })),
-      );
+    const kept = candidate && (await judge(ctx, candidate, url, link));
     if (!kept) return site ?? null;
     await ctx.runMutation(internal.easygov.forms.sites.putSites, {
       sites: [kept],
       at: Date.now(),
     });
     return kept;
+  },
+});
+
+/**
+ * Judges again the link vouches about to lapse (see `linkedDue`): a batch
+ * of bounded size, each for a few plain requests and at most one question
+ * to the decision model. The pages that linked the site are asked again
+ * first; one that can't be asked stands as it was last read. See
+ * `rechecked` for what becomes of the vouch.
+ */
+export const recheckSites = internalAction({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    const now = Date.now();
+    const due = await ctx.runQuery(internal.easygov.forms.sites.linkedDue, {
+      now,
+    });
+    for (const held of due) {
+      // What a slow run doesn't reach waits for the next.
+      if (Date.now() - now > 5 * 60_000) break;
+      const { domain } = held;
+      const { from, also } = held.via;
+      for (const url of [from, ...(also ? [also] : [])]) {
+        await ask(ctx, { url, way: "request", spend: true, again: true });
+      }
+      const by = (await sitesAt(ctx, [from]))(from);
+      // A voucher whose own vouch has lapsed says nothing either way.
+      if (!by) continue;
+      const led = await leadsTo(ctx, from, domain);
+      const fresh =
+        by.state === "vouched" && led
+          ? await judge(
+              ctx,
+              { state: "linked", domain, by, from, also },
+              led.url,
+              {},
+              true,
+            )
+          : ({ state: "declined", domain, why: "unsupported" } as const);
+      const next = rechecked(held, fresh, now);
+      if (!next) continue;
+      await ctx.runMutation(internal.easygov.forms.sites.putSites, {
+        sites: [next.site],
+        at: next.at,
+      });
+    }
+    return null;
   },
 });
 

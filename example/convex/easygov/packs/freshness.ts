@@ -3,7 +3,9 @@
 // expire, so every current pack's forms are asked again on a schedule: the
 // server mostly says "unchanged", which costs nothing. A pack whose file has
 // changed, expired or gone is stale: operators see it in `stalePacks`, and a
-// case built on it tells the person what to check before they file.
+// case built on it tells the person what to check before they file. A file
+// on a site that is no longer vouched (see `forms/sites.ts`) isn't read, so
+// its form counts as gone.
 import { v } from "convex/values";
 import { internal } from "../../_generated/api";
 import type { Id } from "../../_generated/dataModel";

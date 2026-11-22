@@ -365,11 +365,11 @@ test("a linked site is vouched only where the model and something structural bot
   expect(decide).toHaveBeenCalledTimes(4);
   // Each is listed for a person to review, latest first.
   const review = await t.query(internal.easygov.forms.sites.toReview, {});
-  expect(review.map(({ domain, why }) => [domain, why])).toEqual([
-    ["auspost.com.au", "unsupported"],
-    ["careeronestop.org", "unsupported"],
-    ["taxadmin.org", "unsupported"],
-    ["iorder.com.au", "contractor"],
+  expect(review).toMatchObject([
+    { domain: "auspost.com.au", why: "unsupported" },
+    { domain: "careeronestop.org", why: "unsupported" },
+    { domain: "taxadmin.org", why: "unsupported" },
+    { domain: "iorder.com.au", why: "contractor" },
   ]);
 });
 

@@ -26,6 +26,7 @@ import {
   vLinked,
   vOwner,
   vRegistered,
+  vRevoked,
   vSuffixed,
   vSupport,
 } from "./schema";
@@ -40,8 +41,8 @@ export type Owner = Infer<typeof vOwner>;
 type Registered = Infer<typeof vRegistered>;
 
 /** What is kept of a site: the register's word, or a judgment of whose. */
-const vKept = v.union(vRegistered, vSuffixed, vLinked, vDeclined);
-type Judged =
+const vKept = v.union(vRegistered, vSuffixed, vLinked, vDeclined, vRevoked);
+export type Judged =
   | Infer<typeof vSuffixed>
   | Infer<typeof vLinked>
   | Infer<typeof vDeclined>;
@@ -50,7 +51,8 @@ type Judged =
  * A site as it stands. Vouched: a government publishes from it, and this is
  * whose it is and what says so. Declined: it was judged a contractor's, or
  * nobody could tell whose. Unjudged: its suffix says it is a government's,
- * and nobody has yet judged which one's.
+ * and nobody has yet judged which one's. Revoked: a link once vouched for
+ * it, and what supported that has gone.
  */
 export const vSite = v.union(
   ...vKept.members,
@@ -63,7 +65,7 @@ export const vSite = v.union(
   }),
 );
 export type Site = Infer<typeof vSite>;
-type Unjudged = Extract<Site, { state: "unjudged" }>;
+export type Unjudged = Extract<Site, { state: "unjudged" }>;
 type Vouched = Extract<Site, { state: "vouched" }>;
 
 /**
@@ -116,6 +118,7 @@ function governments(site: Site | undefined): boolean {
     case "unjudged":
       return true;
     case "declined":
+    case "revoked":
     case undefined:
       return false;
   }
@@ -405,14 +408,46 @@ export function confirms(
 /** As many hosts as are looked up at once. */
 const MAX_HOSTS = 50;
 
+const DAY = 24 * 60 * 60 * 1000;
+
 /** As long as a site stays declined before it is judged again. */
-const DECLINED_FOR = 30 * 24 * 60 * 60 * 1000;
+const DECLINED_FOR = 30 * DAY;
+
+/** As long as a link vouches for a site before it has to be judged again. */
+const LINKED_FOR = 90 * DAY;
+
+/** How long before a link's vouch lapses it is re-checked: twice, weekly. */
+const RECHECKED_IN = 14 * DAY;
+
+/** As many link vouches as one weekly run re-checks. */
+const RECHECKS = 20;
+
+type LinkedSite = Infer<typeof vLinked>;
+
+/**
+ * What a re-check makes of a link's vouch, and when it then dates from.
+ * Judged the government's again, it is renewed. Judged not, it is marked
+ * once and still stands until it lapses; found so twice in a row, it is
+ * revoked. Where nothing could be judged, nothing changes.
+ */
+export function rechecked(
+  held: LinkedSite & { at: number },
+  fresh: Judged | undefined,
+  now: number,
+): { site: Infer<typeof vKept>; at: number } | undefined {
+  if (!fresh) return undefined;
+  if (fresh.state === "vouched") return { site: fresh, at: now };
+  const { at, ...site } = held;
+  return held.missed
+    ? { site: { state: "revoked", domain: held.domain }, at: now }
+    : { site: { ...site, missed: true }, at };
+}
 
 /**
  * The site a host is on, as it stands: what its name says (see `governed`),
  * or what is kept for its registrable domain, which the Public Suffix List
- * tells. A site declined long ago is as if never judged. A host on nobody's
- * site has none.
+ * tells. A site declined long ago, or vouched by a link long ago, is as if
+ * never judged. A host on nobody's site has none.
  */
 export async function siteOn(
   ctx: QueryCtx,
@@ -430,9 +465,14 @@ export async function siteOn(
       .query("sites")
       .withIndex("by_domain", (q) => q.eq("domain", domain))
       .unique());
-  if (!row || (row.state === "declined" && row.at < now - DECLINED_FOR)) {
-    return named;
-  }
+  if (!row) return named;
+  const lasts =
+    row.state === "declined"
+      ? DECLINED_FOR
+      : row.state === "vouched" && row.via.kind === "link"
+        ? LINKED_FOR
+        : Infinity;
+  if (row.at < now - lasts) return named;
   const { _id, _creationTime, at: _at, ...site } = row;
   return site;
 }
@@ -470,22 +510,55 @@ export async function sitesAt(
 }
 
 /**
- * The sites declined, latest first: what a person reads to decide whether
- * one is owed a hand line.
+ * The sites declined or revoked, latest first: what a person reads to
+ * decide whether one is owed a hand line.
  *
  *   npx convex run easygov/forms/sites:toReview
  */
 export const toReview = internalQuery({
   args: {},
-  returns: v.array(v.object({ ...vDeclined.fields, at: v.number() })),
+  returns: v.array(
+    v.union(
+      v.object({ ...vDeclined.fields, at: v.number() }),
+      v.object({ ...vRevoked.fields, at: v.number() }),
+    ),
+  ),
   handler: async (ctx) => {
+    const rows = await Promise.all(
+      (["revoked", "declined"] as const).map((state) =>
+        ctx.db
+          .query("sites")
+          .withIndex("by_state_and_at", (q) => q.eq("state", state))
+          .order("desc")
+          .take(100),
+      ),
+    );
+    return rows
+      .flat()
+      .flatMap(({ _id, _creationTime, ...row }) =>
+        row.state === "declined" || row.state === "revoked" ? [row] : [],
+      );
+  },
+});
+
+/** The link vouches about to lapse, soonest first: a bounded batch. */
+export const linkedDue = internalQuery({
+  args: { now: v.number() },
+  returns: v.array(v.object({ ...vLinked.fields, at: v.number() })),
+  handler: async (ctx, { now }) => {
     const rows = await ctx.db
       .query("sites")
-      .withIndex("by_state_and_at", (q) => q.eq("state", "declined"))
-      .order("desc")
-      .take(100);
+      .withIndex("by_via_kind_and_at", (q) =>
+        q
+          .eq("via.kind", "link")
+          .gt("at", now - LINKED_FOR)
+          .lt("at", now - LINKED_FOR + RECHECKED_IN),
+      )
+      .take(RECHECKS);
     return rows.flatMap(({ _id, _creationTime, ...row }) =>
-      row.state === "declined" ? [row] : [],
+      row.state === "vouched" && row.via.kind === "link"
+        ? [{ ...row, via: row.via }]
+        : [],
     );
   },
 });
@@ -536,13 +609,19 @@ export const dropSites = internalMutation({
 const BATCH = 500;
 
 /**
- * Reads CISA's register and keeps who each .gov domain belongs to. Run on a
- * schedule (see `crons.ts`), and once to start.
+ * Reads CISA's register and keeps who each .gov domain belongs to, and has
+ * the link vouches about to lapse judged again (see `recheckSites`). Run on
+ * a schedule (see `crons.ts`), and once to start.
  */
 export const importSites = internalAction({
   args: {},
   returns: v.object({ domains: v.number() }),
   handler: async (ctx) => {
+    await ctx.scheduler.runAfter(
+      0,
+      internal.easygov.forms.actions.recheckSites,
+      {},
+    );
     const response = await fetch(REGISTER, {
       signal: AbortSignal.timeout(60_000),
     });

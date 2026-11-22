@@ -357,9 +357,15 @@ const run: Record<
     const grading = newFinder({});
     const published = await Promise.all(
       expect.map(async ({ code, url }) => {
-        // The case says the authority publishes the form at this address.
-        // Its file still has to name the form on its own.
-        const file = await fileAt(ctx, grading, { jurisdiction, code }, url);
+        // The case says the authority publishes the form at this address, as
+        // a link to it would: its file has to carry the form's number, and
+        // may print it with a suffix of its own ("SSA-3441-BK").
+        const file = await fileAt(
+          ctx,
+          grading,
+          { jurisdiction, code, linkedAs: code },
+          url,
+        );
         return file.ok
           ? { code, editionId: file.editionId, facts: file.facts }
           : { code, unfetched: `${file.why}: ${file.note}` };

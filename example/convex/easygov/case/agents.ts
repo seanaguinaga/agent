@@ -213,8 +213,15 @@ const PROFILE_PLACEHOLDERS = [
   .map((key) => `{{${key}}} (${READINGS[key].label.toLowerCase()})`)
   .join(", ");
 
-function subjectLines({ process, jurisdiction, authority, forms }: Subject) {
+function subjectLines({
+  process,
+  jurisdiction,
+  authority,
+  forms,
+  goal,
+}: Subject) {
   return [
+    goal ? `What the person needs, in their words: ${goal}` : "",
     `Process: ${process}`,
     `Jurisdiction: ${jurisdiction}`,
     authority ? `Authority: ${authority}` : "",
@@ -340,6 +347,8 @@ export async function research(
         "In `methods`, list each way of filing the site offers (online, by mail, in person), once each, " +
           "with who may use it. For each way, ask what form that way requires, and list it under that way.",
         "In `forms`, list only the forms needed whichever way the person files.",
+        "List only the forms for the step the person is taking now. Not the forms of a later step, " +
+          "such as a hearing or a further appeal that comes after this one.",
         "For each form, give its printed code if stated, and look for its direct official PDF URL. " +
           "If you cannot find the PDF, still list the form with the official page that requires it, and " +
           "leave its PDF URL empty. Never guess a PDF URL: give one only if you found it.",
@@ -557,6 +566,7 @@ export function subjectOf(
     jurisdiction,
     authority,
     forms,
+    goal,
   };
 }
 

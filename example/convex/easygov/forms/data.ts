@@ -614,9 +614,14 @@ async function chosenFor(ctx: QueryCtx, jurisdiction: string, code: string) {
  */
 export const knownSources = internalQuery({
   args: { jurisdiction: v.string(), code: v.string() },
-  returns: v.array(v.string()),
+  returns: v.array(
+    v.object({ url: v.string(), linkedAs: v.optional(v.string()) }),
+  ),
   handler: async (ctx, { jurisdiction, code }) =>
-    (await chosenFor(ctx, jurisdiction, code)).map((row) => row.url),
+    (await chosenFor(ctx, jurisdiction, code)).map((row) => ({
+      url: row.url,
+      linkedAs: row.chosen!.linkedAs,
+    })),
 });
 
 /**
@@ -626,9 +631,14 @@ export const knownSources = internalQuery({
  * poor choice can't push out a good one.
  */
 export const rememberChosen = internalMutation({
-  args: { jurisdiction: v.string(), code: v.string(), url: v.string() },
+  args: {
+    jurisdiction: v.string(),
+    code: v.string(),
+    url: v.string(),
+    linkedAs: v.optional(v.string()),
+  },
   returns: v.null(),
-  handler: async (ctx, { jurisdiction, code, url }) => {
+  handler: async (ctx, { jurisdiction, code, url, linkedAs }) => {
     const row = await addressRow(ctx, addressKey(url));
     if (!row) return null;
     const others = (await chosenFor(ctx, jurisdiction, code)).filter(
@@ -649,7 +659,13 @@ export const rememberChosen = internalMutation({
       }
     }
     await ctx.db.patch("formAddresses", row._id, {
-      chosen: { jurisdiction, bare: bareCode(code), code, at: Date.now() },
+      chosen: {
+        jurisdiction,
+        bare: bareCode(code),
+        code,
+        at: Date.now(),
+        ...(linkedAs ? { linkedAs } : {}),
+      },
     });
     return null;
   },

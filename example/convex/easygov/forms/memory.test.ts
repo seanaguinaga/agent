@@ -27,8 +27,10 @@ const choose = (t: T, name: string, code = "DWC-1") =>
     code,
     url: `${dir}/${name}.pdf`,
   });
-const remembered = (t: T, code = "DWC-1", jurisdiction = "us/ca") =>
-  t.query(data.knownSources, { jurisdiction, code });
+const remembered = async (t: T, code = "DWC-1", jurisdiction = "us/ca") =>
+  (await t.query(data.knownSources, { jurisdiction, code })).map(
+    ({ url }) => url,
+  );
 
 test("a form's chosen address is remembered under any spelling of its code", async () => {
   const t = initConvexTest();
@@ -39,6 +41,20 @@ test("a form's chosen address is remembered under any spelling of its code", asy
   // Another form with the same number, or in another place, isn't it.
   expect(await remembered(t, "RCI-1")).toEqual([]);
   expect(await remembered(t, "DWC-1", "us")).toEqual([]);
+});
+
+test("a chosen address keeps the words its link gave it", async () => {
+  const t = initConvexTest();
+  await served(t, "a");
+  await t.mutation(data.rememberChosen, {
+    jurisdiction: "us/ca",
+    code: "DWC-1",
+    url: `${dir}/a.pdf`,
+    linkedAs: "DWC 1 Claim Form",
+  });
+  expect(
+    await t.query(data.knownSources, { jurisdiction: "us/ca", code: "DWC-1" }),
+  ).toEqual([{ url: `${dir}/a.pdf`, linkedAs: "DWC 1 Claim Form" }]);
 });
 
 test("a second copy of the same file and an earlier revision are forgotten", async () => {

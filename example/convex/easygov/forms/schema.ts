@@ -165,6 +165,12 @@ const addressRow = {
       bare: v.string(),
       code: v.string(),
       at: v.number(),
+      /**
+       * The words the authority's page linked it by, if it came by a link:
+       * the file is asked with them again, so a code it prints with a
+       * suffix of its own ("SSA-3441-BK") is still taken as the form.
+       */
+      linkedAs: v.optional(v.string()),
     }),
   ),
 };

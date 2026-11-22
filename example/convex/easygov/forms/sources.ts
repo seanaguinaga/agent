@@ -299,10 +299,16 @@ export function shortlist(
     .map(({ link }) => link);
 }
 
-/** A code cut at its separators, without the word "form". */
+/**
+ * A code cut at its separators, without the word "form". The federal series
+ * are spelled out or not: "Standard Form 180" is SF 180, and "Optional Form
+ * 74" is OF 74.
+ */
 function codeParts(text: string): string[] {
   return text
     .toUpperCase()
+    .replace(/\bSTANDARD\s+FORM\b/g, "SF")
+    .replace(/\bOPTIONAL\s+FORM\b/g, "OF")
     .replace(/FORMS?/g, "")
     .split(/[^A-Z0-9]+/)
     .filter(Boolean);

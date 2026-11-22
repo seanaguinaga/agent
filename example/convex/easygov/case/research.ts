@@ -25,7 +25,10 @@ export const METHOD_LABEL: Record<Method, string> = {
 const zForm = z.object({
   code: z
     .string()
-    .describe("The form's printed code, or its title if it has none."),
+    .describe(
+      'The form\'s printed code alone, such as "SF 180" or "DL 44", without its title. ' +
+        "Only a form with no printed code is given by its title.",
+    ),
   pdfUrl: z
     .string()
     .describe('The form\'s direct official PDF URL, or "" if not found.'),
@@ -83,9 +86,19 @@ export const isPage = (url: string) => /^https:\/\/[^\s`"'<>()[\]]+$/.test(url);
 const unique = <T>(items: T[]): T[] => [...new Set(items)];
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 const page = (url: string) => (isPage(url.trim()) ? url.trim() : "");
-/** An address that could be a PDF: models often give the page it is on. */
-const pdf = (url: string) =>
-  /pdf/i.test(page(url).split(/[?#]/)[0]) ? page(url) : "";
+/**
+ * An address that could be a PDF: models often give the page it is on. Some
+ * sites serve their files from a download address with no "pdf" in it
+ * ("mass.gov/doc/…/download"); the fetch says which it is.
+ */
+const pdf = (url: string) => {
+  const [path, query = ""] = page(url).split(/[?#]/);
+  const file =
+    /pdf/i.test(path) ||
+    /\/(?:download|attachment|file)s?\/?$/i.test(path) ||
+    /(?:^|&)download\b/i.test(query);
+  return file ? page(url) : "";
+};
 
 /**
  * The form's code out of what a model wrote for it, which is often the code
@@ -103,7 +116,17 @@ export function codeIn(text: string): string {
   const lead = cut < 0 ? line : line.slice(0, cut);
   if (/\d/.test(lead.replace(/\([^()]*\)/g, ""))) {
     // The code's title in brackets after it: "SF 180 (Standard Form 180)".
-    return lead.replace(/\s+\([^()]*\)$/, "");
+    // Or written after it: "735-515 Application for Replacement". A code
+    // ends at its last part with a digit, and any capitals right after it
+    // ("DL 410 FO"); the first word with a small letter starts the title.
+    const words = lead.replace(/\s+\([^()]*\)$/, "").split(" ");
+    const last = words.findLastIndex((word) => /\d/.test(word));
+    const tail = words.slice(last + 1);
+    const capitals = tail.findIndex((word) => /[a-z]/.test(word));
+    return [
+      ...words.slice(0, last + 1),
+      ...tail.slice(0, capitals < 0 ? tail.length : capitals),
+    ].join(" ");
   }
   // Only a title outside the brackets: the code is what they hold, unless
   // that is a revision date.

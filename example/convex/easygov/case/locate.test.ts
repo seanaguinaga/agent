@@ -428,7 +428,7 @@ async function readIndex(t: T) {
   return answer.ok ? answer.links : [];
 }
 
-test("an unsure choice of link isn't acted on: the other leads are used and the choice is reported", async () => {
+test("an unsure choice of link isn't taken as the authority's word: it is asked like any lead, and the choice is reported", async () => {
   const t = await withSites();
   const linked = `${ssa}/ssa-561-sp.pdf`;
   const given = `${ssa}/ssa-561.pdf`;
@@ -448,7 +448,8 @@ test("an unsure choice of link isn't acted on: the other leads are used and the 
     { links: () => readIndex(t) },
   );
 
-  expect(net.asked(linked)).toBe(0);
+  // Asked as a guess: its file isn't confirmed by the link.
+  expect(net.asked(linked)).toBe(1);
   expect(located.file).toMatchObject({
     url: given,
     via: "given",

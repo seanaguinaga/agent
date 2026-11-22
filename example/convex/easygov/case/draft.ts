@@ -203,6 +203,12 @@ export type Subject = {
   jurisdiction: string;
   authority?: string;
   forms: string[];
+  /**
+   * What the person said they need, in their words. `process` is search
+   * terms, and its synonyms can name later steps ("request for hearing");
+   * the goal says which step they are at.
+   */
+  goal?: string;
 };
 
 export type Draft = z.infer<typeof zDraft>;

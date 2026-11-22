@@ -41,6 +41,7 @@ import {
   looseKey,
   shortlist,
   type LabelledLink,
+  type NamedBy,
   type PageLink,
 } from "../forms/sources";
 import {
@@ -179,6 +180,8 @@ export async function fileAt(
     code: string;
     /** The page's words for its link to the address, if it links it as the form. */
     linkedAs?: string;
+    /** Whether that link may stand for a file with no words: see `VERY_SURE`. */
+    trusted?: boolean;
   },
   url: string,
   /** The page that links the address, where it was come by from one. */
@@ -187,7 +190,7 @@ export async function fileAt(
   return await ask(
     finder,
     url,
-    `${form.code}\n${form.linkedAs ?? ""}`,
+    `${form.code}\n${form.linkedAs ?? ""}\n${form.trusted ?? ""}`,
     (way, spend) =>
       ctx.runAction(internal.easygov.forms.actions.fetchFile, {
         ...form,
@@ -322,6 +325,13 @@ type Considered = { choice: string; confidence?: number };
 const SURE = 0.5;
 
 /**
+ * From this, a choice of link between the packet's government's own sites
+ * (see `confirms`) is trusted to say what a file with no words to read is:
+ * see `namedBy`. Nothing else says so of such a file.
+ */
+const VERY_SURE = 0.9;
+
+/**
  * Which of an authority's own links is the form. The choice is among links
  * that exist, so no address can be made up, and it has to come with a
  * confidence of at least `SURE`. Where the decision model can't be reached,
@@ -415,6 +425,7 @@ type FormFile = {
   editionId: Id<"formEditions">;
   via: Via;
   facts: FormFacts;
+  namedBy: NamedBy;
   /** Whether it is the file the authority's own link gives. */
   designated: boolean;
 };
@@ -438,13 +449,18 @@ type ChosenFile = {
   facts: FormFacts;
   /** Whether the file is confirmed as the form: see `backs`. */
   backed: boolean;
+  /**
+   * What says it is the form. "link": nothing on it could be read, so its
+   * revision, expiry and places are unknown, and it is never filled.
+   */
+  namedBy: NamedBy;
 };
 
 /** What finding a form gave: its file, if any, and how it was come by. */
 type Located = {
   file?: ChosenFile;
   /** The other files that named the form, which this one was chosen over. */
-  others: Omit<FormFile, "editionId" | "designated">[];
+  others: Omit<FormFile, "editionId" | "designated" | "namedBy">[];
   /** The authority's own link to the form, where it gave one of the files. */
   designated?: Designated;
   /** Why there is or isn't one: how many links there were to choose from. */
@@ -464,7 +480,7 @@ type Located = {
 async function tryLeads(
   ctx: ActionCtx,
   finder: Finder,
-  form: { jurisdiction: string; code: string; linkedAs?: string },
+  form: Parameters<typeof fileAt>[2],
   leads: Lead[],
 ): Promise<Tried> {
   const answers = await Promise.all(
@@ -482,6 +498,7 @@ async function tryLeads(
               via: lead.via,
               editionId: answer.editionId,
               facts: answer.facts,
+              namedBy: answer.namedBy,
               designated: lead.via === "linked",
             },
           ]
@@ -557,7 +574,12 @@ export async function locateForm(
 ): Promise<Located> {
   const { jurisdiction, authority } = subject;
   const { code } = form;
-  const asForm = (linkedAs?: string) => ({ jurisdiction, code, linkedAs });
+  const asForm = (linkedAs?: string, trusted?: boolean) => ({
+    jurisdiction,
+    code,
+    linkedAs,
+    trusted,
+  });
   const as = (via: Via, from?: string) => (url: string) => ({ url, via, from });
   // Which of these addresses are, with the page that links the form, the
   // packet's government's own (see `confirms`): none, where no page does.
@@ -578,8 +600,9 @@ export async function locateForm(
     // The sites of the link's two ends are judged before it is followed,
     // where they have to be: what a site nobody vouches for leads to is read
     // no further than one link in, and its form is never confirmed.
+    let trusted = false;
     if (chosen.designated?.on) {
-      const { url, on: page, label, under } = chosen.designated;
+      const { url, on: page, label, under, confidence } = chosen.designated;
       const on = await sitesAt(ctx, [page, url]);
       const paged = await judgedNow(ctx, finder, on(page), page);
       const also = links.find(
@@ -588,17 +611,21 @@ export async function locateForm(
           siteOf(link.url) === siteOf(url) &&
           siteOf(link.on) !== siteOf(page),
       )?.on;
-      await judgedNow(ctx, finder, on(url), url, {
+      const filed = await judgedNow(ctx, finder, on(url), url, {
         label,
         under,
         ...(paged?.state === "vouched" && { from: page, also }),
       });
+      trusted = confidence >= VERY_SURE && confirms(jurisdiction, paged, filed);
     }
     const tried = chosen.designated
       ? await tryLeads(
           ctx,
           finder,
-          asForm(`${chosen.designated.label} ${chosen.designated.under ?? ""}`),
+          asForm(
+            `${chosen.designated.label} ${chosen.designated.under ?? ""}`,
+            trusted,
+          ),
           leadsFrom(chosen.designated.url).map(
             as("linked", chosen.designated.on),
           ),
@@ -704,15 +731,9 @@ export async function locateForm(
     code,
     url: best.url,
   });
-  const { url, editionId, via, facts } = best;
+  const { url, editionId, via, facts, namedBy } = best;
   return {
-    file: {
-      url,
-      editionId,
-      via,
-      facts,
-      backed: backs(best),
-    },
+    file: { url, editionId, via, facts, namedBy, backed: backs(best) },
     others: rest.map(({ url, via, facts }) => ({ url, via, facts })),
     designated: linked,
     links,
@@ -877,7 +898,7 @@ export async function compilePacketForms(
   };
   const prepared = await Promise.all(
     found.map(async ({ form: entry, located: { file } }) => {
-      const { backed: _earlier, ...named } = entry;
+      const { backed: _earlier, namedBy: _how, ...named } = entry;
       if (!file) {
         // An address nothing came from isn't kept as a source.
         return {
@@ -889,8 +910,11 @@ export async function compilePacketForms(
           } satisfies PacketForm,
         };
       }
-      const form = { ...named, sourceUrl: file.url, backed: file.backed };
-      const made = await compiled(form.code, file);
+      const { backed, namedBy } = file;
+      const form = { ...named, sourceUrl: file.url, backed, namedBy };
+      // A file with no words to read has no place that says what goes in it.
+      const made =
+        namedBy === "text" ? await compiled(form.code, file) : undefined;
       if (made) {
         return {
           questions: made.questions,
@@ -903,14 +927,11 @@ export async function compilePacketForms(
         };
       }
       // If the PDF is at least there, the person is pointed to it.
-      // "Official" is said only of a file the authority's page links.
       return {
         questions: [],
         form: {
           ...form,
-          openItem: file.backed
-            ? `Complete ${form.code} by hand. EasyGov found the official form but could not fill it in.`
-            : `Complete ${form.code} by hand. EasyGov found a file for it but could not fill it in.`,
+          openItem: `Complete ${form.code} by hand. ${unfilled(file)}`,
         } satisfies PacketForm,
       };
     }),
@@ -934,6 +955,25 @@ export async function compilePacketForms(
     packetForms: prepared.map((result) => result.form),
     inputQuestions: [...questions.values()],
   };
+}
+
+/**
+ * What the person is told of a file that couldn't be filled in. "Official"
+ * is said only of a file the authority's page links, and only where the
+ * file's own words say it is the form.
+ */
+function unfilled({ backed, namedBy }: ChosenFile): string {
+  switch (namedBy) {
+    case "text":
+      return backed
+        ? "EasyGov found the official form but could not fill it in."
+        : "EasyGov found a file for it but could not fill it in.";
+    case "link":
+      return (
+        "EasyGov could not read the file the authority’s page links as this form, " +
+        "so check that it is the form, and its current edition, before you file it."
+      );
+  }
 }
 
 type Compiled = {

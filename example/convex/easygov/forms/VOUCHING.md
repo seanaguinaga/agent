@@ -247,6 +247,9 @@ Each stage is one commit, with its proof.
   - Open: unreadable files (trust a very sure link, read XFA, or OCR); vouching
     a search-cited domain that the country's root portal links; grading a
     fillable copy of the same form as the same edition.
+  - _Since:_ XFA is read, and a very sure link stands for a file with no words
+    (README, "Reading a form's identity"). Neither has been measured on the
+    `world` group again. OCR is still open.
 - [x] **4. Link vouching.** _Proof:_ acgov.org and formulare-bfinv.de are
       vouched; iorder.com.au, taxadmin.org, careeronestop.org and auspost.com.au
       are declined; the hand list shrinks to dgid.sn.

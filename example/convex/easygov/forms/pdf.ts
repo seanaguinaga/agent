@@ -52,7 +52,10 @@ export type Inspection = {
   /** False for a flat PDF: its targets were found on the page. */
   fillable: boolean;
   targets: Target[];
-  /** The start and end of the first page's words: enough to tell which form it is. */
+  /**
+   * The start and end of the words on the first page that has any: enough
+   * to tell which form it is. Empty where no page has a word to read.
+   */
   opening: string;
 };
 
@@ -434,8 +437,10 @@ export async function inspectPdf(bytes: Uint8Array): Promise<Inspection> {
   // A form prints its code somewhere on page one: at the top, in the footer
   // ("DL 410 FO (REV. 7/2024)" is the page's last line), or between an
   // instruction panel and the form ("MV-232 (2/26)"). So the whole page is
-  // kept, unless it is longer than any form's.
-  const first = (marks[0]?.text ?? []).map((t) => t.str).join(" ");
+  // kept, unless it is longer than any form's. A cover that is only a
+  // picture is passed over.
+  const worded = marks.find((page) => page.text.length);
+  const first = (worded?.text ?? []).map((t) => t.str).join(" ");
   const opening =
     first.length <= 12_000
       ? first

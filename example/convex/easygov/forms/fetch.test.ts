@@ -20,6 +20,7 @@ import {
   formPdf,
   kept,
   restoreNetwork,
+  scanPdf,
   servePage,
   servePdf,
   serveRevalidating,
@@ -83,6 +84,7 @@ const fetchFile = (
   more: {
     code?: string;
     linkedAs?: string;
+    trusted?: boolean;
     from?: string;
     way?: "request" | "browser";
     spend?: boolean;
@@ -563,6 +565,52 @@ describe("whether a file is the form", () => {
       ok: false,
       why: "otherForm",
     });
+  });
+
+  // The UK's V62 is such a file: each page is one picture.
+  test("a file with no words to read is the form only on a trusted link whose words name it", async () => {
+    const t = initConvexTest();
+    fakeNetwork({ [address]: servePdf(await scanPdf()) });
+    const v62 = { code: "V62", linkedAs: "Apply for a V5C (form V62)" };
+
+    expect(await fetchFile(t, address, v62)).toMatchObject({
+      ok: false,
+      why: "otherForm",
+    });
+    expect(
+      await fetchFile(t, address, { ...v62, linkedAs: "PDF", trusted: true }),
+    ).toMatchObject({ ok: false, why: "otherForm" });
+    expect((await kept(t)).editions).toHaveLength(0);
+
+    // It says the link alone named it, and nothing it couldn't read.
+    const answer = await fetchFile(t, address, { ...v62, trusted: true });
+    expect(answer).toMatchObject({
+      ok: true,
+      namedBy: "link",
+      facts: { pages: 1, places: 0, language: "unknown" },
+    });
+    expect(answer.ok && answer.facts).not.toHaveProperty("revision");
+    expect((await kept(t)).editions).toHaveLength(1);
+    // Kept, it is still no form to a link that isn't trusted.
+    expect(await fetchFile(t, address, v62)).toMatchObject({
+      ok: false,
+      why: "otherForm",
+    });
+  });
+
+  test("a trusted link doesn't let through a file whose words name another form", async () => {
+    const t = initConvexTest();
+    fakeNetwork({ [address]: servePdf(ssa827) });
+    const linked = { linkedAs: "Form SSA-561", trusted: true };
+
+    expect(await fetchFile(t, address, linked)).toMatchObject({
+      ok: false,
+      why: "otherForm",
+    });
+    // A file that names itself says so, whatever its link.
+    expect(
+      await fetchFile(t, address, { ...linked, code: "SSA-827" }),
+    ).toMatchObject({ ok: true, namedBy: "text" });
   });
 
   // The authority renamed "SSA-561-U2" to "SSA-561": its file prints only

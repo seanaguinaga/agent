@@ -18,6 +18,7 @@ import {
 } from "../../_generated/server";
 import { fileAt, newFinder } from "../case/locate";
 import type { FileAnswer } from "../forms/actions";
+import { vNamedBy } from "../forms/schema";
 import { requireOperator } from "../operators";
 import { vFormStanding } from "./schema";
 
@@ -167,6 +168,7 @@ export const packForms = internalQuery({
           code: v.string(),
           sourceUrl: v.string(),
           editionId: v.optional(v.id("formEditions")),
+          namedBy: v.optional(vNamedBy),
         }),
       ),
     }),
@@ -177,12 +179,13 @@ export const packForms = internalQuery({
     const forms = await Promise.all(
       (pack.packetForms ?? [])
         .filter(({ sourceUrl }) => sourceUrl)
-        .map(async ({ code, sourceUrl, blueprintId }) => {
+        .map(async ({ code, sourceUrl, blueprintId, namedBy }) => {
           const blueprint =
             blueprintId && (await ctx.db.get("formBlueprints", blueprintId));
           return {
             code,
             sourceUrl,
+            namedBy,
             ...(blueprint && { editionId: blueprint.editionId }),
           };
         }),
@@ -206,13 +209,19 @@ export const checkPack = internalAction({
     if (!pack) return null;
     const finder = newFinder(CHECK_LIMITS);
     const forms = await Promise.all(
-      pack.forms.map(async ({ code, sourceUrl, editionId }) => {
+      pack.forms.map(async ({ code, sourceUrl, editionId, namedBy }) => {
         // The pack bound this address to the form when it was made: asked
-        // again, its file still has to carry the form's number.
+        // again, its file still has to carry the form's number. One bound
+        // on a trusted link alone still has to have no words to read.
         const answer = await fileAt(
           ctx,
           finder,
-          { jurisdiction: pack.jurisdiction, code, linkedAs: code },
+          {
+            jurisdiction: pack.jurisdiction,
+            code,
+            linkedAs: code,
+            trusted: namedBy === "link",
+          },
           sourceUrl,
         );
         return { code, sourceUrl, ...standingOf(answer, editionId) };

@@ -35,6 +35,7 @@ import {
   vAddressAnswer,
   vFilledDocument,
   vFormFacts,
+  vNamedBy,
   vPageLink,
   vLeft,
   vTarget,
@@ -56,11 +57,12 @@ import {
 } from "./sites";
 import {
   addressKey,
-  isTheForm,
   isWebPage,
   labelledLinks,
   MAX_BYTES,
+  namedBy,
   notAPdf,
+  type NamedBy,
   readUpTo,
   selfDescribed,
   stands,
@@ -131,6 +133,8 @@ type Ask = {
     jurisdiction: string;
     /** The page's words for its link here, if it links it as the form. */
     linkedAs?: string;
+    /** Whether that link may stand for a file with no words: see `namedBy`. */
+    trusted?: boolean;
     /** The registry entry a new file belongs to. */
     formId?: Id<"forms">;
   };
@@ -142,7 +146,11 @@ type Ask = {
 type Asked =
   | {
       ok: true;
-      file: { editionId: Id<"formEditions">; facts: FormFacts };
+      file: {
+        editionId: Id<"formEditions">;
+        facts: FormFacts;
+        namedBy: NamedBy;
+      };
       cost: AskCost;
     }
   | { ok: true; links: PageLink[]; cost: AskCost }
@@ -362,12 +370,19 @@ async function ask(
     editionId?: Id<"formEditions">;
   }): Asked | undefined => {
     if (!form) return no("unusable", "It isn't a web page.");
-    if (!isTheForm(form.code, file.opening, form.linkedAs)) {
-      return no("otherForm", `The file doesn't name ${form.code}.`);
+    const { editionId, opening } = file;
+    const named = namedBy(form.code, opening, form.linkedAs, form.trusted);
+    if (!named) {
+      return no(
+        "otherForm",
+        opening
+          ? `The file doesn't name ${form.code}.`
+          : `The file has no words to read, and no trusted link names it ${form.code}.`,
+      );
     }
-    const { editionId, opening, facts } = file;
+    const facts = factsNow(opening, file.facts);
     return editionId
-      ? { ok: true, file: { editionId, facts: factsNow(opening, facts) }, cost }
+      ? { ok: true, file: { editionId, facts, namedBy: named }, cost }
       : undefined;
   };
   const asPage = (links: PageLink[]): Asked =>
@@ -529,14 +544,15 @@ async function ask(
     await inspectPdf(ready);
   const facts: ReadFacts = {
     pages,
-    places: targets.length,
+    // A place is known by the words beside it: with none to read, no place.
+    places: opening ? targets.length : 0,
     language: languageOf(opening),
     revision: revisionOf(`${edition ?? ""} ${opening}`),
   };
   // Whatever way it came, it has to be the form it's meant to be. A file
   // that isn't is still known for what it is, and isn't kept.
   let { editionId } = known;
-  if (isTheForm(form.code, opening, form.linkedAs) && !editionId) {
+  if (namedBy(form.code, opening, form.linkedAs, form.trusted) && !editionId) {
     // What's kept is the form ready to fill. Its identity is still the hash
     // of the bytes as the authority published them.
     const storageId = await ctx.storage.store(
@@ -582,6 +598,7 @@ const vFileAnswer = v.union(
     ok: v.literal(true),
     editionId: v.id("formEditions"),
     facts: vFormFacts,
+    namedBy: vNamedBy,
     cost: vCost,
   }),
   vNo,
@@ -595,6 +612,7 @@ export const fetchFile = internalAction({
     code: v.string(),
     jurisdiction: v.string(),
     linkedAs: v.optional(v.string()),
+    trusted: v.optional(v.boolean()),
     packet: v.optional(v.string()),
   },
   returns: vFileAnswer,

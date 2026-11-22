@@ -10,6 +10,7 @@ import {
   fakeNetwork,
   formPdf,
   restoreNetwork,
+  scanPdf,
   servePdf,
   serveStatus,
 } from "../forms/network.testkit";
@@ -38,6 +39,7 @@ const file = (
   ok: true,
   editionId: more.editionId ?? edition,
   facts: { ...facts, ...(more.expired && { expired: true }) },
+  namedBy: "text",
   cost,
 });
 const no = (why: Extract<FileAnswer, { ok: false }>["why"]): FileAnswer => ({
@@ -130,6 +132,34 @@ test("a pack whose form changed at the authority is marked stale, and says what 
   expect(await staleness()).toEqual([
     expect.stringContaining("SSA-561 is no longer at"),
   ]);
+});
+
+test("a pack's form that only its link named still stands at the next check, while it has no words", async () => {
+  vi.useFakeTimers();
+  const t = initConvexTest();
+  const url = "https://www.ssa.gov/forms/ssa-561.pdf";
+  const net = fakeNetwork({ [url]: servePdf(await scanPdf()) });
+  const saved = await t.mutation(internal.easygov.packs.data.createPack, {
+    ...ssaAppeal,
+    packetForms: [
+      { code: "SSA-561", sourceUrl: url, inputs: [], namedBy: "link" },
+    ],
+    reviewedPackIds: [],
+  });
+  if (saved.kind !== "created") throw new Error("Expected a pack");
+  const staleness = async () => {
+    await t.mutation(internal.easygov.packs.freshness.sweepPacks, {
+      cursor: null,
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    return await t.run((ctx) => stalenessOf(ctx, saved.id));
+  };
+
+  expect(await staleness()).toEqual([]);
+  // The authority puts a file with words there, of another form.
+  vi.setSystemTime(Date.now() + 8 * 24 * 60 * 60 * 1000);
+  net.routes[url] = servePdf(await formPdf(["Form SSA-827 (11-2024)"]));
+  expect(await staleness()).toHaveLength(1);
 });
 
 test("a pack whose form is on a site since revoked is marked stale at its next check", async () => {

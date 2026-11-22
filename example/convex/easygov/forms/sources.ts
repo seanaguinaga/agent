@@ -21,25 +21,39 @@ export function carriesNumber(code: string, text: string): boolean {
   );
 }
 
+/** What says a file is a form: its own words, or the authority's link alone. */
+export type NamedBy = "text" | "link";
+
 /**
- * Whether a file is the form `code`. It is if it prints the whole code. It
- * is also if the authority's own page links it as the form and both say so:
- * the page's words for the link (`linkedAs`: the link's own and the heading
- * it sits under, never its file name) carry the form's number, and so does
- * the file. An authority renames a form ("SSA-561-U2" became "SSA-561") and
- * goes on linking its file under the one heading, so the file may no longer
- * print the code as it was asked for; but the page and the file each have
- * to name it, so a link picked wrongly isn't let through by its file alone.
+ * What says a file is the form `code`: undefined if nothing does.
+ *
+ * Its text does if it prints the whole code. It also does if the authority's
+ * own page links it as the form and both say so: the page's words for the
+ * link (`linkedAs`: the link's own and the heading it sits under, never its
+ * file name) carry the form's number, and so does the file. An authority
+ * renames a form ("SSA-561-U2" became "SSA-561") and goes on linking its
+ * file under the one heading, so the file may no longer print the code as
+ * it was asked for; but the page and the file each have to name it, so a
+ * link picked wrongly isn't let through by its file alone.
+ *
+ * The link alone does only for a file with no words to read at all, such as
+ * a scan (`opening` is empty): the link has to be `trusted` (see
+ * `VERY_SURE`), and its words have to print the whole code. A file whose
+ * words don't name the form is never the form, whatever links it.
  */
-export function isTheForm(
+export function namedBy(
   code: string,
   opening: string,
-  linkedAs?: string,
-): boolean {
-  if (namesForm(code, opening)) return true;
-  return (
-    !!linkedAs && carriesNumber(code, linkedAs) && carriesNumber(code, opening)
-  );
+  linkedAs = "",
+  trusted = false,
+): NamedBy | undefined {
+  if (!opening) {
+    return trusted && namesForm(code, linkedAs) ? "link" : undefined;
+  }
+  const says =
+    namesForm(code, opening) ||
+    (carriesNumber(code, linkedAs) && carriesNumber(code, opening));
+  return says ? "text" : undefined;
 }
 
 /** Larger than any form we'd fill, small enough to hold in memory. */

@@ -15,6 +15,7 @@ import {
   formPdf,
   kept,
   restoreNetwork,
+  scanPdf,
   servePage,
   servePdf,
   serveStatus,
@@ -949,6 +950,79 @@ test("a site the authority's page links is judged before the link is followed: o
   const vendor = await located("contractor");
   expect(vendor.file).toBeUndefined();
   expect(vendor.net.addresses()).toEqual([index, front, own]);
+});
+
+test("a file with no words to read is the form only on a very sure link, between the government's own sites, whose words name it", async () => {
+  const file = `${ssa}/ssa-561.pdf`;
+  const scan = await scanPdf();
+  const located = async (confidence: number, on = index, label = "SSA-561") => {
+    fakeNetwork({ [file]: servePdf(scan) });
+    choosing(/ssa-561/, confidence);
+    return await locateForm(
+      ctxOf(await withSites()),
+      "thread",
+      { code: "SSA-561", leads: [file] },
+      subject,
+      finderWith(),
+      { links: async () => [{ url: file, label, pdf: true, on }] },
+    );
+  };
+
+  // Confirmed, and known as named by the link alone, with nothing read.
+  const found = await located(0.9);
+  expect(found.file).toMatchObject({
+    url: file,
+    via: "linked",
+    backed: true,
+    namedBy: "link",
+    facts: { places: 0, language: "unknown" },
+  });
+  // Sure enough to follow, not to stand for the file.
+  const unsure = await located(0.89);
+  expect(unsure.file).toBeUndefined();
+  expect(unsure.failed).toContainEqual(
+    expect.objectContaining({ url: file, via: "linked", why: "otherForm" }),
+  );
+  // Another government's page, a site nobody vouches for, and a link whose
+  // words don't name the form.
+  expect((await located(1, "https://www.nv.gov/forms/")).file).toBeUndefined();
+  expect((await located(1, "https://example.org/forms")).file).toBeUndefined();
+  expect((await located(1, index, "Download PDF")).file).toBeUndefined();
+});
+
+test("a form named by its link alone is confirmed, never filled, and the person is told it couldn't be read", async () => {
+  const t = await withSites();
+  const file = `${ssa}/ssa-561.pdf`;
+  fakeNetwork({
+    [index]: servePage(`<h2>Form SSA-561</h2><a href="${file}">PDF</a>`),
+    [file]: servePdf(await scanPdf()),
+  });
+  choosing(/ssa-561/, 0.95);
+
+  const draft = await compilePacketForms(
+    ctxOf(t),
+    "thread",
+    {
+      jurisdiction: "us",
+      authority: subject.authority,
+      output: { sources: [index] },
+      packetForms: [{ code: "SSA-561", sourceUrl: "", inputs: [] }],
+    } as unknown as Parameters<typeof compilePacketForms>[2],
+    finderWith(),
+  );
+
+  expect(draft.packetForms).toEqual([
+    {
+      code: "SSA-561",
+      sourceUrl: file,
+      inputs: [],
+      backed: true,
+      namedBy: "link",
+      openItem: expect.stringMatching(
+        /^Complete SSA-561 by hand\. EasyGov could not read the file .* links as this form/,
+      ),
+    },
+  ]);
 });
 
 test("a later edition on the authority's own site is chosen over the old one its page links, and isn't confirmed", async () => {

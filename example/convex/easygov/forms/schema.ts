@@ -98,6 +98,9 @@ export const vFormFacts = v.object({
   expired: v.optional(v.boolean()),
 });
 
+/** What says a file is a form: see `namedBy` in `sources.ts`. */
+export const vNamedBy = v.union(v.literal("text"), v.literal("link"));
+
 /** A link on a page: where it goes, the page's words for it, and its kind. */
 export const vPageLink = v.object({
   url: v.string(),

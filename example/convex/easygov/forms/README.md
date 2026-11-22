@@ -76,21 +76,46 @@ doesn't allow filling, the form is refused and says why.
 
 ## Reading a form's identity
 
-A file is the form only where its own words name it (`namesForm`). The words are
-those of its first page, read by pdfjs. Where a plain reading gives none that
-say, there is one more place to read:
+What says a file is the form is kept with the answer (`namedBy` in
+`sources.ts`), through to the packet's form:
 
-- **XFA.** A form drawn only by XFA (Canada's IMM 5257) shows every reader but
-  Adobe's a single "Please wait..." page. Its words are in its XFA template and
-  data, and pdfjs reads them from there (`enableXfa`) as the pages they make.
-  They are used like any page's: for which form it is, and its revision,
-  language and expiry. No dependency was added.
-  - **It can't be filled.** Such a form has no fields a PDF library can set, and
+- **Its text** (`"text"`). Its own words name the form (`namesForm`): those of
+  the first page that has any, read by pdfjs.
+  - **XFA.** A form drawn only by XFA (Canada's IMM 5257) shows every reader but
+    Adobe's a single "Please wait..." page. Its words are in its XFA template
+    and data, and pdfjs reads them from there (`enableXfa`) as the pages they
+    make. They are used like any page's: for which form it is, and its revision,
+    language and expiry. No dependency was added.
+  - **An XFA form can't be filled.** It has no fields a PDF library can set, and
     no page to draw on. It is found, and confirmed where its link is, with no
     places: the person completes it by hand, in Adobe's reader. Filling XFA
     isn't built.
+- **The authority's link alone** (`"link"`). Only for a file with no words to
+  read at all, on any page or in XFA: the UK's V62 is two pictures. All of these
+  have to hold:
+  - the link was chosen as the form at 0.9 or surer (`VERY_SURE` in
+    `case/locate.ts`);
+  - its page and the file are on the packet's government's own vouched sites
+    (`confirms`);
+  - the page's words for the link, its own or its heading, print the form's
+    whole code, by the rule a file's text is held to.
 
-Not yet: reading image-only pages by OCR is the planned third fix.
+A file with words that don't name the form is refused, whatever links it.
+
+A form named by its link alone is confirmed (`backed`), since the authority's
+page links it. Nothing else is known of it, and it is treated so:
+
+- **Ranking.** It has no revision, language or places. A file of the authority's
+  own that prints a revision, and any readable English file with places, is
+  chosen over it.
+- **Edition.** Its revision and expiry can't be read, so the person is asked to
+  check that it is the form, and the current edition, in its open item.
+- **Filling.** It is never filled: no place on it says what goes there.
+- **Later checks.** The pack keeps `namedBy`, so its weekly check accepts the
+  address only while the file there still has no words.
+
+Not yet: reading image-only pages by OCR is the planned third fix. Such a file
+would then name itself.
 
 ## Mapping
 

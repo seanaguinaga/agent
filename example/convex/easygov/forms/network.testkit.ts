@@ -302,6 +302,16 @@ export async function xfaPdf(lines: string[]): Promise<Uint8Array> {
   return await doc.save();
 }
 
+/** A small real scan: one page that is one picture, with no word to read. */
+export async function scanPdf(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const pixel = await doc.embedPng(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  );
+  doc.addPage([612, 792]).drawImage(pixel, { width: 612, height: 792 });
+  return await doc.save();
+}
+
 /** The rows kept, to say what finding a form stored. */
 export const kept = (t: T) =>
   t.run(async (ctx) => {

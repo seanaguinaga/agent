@@ -6,6 +6,7 @@ import { sha256 as sha256Of } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { ConvexError, v, type Infer } from "convex/values";
 import { PDFCheckBox, PDFDocument, PDFTextField } from "pdf-lib";
+import { getDomain } from "tldts";
 import { internal } from "../../_generated/api";
 import type { Id } from "../../_generated/dataModel";
 import {
@@ -40,7 +41,15 @@ import {
   vMapping,
   vPacketPdf,
 } from "./schema";
-import { judged, mayRead, ownerQuestion, sitesAt, vSite } from "./sites";
+import {
+  judged,
+  mayRead,
+  ownedBy,
+  ownerQuestion,
+  sitesAt,
+  vSite,
+  type Linked,
+} from "./sites";
 import {
   addressKey,
   isTheForm,
@@ -139,10 +148,44 @@ type AddressAnswer = Infer<typeof vAddressAnswer>;
 /** As much of a page as is read for its links. */
 const MAX_PAGE = 2_000_000;
 
-/** Whether an address may be read, reached from the page `from` if any. */
-async function readable(ctx: ActionCtx, url: string, from?: string) {
+/** The site an address is on, by its name alone: its registrable domain. */
+const domainOf = (url: string) => getDomain(new URL(url).hostname);
+
+/**
+ * How the page `from`, as it was last read, leads to the site `url` is on:
+ * it links it, or a redirect had it served from there. Undefined where it
+ * doesn't, or was never read: nobody's word is taken for what a page links.
+ */
+async function leadsTo(ctx: ActionCtx, from: string, url: string) {
+  const held = await ctx.runQuery(internal.easygov.forms.data.addressOf, {
+    key: addressKey(from),
+  });
+  if (held?.outcome !== "page") return undefined;
+  const site = domainOf(url);
+  if (held.at && domainOf(held.at) === site) return "redirect";
+  return held.links.some((link) => domainOf(link.url) === site)
+    ? "link"
+    : undefined;
+}
+
+/**
+ * Whether an address may be read, reached from `from` if at all: a page
+ * that was read and leads to it (see `leadsTo`), or the address a redirect
+ * to it was seen to come from.
+ */
+async function readable(
+  ctx: ActionCtx,
+  url: string,
+  from?: string,
+  redirected = false,
+) {
   const on = await sitesAt(ctx, [url, ...(from ? [from] : [])]);
-  return mayRead(url, on(url), from ? on(from) : undefined);
+  if (mayRead(url, on(url))) return true;
+  return (
+    !!from &&
+    mayRead(url, on(url), on(from)) &&
+    (redirected || !!(await leadsTo(ctx, from, url)))
+  );
 }
 
 /**
@@ -176,7 +219,7 @@ async function request(
   const signal = AbortSignal.timeout(ms);
   try {
     for (let redirects = 0; redirects <= 5; redirects++) {
-      if (!(await readable(ctx, address, from))) {
+      if (!(await readable(ctx, address, from, redirects > 0))) {
         return {
           got: "unusable",
           note: "The form link left the authority’s permitted sites.",
@@ -194,8 +237,10 @@ async function request(
       const { status } = response;
       if (status === 304) return { got: "unchanged", note: "" };
       if (status >= 300 && status < 400 && response.headers.has("location")) {
-        from = address;
-        address = new URL(response.headers.get("location")!, address).href;
+        const next = new URL(response.headers.get("location")!, address).href;
+        // A redirect within a site is no step further from a government's.
+        if (domainOf(next) !== domainOf(address)) from = address;
+        address = next;
         continue;
       }
       // Gone is gone; anything else is the site turning the request away.
@@ -248,7 +293,13 @@ async function linksWorthKeeping(ctx: ActionCtx, html: string, page: string) {
     ({ url }) => url.length <= 500,
   );
   const on = await sitesAt(ctx, [page, ...all.map(({ url }) => url)]);
-  const links = all.filter(({ url }) => mayRead(url, on(url), on(page)));
+  // A page keeps the links to its own site whoever's it is: they are read
+  // only once the site is vouched, and a vouch mustn't wait on a new read.
+  const links = all.filter(
+    ({ url }) =>
+      mayRead(url, on(url), on(page)) ||
+      (!!domainOf(url) && domainOf(url) === domainOf(page)),
+  );
   return [
     ...links.filter(({ pdf }) => pdf).slice(0, MAX_LINKS),
     ...links.filter(({ pdf }) => !pdf).slice(0, MAX_LINKS),
@@ -399,7 +450,7 @@ async function ask(
     if (
       opened.got === "page" &&
       new URL(opened.at).host !== new URL(url).host &&
-      !(await readable(ctx, opened.at, url))
+      !(await readable(ctx, opened.at, url, true))
     ) {
       const note = "The page left the authority’s permitted sites.";
       await keep({ outcome: "unusable", note });
@@ -429,7 +480,8 @@ async function ask(
       new TextDecoder().decode(bytes),
       at,
     );
-    await keep({ outcome: "page", links });
+    const moved = new URL(at).host !== new URL(url).host;
+    await keep({ outcome: "page", links, ...(moved && { at }) });
     return asPage(links);
   }
   if (!form) return no("unusable", "It isn't a web page.");
@@ -571,38 +623,86 @@ export const readLinks = internalAction({
 });
 
 /**
- * Judges whose a site on a government's suffix is, once: the site's front
- * page is read for what it says of itself, the decision model is asked with
- * that and with what the page linking it calls the link (`label`, `under`),
- * and the answer is kept (see `judged`). Gives the site as it then stands.
+ * What, beyond the link, says a linked site is its government's (see
+ * `vSupport`), from its front page and the pages said to link it. Nothing,
+ * where the page said to link it doesn't lead to it.
+ */
+async function supportFor(
+  ctx: ActionCtx,
+  { by, from, also }: Linked,
+  url: string,
+  html: string,
+): Promise<Linked["support"]> {
+  const led = await leadsTo(ctx, from, url);
+  if (led !== "link") return led;
+  const hosts = labelledLinks(html, url).map(
+    (link) => `https://${new URL(link.url).hostname}/`,
+  );
+  const on = await sitesAt(ctx, [...(also ? [also] : []), ...hosts]);
+  if (hosts.some((host) => ownedBy(on(host), by.owner))) return "back";
+  const second = also && on(also);
+  return second &&
+    second.domain !== by.domain &&
+    ownedBy(second, by.owner) &&
+    (await leadsTo(ctx, also, url))
+    ? "second"
+    : undefined;
+}
+
+/**
+ * Judges whose a site is, once: a site on a government's suffix, or one
+ * nothing is kept of that the page `from`, on a vouched site, leads to (see
+ * `leadsTo`). The site's front page is read for what it says of itself and,
+ * for a linked site, for what supports it: it links back to a site of the
+ * same government, a second such site's page (`also`) links it, or a
+ * redirect from the government's host led to it. The decision model is
+ * asked with that and with what the linking page calls the link (`label`,
+ * `under`), and the answer is kept (see `judged`). Gives the site as it
+ * then stands.
  */
 export const judgeSite = internalAction({
   args: {
     url: v.string(),
     label: v.optional(v.string()),
     under: v.optional(v.string()),
+    from: v.optional(v.string()),
+    also: v.optional(v.string()),
   },
   returns: v.union(vSite, v.null()),
-  handler: async (ctx, { url, ...link }) => {
-    const site = (await sitesAt(ctx, [url]))(url);
-    if (site?.state !== "unjudged") return site ?? null;
+  handler: async (ctx, { url, from, also, ...link }) => {
+    const on = await sitesAt(ctx, [url, ...(from ? [from] : [])]);
+    const [site, by, domain] = [on(url), from && on(from), domainOf(url)];
+    const judging =
+      site?.state === "unjudged"
+        ? site
+        : !site && by && by.state === "vouched" && from && domain
+          ? { state: "linked" as const, domain, by, from, also }
+          : undefined;
+    if (!judging) return site ?? null;
     const front = await request(
       ctx,
       new URL("/", url).href,
-      undefined,
+      from,
       15_000,
       MAX_PAGE,
     );
-    const says =
-      front.got === "body"
-        ? selfDescribed(new TextDecoder().decode(front.bytes))
-        : {};
-    const kept = judged(
-      site,
-      says.title ?? site.domain,
-      await decide(ctx, ownerQuestion(site, { ...link, ...says })),
-    );
-    if (!kept) return site;
+    const html =
+      front.got === "body" ? new TextDecoder().decode(front.bytes) : "";
+    const says = selfDescribed(html);
+    const candidate =
+      judging.state === "linked"
+        ? { ...judging, support: await supportFor(ctx, judging, url, html) }
+        : judging;
+    const name = says.title ?? candidate.domain;
+    // Asked only where the answer could vouch: see `judged`.
+    const kept =
+      judged(candidate, name, undefined) ??
+      judged(
+        candidate,
+        name,
+        await decide(ctx, ownerQuestion(candidate, { ...link, ...says })),
+      );
+    if (!kept) return site ?? null;
     await ctx.runMutation(internal.easygov.forms.sites.putSites, {
       sites: [kept],
       at: Date.now(),

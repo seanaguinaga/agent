@@ -123,7 +123,12 @@ const fileAnswer = {
   etag: v.optional(v.string()),
   lastModified: v.optional(v.string()),
 };
-const pageAnswer = { outcome: v.literal("page"), links: v.array(vPageLink) };
+const pageAnswer = {
+  outcome: v.literal("page"),
+  links: v.array(vPageLink),
+  /** Where a redirect had it served from, if on another host. */
+  at: v.optional(v.string()),
+};
 const failedAnswer = {
   outcome: v.union(
     v.literal("gone"),
@@ -220,11 +225,46 @@ export const vHandKept = v.object({
   via: v.object({ kind: v.literal("hand"), note: v.string() }),
 });
 
-/** A site judged not to be a government's, or not to be told whose. */
+/**
+ * What, beyond a government's page linking a site, says the site is that
+ * government's: it links back to one of the government's sites, a second of
+ * those sites links it, or one of the government's hosts redirects to it.
+ */
+export const vSupport = v.union(
+  v.literal("back"),
+  v.literal("second"),
+  v.literal("redirect"),
+);
+
+/** A site its government's page links, judged its own, with support. */
+export const vLinked = v.object({
+  ...vouched,
+  via: v.object({
+    kind: v.literal("link"),
+    /** The government's page that links it. */
+    from: v.string(),
+    /** A second of the government's sites' pages that links it. */
+    also: v.optional(v.string()),
+    support: vSupport,
+    /** How many links it is from a register, suffix or hand site. */
+    steps: v.number(),
+  }),
+});
+
+/**
+ * A site judged not to be a government's: a contractor's, nobody could tell
+ * whose, nothing but the link supports it, or it is too many links from a
+ * site that needs no link.
+ */
 export const vDeclined = v.object({
   state: v.literal("declined"),
   domain: v.string(),
-  why: v.union(v.literal("contractor"), v.literal("unsure")),
+  why: v.union(
+    v.literal("contractor"),
+    v.literal("unsure"),
+    v.literal("unsupported"),
+    v.literal("far"),
+  ),
 });
 
 export default {
@@ -286,17 +326,20 @@ export default {
 
   /**
    * What is kept of sites, by registrable domain (see `sites.ts`): those a
-   * register vouches for, and those on a government's suffix as they were
-   * judged. `at` is when the register last listed it, or when it was judged.
+   * register vouches for, and those on a government's suffix or linked from
+   * its pages as they were judged. `at` is when the register last listed
+   * it, or when it was judged.
    */
   sites: defineTable(
     v.union(
       v.object({ ...vRegistered.fields, at: v.number() }),
       v.object({ ...vSuffixed.fields, at: v.number() }),
+      v.object({ ...vLinked.fields, at: v.number() }),
       v.object({ ...vDeclined.fields, at: v.number() }),
     ),
   )
     .index("by_domain", ["domain"])
+    .index("by_state_and_at", ["state", "at"])
     .index("by_via_kind_and_at", ["via.kind", "at"]),
 
   /** A hosted browser in use. Expires on its own if its work died. */

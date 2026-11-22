@@ -909,6 +909,48 @@ test("a site on a suffix governments share is judged whose it is: once, and from
   expect(decideMock).toHaveBeenCalledTimes(5);
 });
 
+test("a site the authority's page links is judged before the link is followed: only a vouched one is read further and confirms", async () => {
+  const own = "https://forms.partner.org/ssa-561.html";
+  const file = "https://forms.partner.org/ssa-561.pdf";
+  const front = "https://forms.partner.org/";
+  const located = async (verdict: "own" | "contractor") => {
+    const net = fakeNetwork({
+      [index]: servePage(`<a href="${own}">Form SSA-561</a>`),
+      [front]: servePage(`<title>SSA forms</title><a href="${index}">SSA</a>`),
+      [own]: servePage('<h1>Form SSA-561</h1><a href="ssa-561.pdf">PDF</a>'),
+      [file]: servePdf(ssa561),
+    });
+    decideMock.mockImplementation((async (
+      _ctx: ActionCtx,
+      { criteria }: { criteria: Offered },
+    ) => ({
+      choice: "own" in criteria ? verdict : "link1",
+      confidence: 0.9,
+    })) as never);
+    const finder = finderWith();
+    const [found] = await locateForms(
+      ctxOf(await withSites()),
+      "thread",
+      [{ code: "SSA-561", sourceUrl: "" }],
+      subject,
+      [index],
+      finder,
+    );
+    return { file: found.located.file, net, spent: finder.spend.spent };
+  };
+
+  // It links the authority back, and the model says it is the authority's.
+  const vouched = await located("own");
+  expect(vouched.file).toMatchObject({ url: file, backed: true });
+  expect(vouched.net.addresses()).toEqual([index, front, own, file]);
+  expect(vouched.spent.vouches).toBe(1);
+  // A vendor's: its page is read as one link from the authority's, and its
+  // file, a link further, is never asked for.
+  const vendor = await located("contractor");
+  expect(vendor.file).toBeUndefined();
+  expect(vendor.net.addresses()).toEqual([index, front, own]);
+});
+
 test("a later edition on the authority's own site is chosen over the old one its page links, and isn't confirmed", async () => {
   const t = await withSites();
   const old = `${ssa}/ssa-561-u2.pdf`;

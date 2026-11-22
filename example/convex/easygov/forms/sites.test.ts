@@ -16,6 +16,7 @@ import {
   ownerQuestion,
   parseRegister,
   sitesAt,
+  type Linked,
   type Owner,
   type Site,
 } from "./sites";
@@ -184,8 +185,21 @@ function deployment() {
       }),
     siteOf: async (url: string) => (await sitesAt(ctx, [url]))(url),
     sitesAt: (urls: string[]) => sitesAt(ctx, urls),
-    judge: (url: string, link: { label?: string; under?: string } = {}) =>
-      t.action(internal.easygov.forms.actions.judgeSite, { url, ...link }),
+    judge: (
+      url: string,
+      link: {
+        label?: string;
+        under?: string;
+        from?: string;
+        also?: string;
+      } = {},
+    ) => t.action(internal.easygov.forms.actions.judgeSite, { url, ...link }),
+    read: (url: string) =>
+      t.action(internal.easygov.forms.actions.readLinks, {
+        url,
+        way: "request",
+        spend: true,
+      }),
   };
 }
 
@@ -226,13 +240,13 @@ describe("governments.ts", () => {
   });
 
   test("a name says whose a site is only by a hand line, or a suffix with one owner", () => {
-    expect(governed("www.acgov.org")).toMatchObject({
-      state: "vouched",
-      owner: { level: "local", region: "us-ca", body: "Alameda County" },
-    });
     expect(governed("www.dgid.sn")).toMatchObject({
+      state: "vouched",
       owner: { level: "national", country: "sn" },
     });
+    // A site a link can vouch for has no line: acgov.org is the county's
+    // by its registered site's link, not by its name.
+    expect(governed("www.acgov.org")).toBeUndefined();
     // The military's sites are the nation's, and so are France's .gouv.fr.
     const [army, navy] = [governed("www.army.mil"), governed("www.navy.mil")];
     expect(army).toMatchObject({ domain: "army.mil", via: { kind: "suffix" } });
@@ -265,7 +279,7 @@ describe("mayRead", () => {
 
   test("an address on a government's own site, by https and nothing odd", () => {
     expect(mayRead(file, ssa)).toBe(true);
-    expect(mayRead("https://www.acgov.org/a.pdf", governed("acgov.org"))).toBe(
+    expect(mayRead("https://www.dgid.sn/a.pdf", governed("dgid.sn"))).toBe(
       true,
     );
     for (const odd of [
@@ -445,6 +459,132 @@ describe("whose a site on a shared suffix is", () => {
   });
 });
 
+describe("whose a site a government's page links is", () => {
+  const ssa = parseRegister(csv)[0];
+  const from = "https://www.ssa.gov/a";
+  const linked = (more: Partial<Linked> = {}): Linked => ({
+    state: "linked",
+    domain: "partner.org",
+    by: ssa,
+    from,
+    support: "back",
+    ...more,
+  });
+  const own = { choice: "own", confidence: 0.9 } as const;
+  const declined = { state: "declined", domain: "partner.org" };
+
+  test("the question is whether it is the linking government's own", () => {
+    const { criteria, instructions } = ownerQuestion(linked(), {});
+    expect(Object.keys(criteria)).toEqual(["own", "contractor", "unsure"]);
+    expect(instructions).toContain(
+      "A page of Social Security Administration (ssa.gov) links the site partner.org.",
+    );
+  });
+
+  test("it is vouched as that government's only with the model's sure word and support, within two links", () => {
+    const one = judged(linked(), "Partner", own);
+    expect(one).toEqual({
+      state: "vouched",
+      domain: "partner.org",
+      name: "Partner",
+      owner: national,
+      via: { kind: "link", from, support: "back", steps: 1 },
+    });
+    const two = judged(linked({ by: one as never }), "Partner", own);
+    expect(two).toMatchObject({ state: "vouched", via: { steps: 2 } });
+    // Three links from a site that needs none is too far, whatever is said.
+    expect(judged(linked({ by: two as never }), "Partner", own)).toEqual({
+      ...declined,
+      why: "far",
+    });
+    // No vouch rests on the model alone: with nothing but the link, the
+    // site is declined before the model is asked.
+    for (const decided of [own, undefined]) {
+      expect(
+        judged(linked({ support: undefined }), "Partner", decided),
+      ).toEqual({ ...declined, why: "unsupported" });
+    }
+    // Nor on support alone: a contractor, a guess, and no answer.
+    const says = (choice: string, confidence = 0.9) =>
+      judged(linked(), "Partner", { choice: choice as never, confidence });
+    expect(says("contractor")).toEqual({ ...declined, why: "contractor" });
+    expect(says("unsure")).toEqual({ ...declined, why: "unsure" });
+    expect(says("own", 0.79)).toEqual({ ...declined, why: "unsure" });
+    expect(judged(linked(), "Partner", undefined)).toBeUndefined();
+  });
+
+  test("support is a link back, a second site's link, or a redirect from the government's host: never the caller's word", async () => {
+    const { judge, put, read } = deployment();
+    await put(parseRegister(csv), 1);
+    const also = "https://www.va.gov/b";
+    const page = (...links: string[]) =>
+      servePage(links.map((url) => `<a href="${url}">A site</a>`).join(""));
+    fakeNetwork({
+      [from]: page("https://second.org/x", "https://alone.org/x"),
+      [also]: page("https://second.org/y"),
+      "https://www.ca.gov/c": page("https://alone.org/y"),
+      "https://www.ssa.gov/old": () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: "https://moved.org/home" },
+        }),
+      "https://moved.org/home": page("/forms"),
+    });
+    judging({ "second.org": "own", "moved.org": "own", "alone.org": "own" });
+    for (const url of [from, also, "https://www.ca.gov/c"]) await read(url);
+    await read("https://www.ssa.gov/old");
+
+    // A page that was never read, or doesn't link the site, says nothing.
+    expect(
+      await judge("https://claimed.org/", { from: "https://www.ssa.gov/z" }),
+    ).toMatchObject({ state: "declined", why: "unsupported" });
+    expect(await judge("https://second.org/x", { from: also })).toMatchObject({
+      state: "declined",
+      why: "unsupported",
+    });
+    // Nor does a page on nobody's site: nothing is judged, or kept.
+    expect(
+      await judge("https://other.org/", { from: "https://second.org/x" }),
+    ).toBeNull();
+    expect(decideMock).not.toHaveBeenCalled();
+
+    // Another state's page is no second site of the nation's.
+    expect(
+      await judge("https://alone.org/x", {
+        from,
+        also: "https://www.ca.gov/c",
+      }),
+    ).toMatchObject({ state: "declined", why: "unsupported" });
+    expect(
+      await judge("https://moved.org/home", {
+        from: "https://www.ssa.gov/old",
+      }),
+    ).toMatchObject({
+      state: "vouched",
+      owner: national,
+      via: { support: "redirect", steps: 1 },
+    });
+    expect(decideMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("a second site of the same government linking it supports it", async () => {
+    const { judge, put, read } = deployment();
+    await put(parseRegister(csv), 1);
+    const also = "https://www.va.gov/b";
+    fakeNetwork({
+      [from]: servePage('<a href="https://second.org/x">A site</a>'),
+      [also]: servePage('<a href="https://second.org/y">A site</a>'),
+    });
+    judging({ "second.org": "own" });
+    await read(from);
+    await read(also);
+    expect(await judge("https://second.org/x", { from, also })).toMatchObject({
+      state: "vouched",
+      via: { kind: "link", from, also, support: "second", steps: 1 },
+    });
+  });
+});
+
 test("a host is looked up by its registrable domain, and the register's word stands", async () => {
   const { t, put, sitesAt } = deployment();
   const sites = parseRegister(csv);
@@ -453,7 +593,7 @@ test("a host is looked up by its registrable domain, and the register's word sta
     "https://www.dmv.ca.gov/portal/",
     "https://www.ssa.gov/forms/",
     "https://forms.example.gov/",
-    "https://www.acgov.org/",
+    "https://www.dgid.sn/",
     "https://www.dmv.org/",
     "http://www.ssa.gov/forms/",
   ];
@@ -463,19 +603,28 @@ test("a host is looked up by its registrable domain, and the register's word sta
     sites[0],
     // On .gov, and not in the register: a government's, nobody knows whose.
     { state: "unjudged", domain: "example.gov", country: "us", suffix: "gov" },
-    governed("acgov.org"),
+    governed("dgid.sn"),
     undefined,
     // An address that couldn't be read is on no site.
     undefined,
   ]);
-  // The county's hand-kept site and its registered one are one body's.
+  // The county's linked site and its registered one are one body's.
   const county = "https://www.alamedacountyca.gov/";
+  const acgov = judged(
+    {
+      state: "linked",
+      domain: "acgov.org",
+      by: sites[3],
+      from: county,
+      support: "back",
+    },
+    "Alameda County",
+    { choice: "own", confidence: 0.9 },
+  )!;
+  await put([acgov], 1);
+  const both = await sitesAt([county, "https://www.acgov.org/"]);
   expect(
-    confirms(
-      "us/ca/alameda",
-      governed("www.acgov.org"),
-      (await sitesAt([county]))(county),
-    ),
+    confirms("us/ca/alameda", both("https://www.acgov.org/"), both(county)),
   ).toBe(true);
   // A judgment never replaces the register's word, and outlives its imports.
   const guess: Site = {

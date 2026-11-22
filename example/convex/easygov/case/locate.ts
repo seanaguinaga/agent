@@ -23,6 +23,7 @@
 //    over the one its page links: a page can go on linking an edition the
 //    authority has replaced. Only the linked file is given as confirmed.
 import { type Infer } from "convex/values";
+import { getDomain } from "tldts";
 import { internal } from "../../_generated/api";
 import type { Id } from "../../_generated/dataModel";
 import type { ActionCtx } from "../../_generated/server";
@@ -72,7 +73,7 @@ export type Finder = {
    */
   asked: Map<string, Promise<{ url: string; as: string; answer: Answer }>>;
   /** Each site judged whose it is in this packet, by its domain. */
-  judging: Map<string, Promise<Site>>;
+  judging: Map<string, Promise<Site | undefined>>;
 };
 
 export const newFinder = (limits: Limits = PACKET_LIMITS): Finder => ({
@@ -268,25 +269,33 @@ type Designated = {
   further: boolean;
 };
 
+const hostOf = (url: string) => new URL(url).hostname;
+
+/** The site an address is on, by its name alone. */
+const siteOf = (url: string) => getDomain(hostOf(url)) ?? hostOf(url);
+
 /**
- * A site, judged first if it is on a government's suffix and nobody has
- * judged whose it is: once in a packet, and only while the packet can afford
- * it. `words` are what the page linking `url` calls the link.
+ * A site, judged first if nobody has judged whose it is, and it is on a
+ * government's suffix or a vouched site's page (`words.from`) links it: once
+ * in a packet, and only while the packet can afford it. `words` are what
+ * the page linking `url` calls the link, and `words.also` a page of another
+ * site that links it too.
  */
 async function judgedNow(
   ctx: ActionCtx,
   finder: Finder,
   site: Site | undefined,
   url: string,
-  words?: { label: string; under?: string },
+  words: { label?: string; under?: string; from?: string; also?: string } = {},
 ): Promise<Site | undefined> {
-  if (site?.state !== "unjudged") return site;
+  if (site ? site.state !== "unjudged" : !words.from) return site;
   const { spend, judging } = finder;
-  if (!judging.has(site.domain)) {
+  const domain = siteOf(url);
+  if (!judging.has(domain)) {
     const paid = spend.take("vouches");
     if (!paid) spend.add({ refused: 1 });
     judging.set(
-      site.domain,
+      domain,
       paid
         ? ctx
             .runAction(internal.easygov.forms.actions.judgeSite, {
@@ -303,10 +312,8 @@ async function judgedNow(
         : Promise.resolve(site),
     );
   }
-  return await judging.get(site.domain);
+  return await judging.get(domain);
 }
-
-const hostOf = (url: string) => new URL(url).hostname;
 
 /** What a choice of link considered, when it wasn't acted on. */
 type Considered = { choice: string; confidence?: number };
@@ -554,32 +561,39 @@ export async function locateForm(
   const as = (via: Via, from?: string) => (url: string) => ({ url, via, from });
   // Which of these addresses are, with the page that links the form, the
   // packet's government's own (see `confirms`): none, where no page does.
-  // The sites of the link's two ends are judged first, where they have to be.
   const ownTo = async (
     link: Omit<Designated, "further"> | undefined,
     urls: string[],
   ) => {
     const page = link?.on;
     if (!page) return () => false;
-    const on = await sitesAt(ctx, [page, link.url, ...urls]);
-    const ends = [
-      await judgedNow(ctx, finder, on(page), page),
-      await judgedNow(ctx, finder, on(link.url), link.url, {
-        label: link.label,
-        under: link.under,
-      }),
-    ];
-    const now = (url: string) => {
-      const site = on(url);
-      return ends.find((end) => end && end.domain === site?.domain) ?? site;
-    };
-    return (url: string) => confirms(jurisdiction, now(page), now(url));
+    const on = await sitesAt(ctx, [page, ...urls]);
+    return (url: string) => confirms(jurisdiction, on(page), on(url));
   };
 
   /** Chooses the form's link among these, and asks it as the form. */
   const follow = async (links: LabelledLink[]) => {
     const short = shortlist(links, code);
     const chosen = await chooseLink(ctx, code, subject, short, finder);
+    // The sites of the link's two ends are judged before it is followed,
+    // where they have to be: what a site nobody vouches for leads to is read
+    // no further than one link in, and its form is never confirmed.
+    if (chosen.designated?.on) {
+      const { url, on: page, label, under } = chosen.designated;
+      const on = await sitesAt(ctx, [page, url]);
+      const paged = await judgedNow(ctx, finder, on(page), page);
+      const also = links.find(
+        (link) =>
+          link.on &&
+          siteOf(link.url) === siteOf(url) &&
+          siteOf(link.on) !== siteOf(page),
+      )?.on;
+      await judgedNow(ctx, finder, on(url), url, {
+        label,
+        under,
+        ...(paged?.state === "vouched" && { from: page, also }),
+      });
+    }
     const tried = chosen.designated
       ? await tryLeads(
           ctx,

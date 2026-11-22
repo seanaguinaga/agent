@@ -388,6 +388,10 @@ describe("an address that gives no file", () => {
       [cdn]: servePdf(ssa561),
       [mirror]: to(cdn),
       "https://www.dmv.org/": servePage('<a href="/reg-343.pdf">REG 343</a>'),
+      [`${ssa}/`]: servePage(
+        `<a href="${cdn}">SSA-561</a><a href="${mirror}">A mirror</a><a href="https://www.dmv.org/">DMV</a>`,
+      ),
+      [`${ssa}/other`]: servePage("<a href='/forms/'>Forms</a>"),
     });
     const unread = { ok: false, why: "unusable", cost: { downloads: 0 } };
     // Come by from a search, or from a page that is itself on nobody's site.
@@ -397,7 +401,15 @@ describe("an address that gives no file", () => {
       ok: false,
       why: "unusable",
     });
-    expect(net.requests).toHaveLength(0);
+    // Nor on the caller's word that a government's page links it: the page
+    // has to have been read, and to link it.
+    expect(await fetchFile(t, cdn, { from: `${ssa}/` })).toMatchObject(unread);
+    await readLinks(t, `${ssa}/other`);
+    expect(await fetchFile(t, cdn, { from: `${ssa}/other` })).toMatchObject(
+      unread,
+    );
+    expect(net.addresses()).toEqual([`${ssa}/other`]);
+    await readLinks(t, `${ssa}/`);
     // Linked from a government's page, it is read: but not where it then
     // redirects, off to another site that is nobody's.
     expect(await fetchFile(t, mirror, { from: `${ssa}/` })).toMatchObject({
@@ -408,14 +420,22 @@ describe("an address that gives no file", () => {
     expect(await fetchFile(t, cdn, { from: `${ssa}/` })).toMatchObject({
       ok: true,
     });
-    // A page on nobody's site keeps only its links onto governments' sites.
+    // A page on nobody's site keeps only its links to its own site and onto
+    // governments' sites. Its own are read only once the site is vouched.
     net.routes["https://www.dmv.org/"] = servePage(
-      `<a href="/reg-343.pdf">A copy</a><a href="${address}">SSA-561</a>`,
+      `<a href="/reg-343.pdf">A copy</a><a href="${address}">SSA-561</a><a href="${cdn}">Elsewhere</a>`,
     );
     const links = await readLinks(t, "https://www.dmv.org/", {
       from: `${ssa}/`,
     });
-    expect(links.ok && links.links.map(({ url }) => url)).toEqual([address]);
+    const copy = "https://www.dmv.org/reg-343.pdf";
+    expect(links.ok && links.links.map(({ url }) => url)).toEqual([
+      copy,
+      address,
+    ]);
+    expect(
+      await fetchFile(t, copy, { from: "https://www.dmv.org/" }),
+    ).toMatchObject(unread);
   });
 
   test("a redirect within the authority's sites is followed to the file", async () => {
@@ -921,7 +941,10 @@ describe("an address that refuses a plain request, opened in the browser", () =>
     const t = initConvexTest();
     const linked = "https://forms.example.org/ssa-561.html";
     fakeNetwork(
-      { [linked]: serveStatus(403) },
+      {
+        [linked]: serveStatus(403),
+        [page]: servePage(`<a href="${linked}">SSA-561</a>`),
+      },
       {
         page: {
           at: "https://forms.example.com/ssa-561.html",
@@ -929,13 +952,17 @@ describe("an address that refuses a plain request, opened in the browser", () =>
         },
       },
     );
+    await readLinks(t, page);
 
     expect(
       await withoutWaiting(
         readLinks(t, linked, { from: page, way: "browser" }),
       ),
     ).toMatchObject({ ok: false, why: "unusable" });
-    expect((await kept(t)).addresses).toMatchObject([{ outcome: "unusable" }]);
+    expect((await kept(t)).addresses).toMatchObject([
+      { outcome: "page" },
+      { outcome: "unusable" },
+    ]);
   });
 
   test("is read with the links its scripts add, in a shadow root or late", async () => {

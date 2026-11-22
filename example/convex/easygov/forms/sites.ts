@@ -2,10 +2,12 @@
 // records its owner: a national government, a region of one, or a local body
 // (see VOUCHING.md). A site is vouched by CISA's public register of .gov
 // domains, which says who each belongs to; by a suffix its country keeps for
-// government, with the owner judged once; or by a line kept by hand (see
-// `governments.ts`). That decides, with nobody's approval, whether a page
-// that links a form and the file it links are the packet's government's own
-// (see `confirms`), and which addresses are read at all (see `mayRead`).
+// government, with the owner judged once; by a page of its government
+// linking it, where the model and something structural both say it is that
+// government's; or by a line kept by hand (see `governments.ts`). That
+// decides, with nobody's approval, whether a page that links a form and the
+// file it links are the packet's government's own (see `confirms`), and
+// which addresses are read at all (see `mayRead`).
 import { v, type Infer } from "convex/values";
 import { getDomain, parse } from "tldts";
 import { internal } from "../../_generated/api";
@@ -18,7 +20,15 @@ import {
 } from "../../_generated/server";
 import type { Decision } from "../decisions";
 import { governed, GOVERNMENTS } from "./governments";
-import { vDeclined, vHandKept, vOwner, vRegistered, vSuffixed } from "./schema";
+import {
+  vDeclined,
+  vHandKept,
+  vLinked,
+  vOwner,
+  vRegistered,
+  vSuffixed,
+  vSupport,
+} from "./schema";
 
 const REGISTER =
   "https://raw.githubusercontent.com/cisagov/dotgov-data/main/current-full.csv";
@@ -30,8 +40,11 @@ export type Owner = Infer<typeof vOwner>;
 type Registered = Infer<typeof vRegistered>;
 
 /** What is kept of a site: the register's word, or a judgment of whose. */
-const vKept = v.union(vRegistered, vSuffixed, vDeclined);
-type Judged = Infer<typeof vSuffixed> | Infer<typeof vDeclined>;
+const vKept = v.union(vRegistered, vSuffixed, vLinked, vDeclined);
+type Judged =
+  | Infer<typeof vSuffixed>
+  | Infer<typeof vLinked>
+  | Infer<typeof vDeclined>;
 
 /**
  * A site as it stands. Vouched: a government publishes from it, and this is
@@ -51,6 +64,33 @@ export const vSite = v.union(
 );
 export type Site = Infer<typeof vSite>;
 type Unjudged = Extract<Site, { state: "unjudged" }>;
+type Vouched = Extract<Site, { state: "vouched" }>;
+
+/**
+ * A site nothing is kept of, which a page (`from`) of the vouched site `by`
+ * links: with what else says it is that government's, where anything does,
+ * and the page of a second of its sites (`also`) where that is what does.
+ */
+export type Linked = {
+  state: "linked";
+  domain: string;
+  by: Vouched;
+  from: string;
+  also?: string;
+  support?: Infer<typeof vSupport>;
+};
+
+/** Whether a site is vouched as this government's. */
+export function ownedBy(site: Site | undefined, owner: Owner): boolean {
+  const key = (each: Owner) =>
+    [
+      each.level,
+      each.country,
+      "region" in each ? each.region : "",
+      "body" in each ? each.body : "",
+    ].join("|");
+  return site?.state === "vouched" && key(site.owner) === key(owner);
+}
 
 /**
  * The host of an address that could be read: https, on a public name (not
@@ -96,10 +136,17 @@ export function mayRead(url: string, site?: Site, from?: Site): boolean {
 /** Below this, a judgment of whose a site is is a guess: it vouches nothing. */
 const SURE = 0.8;
 
-/** Whose a site on a shared suffix can be judged to be. */
+/** As many links as a vouch may be from a register, suffix or hand site. */
+const MAX_STEPS = 2;
+
+/**
+ * Whose a site can be judged to be: on a shared suffix, which government's;
+ * linked from a government's page, that government's `own` or not.
+ */
 type Verdict =
   | "national"
   | "local"
+  | "own"
   | "contractor"
   | "unsure"
   | `region:${string}`;
@@ -115,33 +162,48 @@ export type Evidence = {
   footer?: string;
 };
 
-/** The question of whose a site on a government's suffix is. */
-export function ownerQuestion(site: Unjudged, evidence: Evidence) {
-  const { domain, country, suffix } = site;
-  const place = country.toUpperCase();
-  const regions =
-    GOVERNMENTS.find((each) => each.country === country)?.regions?.split(" ") ??
-    [];
-  const criteria: Record<Verdict, string> = {
-    national: `The national government of ${place}, or a department or agency of it.`,
-    ...Object.fromEntries(
-      regions.map((code) => [
-        `region:${code}`,
-        `The government of the region ${place}-${code.toUpperCase()} (ISO 3166-2), or an agency of it.`,
-      ]),
-    ),
-    local: "A local body: a city, county, district or council.",
-    contractor:
-      "A contractor, a vendor, or anyone else who is not a government.",
-    unsure: "It can't be told from this, or it is a region not listed.",
-  };
+/** The question of whose a site on a government's suffix, or linked, is. */
+export function ownerQuestion(site: Unjudged | Linked, evidence: Evidence) {
+  const { domain } = site;
+  let asks: string;
+  let owners: Partial<Record<Verdict, string>>;
+  if (site.state === "linked") {
+    const { name } = site.by;
+    asks = `A page of ${name} (${site.by.domain}) links the site ${domain}. Is it a site of the same government?`;
+    owners = {
+      own: `A site of the same government as ${name}: its own, or a department or agency of it.`,
+    };
+  } else {
+    const { country, suffix } = site;
+    const place = country.toUpperCase();
+    const regions =
+      GOVERNMENTS.find((each) => each.country === country)?.regions?.split(
+        " ",
+      ) ?? [];
+    asks = `The site ${domain} is on .${suffix}, which ${place} keeps for its governments. Whose site is it?`;
+    owners = {
+      national: `The national government of ${place}, or a department or agency of it.`,
+      ...Object.fromEntries(
+        regions.map((code) => [
+          `region:${code}`,
+          `The government of the region ${place}-${code.toUpperCase()} (ISO 3166-2), or an agency of it.`,
+        ]),
+      ),
+      local: "A local body: a city, county, district or council.",
+    };
+  }
   return {
     state: { site: domain, ...evidence },
     instructions:
-      `The site ${domain} is on .${suffix}, which ${place} keeps for its governments. ` +
-      "Whose site is it? Go by what the site says of itself, and by what the page that links it calls it. " +
+      `${asks} ` +
+      "Go by what the site says of itself, and by what the page that links it calls it. " +
       "Choose unsure rather than guess.",
-    criteria,
+    criteria: {
+      ...owners,
+      contractor:
+        "A contractor, a vendor, or anyone else who is not a government.",
+      unsure: "It can't be told from this, or it is a government not listed.",
+    } as Record<Verdict, string>,
   };
 }
 
@@ -150,25 +212,46 @@ export function ownerQuestion(site: Unjudged, evidence: Evidence) {
  * the choice was sure; declined as a contractor's; declined as unsure where
  * it was a guess. Nothing, where the model gave no answer: nothing is kept
  * on no word at all. `name` is what the site calls itself.
+ *
+ * No vouch rests on the model alone. A linked site that nothing but the
+ * link supports, or that is more than `MAX_STEPS` links from a site that
+ * needs no link, is declined whatever the model says, and without asking.
  */
 export function judged(
-  site: Unjudged,
+  site: Unjudged | Linked,
   name: string,
   decided: Decision<Verdict> | undefined,
 ): Judged | undefined {
-  if (!decided) return undefined;
-  const { domain, country, suffix } = site;
-  const declined = (why: "contractor" | "unsure") =>
+  const { domain } = site;
+  const declined = (why: Infer<typeof vDeclined>["why"]) =>
     ({ state: "declined", domain, why }) as const;
+  const vouched = { state: "vouched", domain, name } as const;
+  if (site.state === "linked") {
+    const { by, from, also, support } = site;
+    const steps = by.via.kind === "link" ? by.via.steps + 1 : 1;
+    if (!support) return declined("unsupported");
+    if (steps > MAX_STEPS) return declined("far");
+    if (!decided) return undefined;
+    if ((decided.confidence ?? 0) < SURE || decided.choice === "unsure") {
+      return declined("unsure");
+    }
+    if (decided.choice === "contractor") return declined("contractor");
+    const via = {
+      kind: "link" as const,
+      from,
+      ...(support === "second" && { also }),
+      support,
+      steps,
+    };
+    return decided.choice === "own"
+      ? { ...vouched, owner: by.owner, via }
+      : declined("unsure");
+  }
+  if (!decided) return undefined;
+  const { country, suffix } = site;
   if ((decided.confidence ?? 0) < SURE) return declined("unsure");
   const owned = (owner: Owner) =>
-    ({
-      state: "vouched",
-      domain,
-      name,
-      owner,
-      via: { kind: "suffix", suffix },
-    }) as const;
+    ({ ...vouched, owner, via: { kind: "suffix", suffix } }) as const;
   const { choice } = decided;
   switch (choice) {
     case "national":
@@ -179,6 +262,8 @@ export function judged(
     case "contractor":
     case "unsure":
       return declined(choice);
+    case "own":
+      return declined("unsure");
     default:
       return owned({
         level: "region",
@@ -383,6 +468,27 @@ export async function sitesAt(
   const sites = new Map(found.map(({ host, site }) => [host, site]));
   return (url) => sites.get(publicHost(url) ?? "");
 }
+
+/**
+ * The sites declined, latest first: what a person reads to decide whether
+ * one is owed a hand line.
+ *
+ *   npx convex run easygov/forms/sites:toReview
+ */
+export const toReview = internalQuery({
+  args: {},
+  returns: v.array(v.object({ ...vDeclined.fields, at: v.number() })),
+  handler: async (ctx) => {
+    const rows = await ctx.db
+      .query("sites")
+      .withIndex("by_state_and_at", (q) => q.eq("state", "declined"))
+      .order("desc")
+      .take(100);
+    return rows.flatMap(({ _id, _creationTime, ...row }) =>
+      row.state === "declined" ? [row] : [],
+    );
+  },
+});
 
 const registered = (site: { state: string; via?: { kind: string } }) =>
   site.state === "vouched" && site.via?.kind === "register";

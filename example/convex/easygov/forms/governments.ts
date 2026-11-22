@@ -6,7 +6,9 @@
 // proves a site is a government's, never which one, unless `owner` says the
 // suffix has only one. A site on an open name is a `hand` line, with the
 // evidence that the government publishes from it: never a site that only
-// looks official, such as dmv.org.
+// looks official, such as dmv.org. A line is only for a site no link can
+// vouch for (see `judged` in `sites.ts`): a portal nothing links to, or a
+// site that links none of its government's back.
 import { getDomain } from "tldts";
 import type { Owner, Site } from "./sites";
 
@@ -35,19 +37,9 @@ export const GOVERNMENTS: Government[] = [
         policy: "https://www.rfc-editor.org/rfc/rfc1956.txt",
       },
     ],
-    hand: [
-      {
-        domain: "acgov.org",
-        name: "Alameda County",
-        owner: {
-          level: "local",
-          country: "us",
-          region: "us-ca",
-          body: "Alameda County",
-        },
-        note: "alamedacountyca.gov, the county's registered site, and acgov.org link each other.",
-      },
-    ],
+    // acgov.org needs no line: alamedacountyca.gov, in the register, links
+    // it, and it links back.
+    hand: [],
   },
   {
     country: "gb",
@@ -148,6 +140,14 @@ export const GOVERNMENTS: Government[] = [
         name: "Bundesportal",
         owner: national("de"),
         note: "The federal portal: bundesregierung.de, the federal government's site, links social.bund.de.",
+      },
+      {
+        // No link vouches it: bund.de's sites link it, and it links none
+        // of them back. With it, formulare-bfinv.de is vouched by link.
+        domain: "bundesfinanzministerium.de",
+        name: "Bundesministerium der Finanzen",
+        owner: national("de"),
+        note: "www.bzst.bund.de, the federal tax office's site, and www.service.bund.de both link it as the federal finance ministry's.",
       },
     ],
   },

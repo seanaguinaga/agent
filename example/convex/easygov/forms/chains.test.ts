@@ -3,15 +3,23 @@
 // portal to a form, every step a link on the page before. Twelve reached
 // their form. Each is walked here as the app would: a step is taken only if
 // it may be read, and the form is confirmed only if the page that links it
-// and the file are the packet's government's own. No link vouches for a
-// site yet (stage 4), so this counts what registers, suffixes and hand
-// lines confirm by themselves.
+// and the file are the packet's government's own. A site nothing is kept of
+// is judged where a vouched page links it, on its front page as a plain
+// request got it on 2026-11-21 (`fixtures/sites`, each cut down to its
+// title, footer and links). The decision model is replaced: none is called.
+import { readFileSync } from "node:fs";
 import { afterEach, expect, test, vi } from "vitest";
 import { internal } from "../../_generated/api";
 import type { ActionCtx } from "../../_generated/server";
 import { initConvexTest } from "../../setup.test";
 import { decide } from "../decisions";
-import { fakeNetwork, restoreNetwork } from "./network.testkit";
+import {
+  fakeNetwork,
+  restoreNetwork,
+  servePage,
+  serveStatus,
+  type Served,
+} from "./network.testkit";
 import { confirms, mayRead, parseRegister, sitesAt } from "./sites";
 
 vi.mock("../../modelsForDemo", async () =>
@@ -149,20 +157,75 @@ const register = [
   "irs.gov,Federal - Executive,Department of the Treasury,IRS,Washington,DC",
   "uscis.gov,Federal - Executive,Department of Homeland Security,USCIS,,DC",
   "ca.gov,State or territory,State of California,,Rancho Cordova,CA",
+  "alamedacountyca.gov,County,Alameda County,,Oakland,CA",
+  "oregon.gov,State or territory,State of Oregon,,Salem,OR",
 ].join("\n");
 
-/** Whose the decision model says each site on a shared suffix is. */
+/**
+ * Whose the decision model says each site is: on a shared suffix, which
+ * government's; linked, the linking government's `own` or not. It would
+ * call the last three a government's own: nothing supports them, so it is
+ * never asked.
+ */
 const owners: Record<string, string> = {
   "www.gov.uk": "national",
   "service.gov.uk": "national",
   "ird.govt.nz": "national",
   "passportindia.gov.in": "national",
   "ato.gov.au": "national",
+  "revenue.ie": "own",
+  "acgov.org": "own",
+  "formulare-bfinv.de": "own",
+  "iorder.com.au": "contractor",
+  "taxadmin.org": "own",
+  "careeronestop.org": "own",
+  "auspost.com.au": "own",
+};
+
+const saved = (name: string) =>
+  servePage(
+    readFileSync(new URL(`./fixtures/sites/${name}.html`, import.meta.url), {
+      encoding: "utf8",
+    }),
+  );
+const to = (location: string) => () =>
+  new Response(null, { status: 302, headers: { location } });
+
+const ato =
+  "https://www.ato.gov.au/individuals-and-families/tax-file-number/apply-for-a-tfn/australian-residents-tfn-application";
+const iorder =
+  "https://iorder.com.au/publication/searchpublications.aspx?txt=1432";
+const bmf =
+  "https://www.bundesfinanzministerium.de/Web/DE/Themen/Steuern/Formulare/formulare.html";
+
+/** The pages as they answered a plain request, redirects and refusals too. */
+const pages: Record<string, Served> = {
+  "https://www.alamedacountyca.gov/": saved("alamedacountyca.gov"),
+  "https://acgov.org/": saved("acgov.org"),
+  [bmf]: saved("bundesfinanzministerium.de-formulare"),
+  "https://www.formulare-bfinv.de/": saved("formulare-bfinv.de"),
+  [`${usa}/state-taxes`]: saved("usa.gov-state-taxes"),
+  [`${usa}/job-help`]: saved("usa.gov-job-help"),
+  "https://taxadmin.org/": saved("taxadmin.org"),
+  "https://www.careeronestop.org/": serveStatus(403),
+  "https://iorder.com.au/": to("/publication/main.aspx"),
+  "https://iorder.com.au/publication/main.aspx": saved("iorder.com.au"),
+  "https://auspost.com.au/": saved("auspost.com.au"),
+  "https://www.revenue.ie/": to("https://www.revenue.ie:443/en/home.aspx"),
+  [`${revenue}/home.aspx`]: saved("revenue.ie"),
+  // The ATO and gov.ie refuse a plain request: these two stand in for the
+  // pages the measurement's browser read, with the links it found on them.
+  [ato]: servePage(
+    `<a href="${iorder}">Order NAT 1432</a><a href="https://auspost.com.au/">Australia Post</a>`,
+  ),
+  "https://www.gov.ie/en/office-of-the-revenue-commissioners/": servePage(
+    `<a href="${revenue}/home.aspx">revenue.ie</a>`,
+  ),
 };
 
 async function measured() {
   const t = initConvexTest();
-  fakeNetwork({});
+  fakeNetwork(pages);
   vi.mocked(decide).mockReset();
   vi.mocked(decide).mockImplementation((async (
     _ctx: ActionCtx,
@@ -173,12 +236,23 @@ async function measured() {
     at: 1,
   });
   const ctx = { runQuery: t.query } as unknown as ActionCtx;
+  const { judgeSite, readLinks } = internal.easygov.forms.actions;
+  /** Judges the site `url` is on, as the page `from` links it. */
+  const linked = async (url: string, from: string) => {
+    await t.action(readLinks, { url: from, way: "request", spend: true });
+    return await t.action(judgeSite, { url, from });
+  };
   /** How far a chain is read, and whether its form is then confirmed. */
   const walk = async (jurisdiction: string, chain: string[]) => {
     const [page, file] = chain.slice(-2);
-    // As finding a form does: the two ends of the link are judged first.
-    for (const url of [page, file]) {
-      await t.action(internal.easygov.forms.actions.judgeSite, { url });
+    // As finding a form does: the two ends of the link are judged first,
+    // and a site nothing is kept of where a vouched page links it.
+    for (const url of [page, file]) await t.action(judgeSite, { url });
+    for (const [i, url] of chain.entries()) {
+      const sites = await sitesAt(ctx, chain);
+      if (i && !sites(url) && sites(chain[i - 1])?.state === "vouched") {
+        await linked(url, chain[i - 1]);
+      }
     }
     const on = await sitesAt(ctx, chain);
     const stopped = chain.findIndex(
@@ -189,38 +263,122 @@ async function measured() {
       confirmed: confirms(jurisdiction, on(page), on(file)),
     };
   };
-  return { walk, on: (urls: string[]) => sitesAt(ctx, urls) };
+  return { t, walk, linked, on: (urls: string[]) => sitesAt(ctx, urls) };
 }
 
-test("of the 12 measured chains, 11 are read to the end and confirmed with no link vouch", async () => {
-  const { walk } = await measured();
+test("the 12 measured chains are read to the end and confirmed, one by a link vouch", async () => {
+  const { walk, on } = await measured();
   const results: Record<string, { read: string; confirmed: boolean }> = {};
   for (const [target, [jurisdiction, ...chain]] of Object.entries(chains)) {
     const { read, confirmed } = await walk(jurisdiction, chain);
     results[target] = { read: `${read}/${chain.length}`, confirmed };
   }
-  const { "Ireland Revenue Form 12": ireland, ...rest } = results;
-  for (const [target, { read, confirmed }] of Object.entries(rest)) {
+  for (const [target, { read, confirmed }] of Object.entries(results)) {
     const [steps, of] = read.split("/");
     expect([target, steps, confirmed]).toEqual([target, of, true]);
   }
-  expect(Object.keys(rest)).toHaveLength(11);
-  // gov.ie links revenue.ie, on an open name nothing vouches for: its front
-  // page is read as one link from the government's, and nothing beyond it.
-  expect(ireland).toEqual({ read: "4/8", confirmed: false });
-  // Four sites on shared suffixes were judged, once each: the two .gov.uk
-  // sites, ird.govt.nz and passportindia.gov.in.
+  expect(Object.keys(results)).toHaveLength(12);
+  // gov.ie links revenue.ie, on an open name: it links gov.ie back, and is
+  // vouched as the Irish government's, one link from a hand line.
+  expect((await on([`${revenue}/`]))(`${revenue}/`)).toEqual({
+    state: "vouched",
+    domain: "revenue.ie",
+    name: "Welcome to revenue.ie",
+    owner: { level: "national", country: "ie" },
+    via: {
+      kind: "link",
+      from: "https://www.gov.ie/en/office-of-the-revenue-commissioners/",
+      support: "back",
+      steps: 1,
+    },
+  });
+  // Five sites were judged, once each: the two .gov.uk sites, ird.govt.nz,
+  // passportindia.gov.in and revenue.ie.
+  expect(decide).toHaveBeenCalledTimes(5);
+});
+
+test("a linked site is vouched only where the model and something structural both say it is the government's", async () => {
+  const { t, linked } = await measured();
+  const via = (from: string) => ({
+    kind: "link",
+    from,
+    support: "back",
+    steps: 1,
+  });
+  // The county's registered site and acgov.org link each other.
+  const county = "https://www.alamedacountyca.gov/";
+  expect(await linked("https://acgov.org/government/", county)).toEqual({
+    state: "vouched",
+    domain: "acgov.org",
+    name: "Home | Alameda County Government",
+    owner: {
+      level: "local",
+      country: "us",
+      region: "us-ca",
+      body: "Alameda County",
+    },
+    via: via(county),
+  });
+  // The finance ministry's forms page links its form server, which links
+  // the ministry back.
+  const forms = "https://www.formulare-bfinv.de/ffw/content.do";
+  expect(await linked(forms, bmf)).toEqual({
+    state: "vouched",
+    domain: "formulare-bfinv.de",
+    name: "Formular-Management-System",
+    owner: { level: "national", country: "de" },
+    via: via(bmf),
+  });
+  expect(decide).toHaveBeenCalledTimes(2);
+
+  // The ATO's order form links the ATO back, and is a vendor's: the model
+  // says so. A contractor is never vouched.
+  await t.action(internal.easygov.forms.actions.judgeSite, { url: ato });
+  const declined = (domain: string, why: string) => ({
+    state: "declined",
+    domain,
+    why,
+  });
+  expect(await linked(iorder, ato)).toEqual(
+    declined("iorder.com.au", "contractor"),
+  );
   expect(decide).toHaveBeenCalledTimes(4);
+  // The rest have nothing but the link, so the model isn't asked. An
+  // association of state tax offices links the states, not the nation whose
+  // page links it; a job site refuses the request; the post office links no
+  // government at all.
+  for (const [url, from, domain] of [
+    [
+      "https://taxadmin.org/state-tax-forms/",
+      `${usa}/state-taxes`,
+      "taxadmin.org",
+    ],
+    [
+      "https://www.careeronestop.org/JobSearch/FindJobs/find-jobs.aspx",
+      `${usa}/job-help`,
+      "careeronestop.org",
+    ],
+    ["https://auspost.com.au/", ato, "auspost.com.au"],
+  ]) {
+    expect(await linked(url, from)).toEqual(declined(domain, "unsupported"));
+  }
+  expect(decide).toHaveBeenCalledTimes(4);
+  // Each is listed for a person to review, latest first.
+  const review = await t.query(internal.easygov.forms.sites.toReview, {});
+  expect(review.map(({ domain, why }) => [domain, why])).toEqual([
+    ["auspost.com.au", "unsupported"],
+    ["careeronestop.org", "unsupported"],
+    ["taxadmin.org", "unsupported"],
+    ["iorder.com.au", "contractor"],
+  ]);
 });
 
 test("a copy, a vendor and a search-only address are read only as a government's page links them, and never confirm", async () => {
   const { walk, on } = await measured();
-  const ato =
-    "https://www.ato.gov.au/individuals-and-families/tax-file-number/apply-for-a-tfn/australian-residents-tfn-application";
   const dmv = "https://www.dmv.ca.gov/portal/forms/";
   const others = [
     // The ATO's order form for NAT 1432: a vendor's site.
-    "https://iorder.com.au/publication/searchpublications.aspx?txt=1432",
+    iorder,
     // A copy site that looks official.
     "https://www.dmv.org/ca-california/forms/reg-343.pdf",
     // usa.gov links it, and a search cites it.

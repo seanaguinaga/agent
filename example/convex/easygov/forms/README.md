@@ -114,8 +114,8 @@ page links it. Nothing else is known of it, and it is treated so:
 - **Later checks.** The pack keeps `namedBy`, so its weekly check accepts the
   address only while the file there still has no words.
 
-Not yet: reading image-only pages by OCR is the planned third fix. Such a file
-would then name itself.
+Not yet: reading image-only pages by OCR. Such a file would then name itself.
+The plan, its stages and what has landed: [WORDS.md](./WORDS.md).
 
 ## Mapping
 

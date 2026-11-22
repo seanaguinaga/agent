@@ -25,6 +25,7 @@ import {
   serveRevalidating,
   serveStatus,
   withoutWaiting,
+  xfaPdf,
 } from "./network.testkit";
 import { inspectPdf } from "./pdf";
 
@@ -541,6 +542,27 @@ describe("whether a file is the form", () => {
       ok: true,
     });
     expect((await kept(t)).editions).toHaveLength(1);
+  });
+
+  // Canada's IMM 5257 is such a form: a plain reading of its one page gives
+  // only "Please wait...".
+  test("an XFA form is named by the words in its XFA, and has no place to write in", async () => {
+    const t = initConvexTest();
+    fakeNetwork({
+      [address]: servePdf(await xfaPdf(["IMM 5257 (09-2023) E"])),
+    });
+
+    expect(await fetchFile(t, address, { code: "IMM 5257" })).toMatchObject({
+      ok: true,
+      facts: { pages: 1, places: 0, language: "en", revision: 202309 },
+    });
+    const [edition] = (await kept(t)).editions;
+    expect(edition).toMatchObject({ fillable: false, targets: [] });
+    // Its words are all it is known by: it is no other form.
+    expect(await fetchFile(t, address, { code: "IMM 5709" })).toMatchObject({
+      ok: false,
+      why: "otherForm",
+    });
   });
 
   // The authority renamed "SSA-561-U2" to "SSA-561": its file prints only

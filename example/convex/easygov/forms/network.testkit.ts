@@ -1,7 +1,13 @@
 // Shared by the tests of finding a form: a stand-in for the network (the
 // authority's sites and the hosted browser service), and small real PDFs to
 // serve from it. The extra dot keeps Convex from deploying this file.
-import { PDFDocument, StandardFonts } from "pdf-lib";
+import {
+  PDFBool,
+  PDFDocument,
+  PDFName,
+  PDFString,
+  StandardFonts,
+} from "pdf-lib";
 import { vi } from "vitest";
 import type { T } from "../case/cases.testkit";
 
@@ -256,6 +262,43 @@ export async function formPdf(
       .createTextField("name")
       .addToPage(page, { x: 48, y: 500, width: 300, height: 18 });
   }
+  return await doc.save();
+}
+
+/**
+ * A small real XFA form, as Adobe's designer saves one: its one page says
+ * only "Please wait...", and `lines` are in the XFA template, with no field
+ * a PDF reader could fill.
+ */
+export async function xfaPdf(lines: string[]): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  doc.addPage([612, 792]).drawText("Please wait...", { x: 48, y: 740, font });
+  const draws = [...lines, ...ENGLISH].map(
+    (line, i) =>
+      `<draw y="${i * 6}mm" w="180mm" h="6mm"><value><text>${line}</text></value></draw>`,
+  );
+  const packets = {
+    "xdp:xdp": '<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">',
+    template:
+      '<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform>' +
+      '<pageSet><pageArea><contentArea w="190mm" h="270mm"/></pageArea></pageSet>' +
+      `<subform w="190mm" h="270mm">${draws.join("")}</subform></subform></template>`,
+    datasets:
+      '<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data/></xfa:datasets>',
+    "/xdp:xdp": "</xdp:xdp>",
+  };
+  const { context, catalog } = doc;
+  catalog.set(PDFName.of("NeedsRendering"), PDFBool.True);
+  catalog.set(
+    PDFName.of("AcroForm"),
+    context.obj({
+      XFA: Object.entries(packets).flatMap(([name, xml]) => [
+        PDFString.of(name),
+        context.register(context.stream(xml)),
+      ]),
+    }),
+  );
   return await doc.save();
 }
 

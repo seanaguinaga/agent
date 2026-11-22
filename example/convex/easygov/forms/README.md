@@ -74,6 +74,24 @@ doesn't allow filling, the form is refused and says why.
   `confirmed` needs a page from the authority saying so, kept as evidence.
   Nothing sets it yet.
 
+## Reading a form's identity
+
+A file is the form only where its own words name it (`namesForm`). The words are
+those of its first page, read by pdfjs. Where a plain reading gives none that
+say, there is one more place to read:
+
+- **XFA.** A form drawn only by XFA (Canada's IMM 5257) shows every reader but
+  Adobe's a single "Please wait..." page. Its words are in its XFA template and
+  data, and pdfjs reads them from there (`enableXfa`) as the pages they make.
+  They are used like any page's: for which form it is, and its revision,
+  language and expiry. No dependency was added.
+  - **It can't be filled.** Such a form has no fields a PDF library can set, and
+    no page to draw on. It is found, and confirmed where its link is, with no
+    places: the person completes it by hand, in Adobe's reader. Filling XFA
+    isn't built.
+
+Not yet: reading image-only pages by OCR is the planned third fix.
+
 ## Mapping
 
 A mapping says what goes in each target (`schema.ts`). Each entry is one of:

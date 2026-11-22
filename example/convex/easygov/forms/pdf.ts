@@ -91,6 +91,9 @@ async function readMarks(bytes: Uint8Array): Promise<PageMarks[]> {
     // pdfjs takes ownership of the buffer it's given.
     data: bytes.slice(),
     useSystemFonts: true,
+    // A form drawn only by XFA shows a "please wait" page: its words are
+    // then read from its XFA template and data, as the pages they make.
+    enableXfa: true,
     verbosity: 0,
   }).promise;
   const { OPS } = pdfjs;
@@ -101,12 +104,14 @@ async function readMarks(bytes: Uint8Array): Promise<PageMarks[]> {
     const text: Text[] = [];
     for (const item of content.items) {
       if (!("str" in item) || !item.str.trim()) continue;
+      // Words read from XFA have no place on a page.
+      const [, , , , x = 0, y = 0] = (item.transform ?? []) as number[];
       text.push({
         str: item.str,
-        x: item.transform[4],
-        y: item.transform[5],
-        w: item.width,
-        h: item.height,
+        x,
+        y,
+        w: item.width ?? 0,
+        h: item.height ?? 0,
       });
     }
     const ops = await page.getOperatorList();
@@ -435,7 +440,7 @@ export async function inspectPdf(bytes: Uint8Array): Promise<Inspection> {
     first.length <= 12_000
       ? first
       : `${first.slice(0, 10_000)} … ${first.slice(-2_000)}`;
-  return { pages: pages.length, edition, fillable, targets, opening };
+  return { pages: marks.length, edition, fillable, targets, opening };
 }
 
 // --- Filling ----------------------------------------------------------------

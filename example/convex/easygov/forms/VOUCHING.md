@@ -162,9 +162,17 @@ Each stage is one commit, with its proof.
     `npx convex run easygov/forms/sites:importSites`, or nothing is confirmed
     until Monday's import. The old `officialSites` table is then unused, and can
     be deleted.
-- [ ] **1. Browser.** Read `getHTML({ shadowRoots })` once the link count holds
+- [x] **1. Browser.** Read `getHTML({ shadowRoots })` once the link count holds
       on two polls. _Proof:_ a fixture test with a shadow root, and bund.de
       gives ≥ 51 links.
+  - _Measured:_ bund.de gives 50 links through `openViaBrowser` and
+    `labelledLinks`, where it gave 0. They are the same 50 addresses as the
+    measurement's. Its 51st was the page itself, from a close button's
+    `href="#"`, which `labelledLinks` leaves out as no link at all.
+  - _Changed from the plan:_ a page is taken when everything it says of itself
+    (where it is, that it has loaded, its link count) is the same on two polls,
+    or when the time is up. Each page read through the browser so waits one poll
+    longer, 2 seconds.
 - [ ] **2. Suffixes, owner judgment, `mayRead`.** `forms/governments.ts` holds
       each country's suffixes, root and hand lines. _Proof:_ the 12 measured
       chains as fixtures, counting how many confirm with no link vouch.

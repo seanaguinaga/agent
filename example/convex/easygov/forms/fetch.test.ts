@@ -831,6 +831,7 @@ describe("an address that refuses a plain request, opened in the browser", () =>
   test("is read as a page when it is one, so its links can be followed", async () => {
     restoreKey();
     restoreKey = browserKey("key");
+    vi.useFakeTimers();
     const t = initConvexTest();
     const net = fakeNetwork(
       { [page]: serveStatus(403) },
@@ -842,7 +843,9 @@ describe("an address that refuses a plain request, opened in the browser", () =>
       },
     );
 
-    expect(await fetchFile(t, page, { way: "browser" })).toMatchObject({
+    expect(
+      await withoutWaiting(fetchFile(t, page, { way: "browser" })),
+    ).toMatchObject({
       ok: false,
       why: "page",
       cost: { browser: 1 },
@@ -860,6 +863,7 @@ describe("an address that refuses a plain request, opened in the browser", () =>
   test("is unusable when the browser ends up off the authority's sites", async () => {
     restoreKey();
     restoreKey = browserKey("key");
+    vi.useFakeTimers();
     const t = initConvexTest();
     fakeNetwork(
       { [page]: serveStatus(403) },
@@ -871,11 +875,42 @@ describe("an address that refuses a plain request, opened in the browser", () =>
       },
     );
 
-    expect(await readLinks(t, page, { way: "browser" })).toMatchObject({
-      ok: false,
-      why: "unusable",
-    });
+    expect(
+      await withoutWaiting(readLinks(t, page, { way: "browser" })),
+    ).toMatchObject({ ok: false, why: "unusable" });
     expect((await kept(t)).addresses).toMatchObject([{ outcome: "unusable" }]);
+  });
+
+  test("is read with the links its scripts add, in a shadow root or late", async () => {
+    restoreKey();
+    restoreKey = browserKey("key");
+    vi.useFakeTimers();
+    const t = initConvexTest();
+    fakeNetwork(
+      { [page]: serveStatus(403) },
+      {
+        page: {
+          at: page,
+          html: '<a href="/forms/">All forms</a><forms-list></forms-list>',
+          // What scripts build once the page has loaded, a look apart.
+          scripted: [
+            '<h2>Form SSA-561</h2><a href="/forms/ssa-561.pdf">English PDF</a>',
+            '<h2>Form SSA-827</h2><a href="/forms/ssa-827.pdf">English PDF</a>',
+          ],
+        },
+      },
+    );
+
+    expect(
+      await withoutWaiting(readLinks(t, page, { way: "browser" })),
+    ).toMatchObject({
+      ok: true,
+      links: [
+        { url: `${ssa}/ssa-561.pdf`, under: "Form SSA-561", pdf: true },
+        { url: `${ssa}/ssa-827.pdf`, under: "Form SSA-827", pdf: true },
+        { url: `${ssa}/`, label: "All forms", pdf: false },
+      ],
+    });
   });
 });
 

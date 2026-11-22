@@ -19,8 +19,12 @@ export type FakeBrowser = {
   sessions?: number;
   /** The file the browser downloads, if it downloads one. */
   download?: Uint8Array;
-  /** The page the browser shows, if it shows one, and where it ends up. */
-  page?: { html: string; at: string };
+  /**
+   * The page the browser shows, if it shows one, and where it ends up.
+   * `scripted` is what its scripts then put in an open shadow root, a piece
+   * each time the page is looked at: seen only by a read of shadow roots.
+   */
+  page?: { html: string; at: string; scripted?: string[] };
 };
 
 /**
@@ -94,6 +98,24 @@ export function fakeNetwork(
  * `browser.page` once asked what is loaded: a blank tab if there is none.
  */
 function browserSocket({ page }: FakeBrowser) {
+  /** How many pieces the page's scripts have built so far. */
+  let built = 0;
+  const shadow = () => (page?.scripted ?? []).slice(0, built).join("");
+  const links = (html: string) => html.match(/<a\b/g)?.length ?? 0;
+  /** What an expression evaluates to in the page. */
+  const evaluate = (expression: string) => {
+    const deep = expression.includes("shadowRoot");
+    if (expression.startsWith("JSON.stringify")) {
+      if (!page)
+        return JSON.stringify(["about:blank", "complete", "text/html"]);
+      const count = links(page.html) + (deep ? links(shadow()) : 0);
+      built++;
+      return JSON.stringify([page.at, "complete", "text/html", count]);
+    }
+    return page && deep && shadow()
+      ? `${page.html}<template shadowrootmode="open">${shadow()}</template>`
+      : page?.html;
+  };
   return class {
     private listeners: Record<string, ((event: { data?: string }) => void)[]> =
       {};
@@ -115,15 +137,7 @@ function browserSocket({ page }: FakeBrowser) {
         method: string;
         params: { expression?: string };
       };
-      const value = !params.expression
-        ? undefined
-        : params.expression.startsWith("JSON.stringify")
-          ? JSON.stringify(
-              page
-                ? [page.at, "complete", "text/html"]
-                : ["about:blank", "complete", "text/html"],
-            )
-          : page?.html;
+      const value = params.expression && evaluate(params.expression);
       const result =
         method === "Target.createTarget"
           ? { targetId: "t1" }

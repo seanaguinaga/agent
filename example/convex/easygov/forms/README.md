@@ -93,9 +93,23 @@ the packet's form: the source of the words that name it, or the link.
     no page to draw on. It is found, and confirmed where its link is, with no
     places: the person completes it by hand, in Adobe's reader. Filling XFA
     isn't built.
-- **The authority's link alone** (`"link"`). Only for a file with no words to
-  read at all, on any page or in XFA: the UK's V62 is two pictures. All of these
-  have to hold:
+- **Words a reader read off it** (`"ocr"`). A scan has no words of its own: the
+  UK's V62 is two pictures. Its first 3 pages are given to a reader
+  (`reader.ts`), which gives back their words and nothing else. They name the
+  form by the rule any words are held to.
+  - **One reader runs**, chosen by `readerKind` in `convex/modelsForDemo.ts`: a
+    model through the gateway (`readerModel`), or Google's Document AI, which
+    needs `DOCUMENT_AI_CREDENTIALS` (a service account's key file, whole) and
+    `DOCUMENT_AI_PROCESSOR` (`projects/…/locations/us/processors/…`) on the
+    deployment. There is no fallback from one to the other.
+  - **Read once.** The words are kept with the file's hash. A read that didn't
+    get an answer is tried again at the next ask; a packet may spend 3 reads.
+  - **Never filled, and ranked last.** Its words have no place on the page, so
+    it has no places. A file of the same form with words of its own is chosen
+    over it, and the person is asked to check its edition.
+- **The authority's link alone** (`"link"`). Only for a file nothing could read:
+  no words on any page or in XFA, and no reader that answered. All of these have
+  to hold:
   - the link was chosen as the form at 0.9 or surer (`VERY_SURE` in
     `case/locate.ts`);
   - its page and the file are on the packet's government's own vouched sites
@@ -116,9 +130,6 @@ page links it. Nothing else is known of it, and it is treated so:
 - **Filling.** It is never filled: no place on it says what goes there.
 - **Later checks.** The pack keeps `namedBy`, so its weekly check accepts the
   address only while the file there still has no words.
-
-Not yet: reading image-only pages by OCR (stage 2 in [WORDS.md](./WORDS.md)).
-Such a file would then name itself.
 
 ## Mapping
 
@@ -205,6 +216,7 @@ that work: [VOUCHING.md](VOUCHING.md).
 | `data.ts`    | Registry and edition queries, saving a mapping, publishing                  |
 | `sources.ts` | Pure: the ways to get a form's bytes, tried in order                        |
 | `words.ts`   | Pure: a file's words, and where they were read from (see `WORDS.md`)        |
+| `reader.ts`  | In Node: a file's words asked for in one place; reading a scan's            |
 | `open.ts`    | In Node: read what a protected file allows, and open it if it may be filled |
 | `browser.ts` | In Node: open an address in a hosted browser, collect the file              |
 | `actions.ts` | In Node: fetch from the source, fill for a case                             |

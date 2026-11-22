@@ -30,6 +30,7 @@ const cost = {
   held: 0,
   reused: 0,
   unchanged: 0,
+  reads: 0,
 };
 const facts = { pages: 1, places: 1, language: "en" as const };
 const edition = "e1" as Id<"formEditions">;

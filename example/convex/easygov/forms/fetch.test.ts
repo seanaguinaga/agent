@@ -13,10 +13,11 @@ import {
 } from "vitest";
 import { internal } from "../../_generated/api";
 import { initConvexTest } from "../../setup.test";
-import type { T } from "../case/cases.testkit";
+import { scans, type T } from "../case/cases.testkit";
 import {
   browserKey,
   fakeNetwork,
+  fakeReader,
   formPdf,
   kept,
   restoreNetwork,
@@ -76,6 +77,7 @@ beforeEach(() => {
 afterEach(() => {
   restoreKey();
   restoreNetwork();
+  scans.reader = undefined;
 });
 
 /** Asks an address for the form by a plain request, spending. */
@@ -89,6 +91,7 @@ const fetchFile = (
     from?: string;
     way?: "request" | "browser";
     spend?: boolean;
+    read?: boolean;
   } = {},
 ) =>
   t.action(actions.fetchFile, {
@@ -352,6 +355,7 @@ describe("an address that gives no file", () => {
         held: 0,
         reused: 0,
         unchanged: 0,
+        reads: 0,
       },
     });
     expect(net.requests).toHaveLength(0);
@@ -605,6 +609,130 @@ describe("whether a file is the form", () => {
     expect(await fetchFile(t, address, v62)).toMatchObject({
       ok: false,
       why: "otherForm",
+    });
+  });
+
+  describe("with a reader", () => {
+    const other = `${ssa}/v62-copy.pdf`;
+    const v62 = { code: "V62", read: true };
+    const printed = "=====\nV62 Application for a V5C (Rev 11/25)";
+
+    test("a scan is named by the words read off it, once for the same bytes, and the reader is never told the form", async () => {
+      const t = initConvexTest();
+      const scan = await scanPdf(5);
+      const net = fakeNetwork({
+        [address]: servePdf(scan),
+        [other]: servePdf(scan),
+      });
+      const { model, sent } = await fakeReader(printed);
+      scans.reader = model;
+
+      const answer = await fetchFile(t, address, v62);
+      expect(answer).toMatchObject({
+        ok: true,
+        namedBy: "ocr",
+        // A reader's words have no place on the page: none to write in.
+        facts: { pages: 5, places: 0, revision: 202511 },
+        cost: { reads: 1 },
+      });
+      expect((await kept(t)).addresses).toMatchObject([
+        { words: { from: "ocr", by: model.modelId } },
+      ]);
+      // It is sent the instruction and the file's first pages: no code.
+      expect(sent).toHaveLength(1);
+      expect(sent[0].files).toHaveLength(1);
+      expect(sent[0].words.join(" ")).not.toMatch(/V62|SSA/);
+
+      // Its words are held with its hash: from another address, when the
+      // server says it hasn't changed, and to someone who may not read.
+      for (const [url, read] of [
+        [other, true],
+        [address, true],
+        [other, false],
+      ] as const) {
+        expect(await fetchFile(t, url, { ...v62, read })).toMatchObject({
+          ok: true,
+          namedBy: "ocr",
+          cost: { reads: 0 },
+        });
+      }
+      expect(sent).toHaveLength(1);
+      expect(net.asked(other)).toBe(2);
+      // Words that name the form are held to the rule any words are.
+      expect(await fetchFile(t, address, { code: "V55" })).toMatchObject({
+        ok: false,
+        why: "otherForm",
+      });
+    });
+
+    test("a scan held from before there was a reader is read once, when a read may be spent", async () => {
+      const t = initConvexTest();
+      fakeNetwork({
+        [address]: serveRevalidating(await scanPdf(), '"v1"', "Mon"),
+      });
+      const linked = { ...v62, linkedAs: "Form V62", trusted: true };
+      expect(await fetchFile(t, address, linked)).toMatchObject({
+        namedBy: "link",
+        cost: { reads: 0 },
+      });
+      const { model, sent } = await fakeReader(printed);
+      scans.reader = model;
+
+      // Without a read to spend it stands as it was, and says why.
+      expect(
+        await fetchFile(t, address, { ...linked, read: false }),
+      ).toMatchObject({ namedBy: "link", cost: { unchanged: 1 } });
+      expect(sent).toHaveLength(0);
+      // With one, the file is asked for whole, and read.
+      expect(await fetchFile(t, address, linked)).toMatchObject({
+        namedBy: "ocr",
+        cost: { reads: 1, unchanged: 0 },
+      });
+      expect(await fetchFile(t, address, linked)).toMatchObject({
+        namedBy: "ocr",
+        cost: { reads: 0, unchanged: 1 },
+      });
+      expect(sent).toHaveLength(1);
+      expect((await kept(t)).editions).toHaveLength(1);
+    });
+
+    test("a scan with nothing to read is settled, and one the reader couldn't answer for is tried again: each still named by its link", async () => {
+      const t = initConvexTest();
+      fakeNetwork({
+        [address]: servePdf(await scanPdf()),
+        [other]: servePdf(await scanPdf(2)),
+      });
+      const linked = { ...v62, linkedAs: "Form V62", trusted: true };
+      const reading = async (answer: string | Error) => {
+        const { model, sent } = await fakeReader(answer);
+        scans.reader = model;
+        const answers = [
+          await fetchFile(t, address, linked),
+          await fetchFile(t, address, linked),
+        ];
+        const [{ words }] = (await kept(t)).addresses as { words: unknown }[];
+        return { answers, words, reads: sent.length };
+      };
+
+      const down = await reading(new Error("socket hang up"));
+      expect(down.answers).toMatchObject([
+        { namedBy: "link", cost: { reads: 1 } },
+        { namedBy: "link", cost: { reads: 1 } },
+      ]);
+      expect(down.words).toEqual({
+        from: "none",
+        why: "unavailable",
+        note: "socket hang up",
+      });
+      const blank = await reading("=====\n");
+      expect(blank.words).toEqual({ from: "none", why: "blank" });
+      expect(blank.reads).toBe(1);
+      // Read, its words name another form: no link then stands for it.
+      scans.reader = (await fakeReader("=====\nV5C Certificate")).model;
+      expect(await fetchFile(t, other, linked)).toMatchObject({
+        ok: false,
+        why: "otherForm",
+      });
     });
   });
 

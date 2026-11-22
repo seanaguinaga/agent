@@ -16,6 +16,8 @@ export type Cost = {
   vouches: number;
   /** Official pages requested for the links they carry. */
   pages: number;
+  /** Files with no words of their own given to a reader. */
+  reads: number;
   /** Bytes of form files downloaded. */
   bytes: number;
   /** Asks answered from what was held, with no request made. */
@@ -48,6 +50,7 @@ export function budget(limits: Limits = {}): Budget {
     decisions: 0,
     vouches: 0,
     pages: 0,
+    reads: 0,
     bytes: 0,
     reused: 0,
     unchanged: 0,

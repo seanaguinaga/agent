@@ -61,6 +61,7 @@ const PACKET_LIMITS: Limits = {
   decisions: 10,
   vouches: 2,
   pages: 12,
+  reads: 3,
 };
 
 /** The finding of one packet's forms: its allowance, and what it has asked. */
@@ -107,28 +108,37 @@ const passing = (answer: Answer) =>
  * place, so the second is asked only if the first gave nothing.) The cheap way first,
  * and the browser only if that was turned away. Each way is paid for from
  * the packet's allowance, and the payment is taken back if it cost nothing.
+ * So is a read, for a file that turns out to have no words of its own.
  */
 function ask<A extends Answer>(
   finder: Finder,
   url: string,
   as: string,
-  how: (way: "request" | "browser", spend: boolean) => Promise<A>,
+  how: (
+    way: "request" | "browser",
+    spend: boolean,
+    read: boolean,
+  ) => Promise<A>,
 ): Promise<A | No> {
   const { spend } = finder;
   const pay = async (way: "request" | "browser") => {
     const kind =
       way === "browser" ? "browser" : as === PAGE ? "pages" : "downloads";
     const paid = spend.take(kind);
+    const read = as !== PAGE && spend.take("reads");
     let used = 0;
+    let reads = 0;
     try {
-      const answer = await how(way, paid);
+      const answer = await how(way, paid, read);
       used = answer.cost[kind];
+      ({ reads } = answer.cost);
       const { bytes, reused, unchanged } = answer.cost;
       spend.add({ bytes, reused, unchanged });
       if (!answer.ok && answer.why === "unspent") spend.add({ refused: 1 });
       return answer;
     } finally {
       if (paid && !used) spend.giveBack(kind);
+      if (read && !reads) spend.giveBack("reads");
     }
   };
   const key = looseKey(url);
@@ -161,6 +171,7 @@ function ask<A extends Answer>(
           held: 0,
           reused: 0,
           unchanged: 0,
+          reads: 0,
         },
       };
       return { url, as, answer };
@@ -191,13 +202,14 @@ export async function fileAt(
     finder,
     url,
     `${form.code}\n${form.linkedAs ?? ""}\n${form.trusted ?? ""}`,
-    (way, spend) =>
+    (way, spend, read) =>
       ctx.runAction(internal.easygov.forms.actions.fetchFile, {
         ...form,
         url,
         from,
         way,
         spend,
+        read,
         packet: finder.id,
       }),
   );
@@ -451,7 +463,8 @@ type ChosenFile = {
   backed: boolean;
   /**
    * What says it is the form. "link": nothing on it could be read, so its
-   * revision, expiry and places are unknown, and it is never filled.
+   * revision, expiry and places are unknown, and it is never filled. "ocr":
+   * a reader read it, so it has no places either.
    */
   namedBy: NamedBy;
 };
@@ -969,6 +982,11 @@ function unfilled({ backed, namedBy }: ChosenFile): string {
       return backed
         ? "EasyGov found the official form but could not fill it in."
         : "EasyGov found a file for it but could not fill it in.";
+    case "ocr":
+      return (
+        "EasyGov read this form from a scan, which it can’t fill in. " +
+        "Check that it is the current edition before you file it."
+      );
     case "link":
       return (
         "EasyGov could not read the file the authority’s page links as this form, " +

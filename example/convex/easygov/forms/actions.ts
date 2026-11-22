@@ -68,7 +68,8 @@ import {
   stands,
   type PageLink,
 } from "./sources";
-import { openingOf, wordsIn, type Words } from "./words";
+import { fileWords, worthReading } from "./reader";
+import { costRead, openingOf, type Words } from "./words";
 
 // --- Asking an official address ---------------------------------------------
 //
@@ -87,6 +88,8 @@ const vCost = v.object({
   held: v.number(),
   reused: v.number(),
   unchanged: v.number(),
+  /** Files with no words of their own given to a reader: see `reader.ts`. */
+  reads: v.number(),
 });
 type AskCost = Infer<typeof vCost>;
 
@@ -143,6 +146,8 @@ type Ask = {
   packet?: string;
   /** True to ask even where a failure still stands. */
   again?: boolean;
+  /** True if a read may be spent on a file with no words of its own. */
+  read?: boolean;
 };
 type Asked =
   | {
@@ -336,7 +341,7 @@ const factsNow = (words: Words, facts: ReadFacts): FormFacts => ({
  */
 async function ask(
   ctx: ActionCtx,
-  { url, from, way, spend, form, packet, again }: Ask,
+  { url, from, way, spend, form, packet, again, read = false }: Ask,
 ): Promise<Asked> {
   const cost = {
     downloads: 0,
@@ -346,6 +351,7 @@ async function ask(
     held: 0,
     reused: 0,
     unchanged: 0,
+    reads: 0,
   };
   const no = (why: Infer<typeof vWhyNot>, note: string) =>
     ({ ok: false, why, note, cost }) as const;
@@ -409,8 +415,14 @@ async function ask(
   let lastModified: string | undefined;
   if (way === "request") {
     cost[form ? "downloads" : "pages"]++;
-    // Only a file that is still kept can be told "the same as before".
-    const kept = held?.outcome === "file" && held.editionId ? held : undefined;
+    // Only a file that is still kept can be told "the same as before", and
+    // one whose words are still to be read is wanted whole.
+    const kept =
+      held?.outcome === "file" &&
+      held.editionId &&
+      !worthReading(held.words, read)
+        ? held
+        : undefined;
     const answered = await request(
       ctx,
       url,
@@ -512,7 +524,7 @@ async function ask(
   const known = await ctx.runMutation(internal.easygov.forms.data.keepFile, {
     sha256,
   });
-  if (known.words && known.facts) {
+  if (known.words && known.facts && !worthReading(known.words, read)) {
     // The same bytes as before: nothing to read again.
     const { words, facts } = known;
     const answer = asFile({ words, facts, editionId: known.editionId });
@@ -541,13 +553,9 @@ async function ask(
     await keep({ outcome: "unusable", note: why });
     return no("unusable", why);
   }
-  const { pages, edition, fillable, targets, ...read } =
-    await inspectPdf(ready);
-  const own = wordsIn(read.words, read.xfa);
-  const words: Words =
-    own === "unread"
-      ? { from: "none", why: "noReader", note: "Nothing reads a scan yet." }
-      : own;
+  const { pages, edition, fillable, targets, ...own } = await inspectPdf(ready);
+  const words = await fileWords(ctx, { ...own, pdf: ready }, read);
+  if (costRead(words)) cost.reads++;
   const opening = openingOf(words);
   const facts: ReadFacts = {
     pages,
@@ -621,13 +629,16 @@ export const fetchFile = internalAction({
     linkedAs: v.optional(v.string()),
     trusted: v.optional(v.boolean()),
     packet: v.optional(v.string()),
+    /** True if a read may be spent on a file with no words of its own. */
+    read: v.optional(v.boolean()),
   },
   returns: vFileAnswer,
   handler: async (
     ctx,
-    { url, from, way, spend, packet, ...form },
+    { url, from, way, spend, packet, read, ...form },
   ): Promise<FileAnswer> => {
-    const answer = await ask(ctx, { url, from, way, spend, packet, form });
+    const asked = { url, from, way, spend, packet, read, form };
+    const answer = await ask(ctx, asked);
     if (!answer.ok) return answer;
     if (!("file" in answer)) throw new Error("A form was asked for");
     return { ok: true, ...answer.file, cost: answer.cost };
@@ -840,6 +851,7 @@ export const fetchForm = action({
           way,
           spend: true,
           again: true,
+          read: true,
           form: { code, jurisdiction, formId },
         });
         const ok = answer.ok && "file" in answer;

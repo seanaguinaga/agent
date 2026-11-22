@@ -19,11 +19,29 @@ it found. Paths are under `example/convex/easygov`.
     becomes `"text"`: its row can't say. Run once per deployment, then make
     `words` required and drop `opening` and `wordsOf`:
     `npx convex run easygov/forms/data:wordsFromOpening '{"cursor":null}'`
-- [ ] **2. `transcribe`, with two readers.** Gemini 2.5 Flash through the
-      gateway, and Google Document AI. Proof: tests for each reader and each
-      outcome; a scan named by `"ocr"`; a held scan transcribed once; the
-      Document AI token request checked against a test key pair; the 3-page cut;
-      the `reads` budget; `transcribe` never given the form's code.
+- [x] **2. `transcribe`, with two readers.** Gemini 2.5 Flash through the
+      gateway, and Google Document AI. Tested: each reader and each outcome; a
+      scan named by `"ocr"`; a held scan transcribed once; the Document AI token
+      request checked against a test key pair; the 3-page cut; the `reads`
+      budget; `transcribe` never given the form's code.
+  - `fileWords`, `reader` and `transcribe` are in `forms/reader.ts`, which runs
+    in Node (it signs with `node:crypto`). `forms/words.ts` stays pure, so
+    `data.ts` can ask whether words are settled.
+  - Held words are looked up where they always were, by `keepFile` in `ask`: a
+    file's facts are held with them, and a file whose words are settled isn't
+    opened again. Of several rows for one hash, a settled one is used.
+  - A held scan whose words aren't settled is asked for whole, not "has it
+    changed", when a read may be spent: only then are there bytes to read.
+  - Read, a scan is held to its words: if they don't name the form, no link
+    stands for it. The link names a file only when nothing could read it.
+  - Document AI needs `DOCUMENT_AI_CREDENTIALS` (the key file, whole) and
+    `DOCUMENT_AI_PROCESSOR` on the deployment, and `readerKind` set to
+    `"documentAi"` in `convex/modelsForDemo.ts`.
+  - **Not verified, since nothing was run live:** the transcription prompt
+    against Gemini (the measurement asked for JSON, not a transcript); that the
+    gateway's errors carry an HTTP status; Document AI end to end, including the
+    shape of its answer and that its text indexes count as JavaScript's do; each
+    reader's size limit (15 MB is sent at most).
 - [ ] **3. Measure, then choose which reader runs.** By the owner: one `world`
       eval run per reader. V62, SA100 and IR3 should be named by OCR; Document
       AI's seconds measured. Both readers stay in the switch (see the answers).
@@ -54,7 +72,8 @@ export function wordsIn(pages: string[], xfa: boolean): Words | "unread";
 /** Pure: whether these bytes need never be read again. */
 export function settled(words: Words): boolean;
 
-/** The one place. Held by sha256, else the file's own, else transcribed. */
+// forms/reader.ts
+/** The one place: the file's own words, else a reader's. */
 export async function fileWords(ctx, file, mayRead: boolean): Promise<Words>;
 ```
 

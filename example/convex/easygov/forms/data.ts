@@ -28,7 +28,7 @@ import {
   vVia,
   vWords,
 } from "./schema";
-import type { Words } from "./words";
+import { settled, type Words } from "./words";
 
 /** Adds a form to the registry, or changes where one is fetched from. */
 export const createForm = mutation({
@@ -564,15 +564,16 @@ export const keepFile = internalMutation({
       .query("formEditions")
       .withIndex("by_sha256", (q) => q.eq("sha256", sha256))
       .first();
-    const read = await ctx.db
+    const rows = await ctx.db
       .query("formAddresses")
       .withIndex("by_sha256", (q) => q.eq("sha256", sha256))
-      .first();
-    // Only a file is held by its hash.
-    const known =
-      read?.outcome === "file"
-        ? { words: wordsOf(read), facts: read.facts }
-        : {};
+      .take(20);
+    // Only a file is held by its hash. One address's reading of the bytes
+    // serves every other: so a reading that is settled comes first.
+    const files = rows.flatMap((row) =>
+      row.outcome === "file" ? [{ words: wordsOf(row), facts: row.facts }] : [],
+    );
+    const known = files.find(({ words }) => settled(words)) ?? files[0] ?? {};
     if (existing || !fresh) {
       return { editionId: existing?._id, kept: false, ...known };
     }

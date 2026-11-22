@@ -104,9 +104,23 @@ export const vWords = v.union(
     from: v.union(v.literal("text"), v.literal("xfa")),
     opening: v.string(),
   }),
+  /** Read by a reader, `by`: see `reader.ts`. */
+  v.object({ from: v.literal("ocr"), opening: v.string(), by: v.string() }),
+  /** Read, and there is nothing there to read again. */
   v.object({
     from: v.literal("none"),
-    why: v.literal("noReader"),
+    why: v.union(v.literal("blank"), v.literal("tooLarge")),
+  }),
+  /** Not read yet: tried again at the next ask. */
+  v.object({
+    from: v.literal("none"),
+    why: v.union(
+      v.literal("noReader"),
+      v.literal("unspent"),
+      v.literal("refused"),
+      v.literal("unavailable"),
+      v.literal("failed"),
+    ),
     note: v.string(),
   }),
 );
@@ -115,6 +129,7 @@ export const vWords = v.union(
 export const vNamedBy = v.union(
   v.literal("text"),
   v.literal("xfa"),
+  v.literal("ocr"),
   v.literal("link"),
 );
 

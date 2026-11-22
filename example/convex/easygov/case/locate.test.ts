@@ -12,6 +12,7 @@ import type { Owner } from "../forms/sites";
 import {
   browserKey,
   fakeNetwork,
+  fakeReader,
   formPdf,
   kept,
   restoreNetwork,
@@ -27,7 +28,7 @@ import {
   locateForms,
   newFinder,
 } from "./locate";
-import type { T } from "./cases.testkit";
+import { scans, type T } from "./cases.testkit";
 
 vi.mock("../../modelsForDemo", async () =>
   (await import("./cases.testkit")).mockModels(),
@@ -58,6 +59,7 @@ beforeEach(() => {
 afterEach(() => {
   restoreKey();
   restoreNetwork();
+  scans.reader = undefined;
 });
 
 /**
@@ -988,6 +990,77 @@ test("a file with no words to read is the form only on a very sure link, between
   expect((await located(1, "https://www.nv.gov/forms/")).file).toBeUndefined();
   expect((await located(1, "https://example.org/forms")).file).toBeUndefined();
   expect((await located(1, index, "Download PDF")).file).toBeUndefined();
+});
+
+test("a packet reads as many scans as its allowance, and a file with words of its own costs no read", async () => {
+  const t = await withSites();
+  const urls = [1, 2, 3].map((n) => `${ssa}/scan-${n}.pdf`);
+  fakeNetwork({
+    [urls[0]]: servePdf(await scanPdf(1)),
+    [urls[1]]: servePdf(await scanPdf(2)),
+    [urls[2]]: servePdf(ssa561),
+  });
+  const { model, sent } = await fakeReader("=====\nForm SSA-561 (08-2025)");
+  scans.reader = model;
+  const finder = finderWith({ reads: 1 });
+  const ask = (url: string) =>
+    fileAt(ctxOf(t), finder, { ...us, code: "SSA-561" }, url);
+
+  expect(await ask(urls[2])).toMatchObject({ ok: true, namedBy: "text" });
+  expect(finder.spend.spent.reads).toBe(0);
+  expect(await ask(urls[0])).toMatchObject({ ok: true, namedBy: "ocr" });
+  // The allowance is spent: the next scan goes unread, and is no form.
+  expect(await ask(urls[1])).toMatchObject({ ok: false, why: "otherForm" });
+  expect(finder.spend.spent.reads).toBe(1);
+  expect(sent).toHaveLength(1);
+  expect(newFinder().spend.take("reads")).toBe(true);
+});
+
+test("a form read from a scan ranks below one with words of its own, and the person is asked to check its edition", async () => {
+  const scan = `${ssa}/ssa-561-scan.pdf`;
+  const booklet = `${ssa}/ssa-561-notes.pdf`;
+  const { model } = await fakeReader(
+    "=====\nForm SSA-561 (08-2025) Use this form if you do not agree with the decision that is made on your claim and you are asking for the review of it.",
+  );
+  scans.reader = model;
+  const sites = async () => {
+    fakeNetwork({
+      [scan]: servePdf(await scanPdf()),
+      [booklet]: servePdf(await formPdf(["Form SSA-561"], { field: false })),
+    });
+    return ctxOf(await withSites());
+  };
+
+  const found = await locateForm(
+    await sites(),
+    "thread",
+    { code: "SSA-561", leads: [scan, booklet] },
+    subject,
+    finderWith({ decisions: 0 }),
+  );
+  expect(found.file).toMatchObject({ url: booklet, namedBy: "text" });
+  expect(found.others).toMatchObject([{ url: scan }]);
+
+  const draft = await compilePacketForms(
+    await sites(),
+    "thread",
+    {
+      jurisdiction: "us",
+      authority: subject.authority,
+      output: { sources: [] },
+      packetForms: [{ code: "SSA-561", sourceUrl: scan, inputs: [] }],
+    } as unknown as Parameters<typeof compilePacketForms>[2],
+    finderWith({ decisions: 0 }),
+  );
+  expect(draft.packetForms).toMatchObject([
+    {
+      sourceUrl: scan,
+      namedBy: "ocr",
+      openItem: expect.stringMatching(
+        /^Complete SSA-561 by hand\. EasyGov read this form from a scan.* current edition/,
+      ),
+    },
+  ]);
 });
 
 test("a form named by its link alone is confirmed, never filled, and the person is told it couldn't be read", async () => {

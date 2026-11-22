@@ -62,6 +62,7 @@ import type * as easygov_forms_governments from "../easygov/forms/governments.js
 import type * as easygov_forms_mapping from "../easygov/forms/mapping.js";
 import type * as easygov_forms_open from "../easygov/forms/open.js";
 import type * as easygov_forms_pdf from "../easygov/forms/pdf.js";
+import type * as easygov_forms_reader from "../easygov/forms/reader.js";
 import type * as easygov_forms_sites from "../easygov/forms/sites.js";
 import type * as easygov_forms_sources from "../easygov/forms/sources.js";
 import type * as easygov_forms_words from "../easygov/forms/words.js";
@@ -177,6 +178,7 @@ declare const fullApi: ApiFromModules<{
   "easygov/forms/mapping": typeof easygov_forms_mapping;
   "easygov/forms/open": typeof easygov_forms_open;
   "easygov/forms/pdf": typeof easygov_forms_pdf;
+  "easygov/forms/reader": typeof easygov_forms_reader;
   "easygov/forms/sites": typeof easygov_forms_sites;
   "easygov/forms/sources": typeof easygov_forms_sources;
   "easygov/forms/words": typeof easygov_forms_words;

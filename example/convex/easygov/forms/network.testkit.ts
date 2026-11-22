@@ -12,7 +12,12 @@ import { vi } from "vitest";
 import type { T } from "../case/cases.testkit";
 
 /** One request the code under test made. */
-export type Asked = { url: string; method: string; headers: Headers };
+export type Asked = {
+  url: string;
+  method: string;
+  headers: Headers;
+  body?: BodyInit | null;
+};
 
 /** What an address answers a request with. */
 export type Served = (asked: Asked) => Response | Promise<Response>;
@@ -53,6 +58,7 @@ export function fakeNetwork(
       url,
       method: init?.method ?? "GET",
       headers: new Headers(init?.headers),
+      body: init?.body,
     };
     if (url.startsWith(BROWSER_API)) {
       service.push(asked);
@@ -302,14 +308,53 @@ export async function xfaPdf(lines: string[]): Promise<Uint8Array> {
   return await doc.save();
 }
 
-/** A small real scan: one page that is one picture, with no word to read. */
-export async function scanPdf(): Promise<Uint8Array> {
+/** A small real scan: each page is one picture, with no word to read. */
+export async function scanPdf(pages = 1): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   const pixel = await doc.embedPng(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
   );
-  doc.addPage([612, 792]).drawImage(pixel, { width: 612, height: 792 });
+  for (let page = 0; page < pages; page++) {
+    doc.addPage([612, 792]).drawImage(pixel, { width: 612, height: 792 });
+  }
   return await doc.save();
+}
+
+/**
+ * A model that reads a scan: it answers every file with `answer`, or throws
+ * it, and keeps the words and the files it was sent.
+ */
+export async function fakeReader(answer: string | Error, finish = "stop") {
+  const { MockLanguageModelV4 } = await import("ai/test");
+  const sent: { words: string[]; files: Uint8Array[] }[] = [];
+  const model = new MockLanguageModelV4({
+    doGenerate: async ({ prompt }) => {
+      const parts = prompt.flatMap((message) =>
+        message.role === "user" ? message.content : [],
+      );
+      sent.push({
+        words: parts.flatMap((part) => (part.type === "text" ? part.text : [])),
+        files: parts.flatMap((part) =>
+          part.type === "file" &&
+          part.data.type === "data" &&
+          typeof part.data.data !== "string"
+            ? part.data.data
+            : [],
+        ),
+      });
+      if (answer instanceof Error) throw answer;
+      return {
+        content: [{ type: "text", text: answer }],
+        finishReason: { unified: finish as "stop", raw: undefined },
+        usage: {
+          inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 1, text: 1, reasoning: 0 },
+        },
+        warnings: [],
+      };
+    },
+  });
+  return { model, sent };
 }
 
 /** The rows kept, to say what finding a form stored. */

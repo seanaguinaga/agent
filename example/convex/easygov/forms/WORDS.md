@@ -35,8 +35,8 @@ it found. Paths are under `example/convex/easygov`.
   - Read, a scan is held to its words: if they don't name the form, no link
     stands for it. The link names a file only when nothing could read it.
   - Document AI needs `DOCUMENT_AI_CREDENTIALS` (the key file, whole) and
-    `DOCUMENT_AI_PROCESSOR` on the deployment, and `readerKind` set to
-    `"documentAi"` in `convex/modelsForDemo.ts`.
+    `DOCUMENT_AI_PROCESSOR` on the deployment, and a place in `readerOrder` in
+    `convex/modelsForDemo.ts`.
   - **Not verified, since nothing was run live:** the transcription prompt
     against Gemini (the measurement asked for JSON, not a transcript); that the
     gateway's errors carry an HTTP status; Document AI end to end, including the
@@ -52,17 +52,44 @@ it found. Paths are under `example/convex/easygov`.
     13.2–13.8 s on V62, 3.3–3.8 s on the others; Gemini 2.5 Flash 17.2–18.1 s
     and 2.3–4.0 s. Document AI named the code in 6 of 6 reads, Gemini in 5 of 6
     (it dropped SA100's once). Both gave the same amount of text.
-  - **Chosen: Document AI** (`readerKind = "documentAi"`). Gemini stays in the
-    switch. Set up in the `easygov-development` Google Cloud project: Document
-    OCR processor `easygov-form-ocr` (us) and service account
-    `easygov-document-ai` (Document AI API User), whose key is in the dev
-    deployment's `DOCUMENT_AI_CREDENTIALS`. The organization blocks keys by
+  - **Chosen: Document AI**, first in `readerOrder`. Gemini stays in the switch,
+    as its backup since stage 4. Set up in the `easygov-development` Google
+    Cloud project: Document OCR processor `easygov-form-ocr` (us) and service
+    account `easygov-document-ai` (Document AI API User), whose key is in the
+    dev deployment's `DOCUMENT_AI_CREDENTIALS`. The organization blocks keys by
     default; the block is lifted for that project only. Later: Workload Identity
     Federation in place of the key.
-- [ ] **4. Fetch ways** (survey, row 1). Proof: `fetch.test.ts` unchanged and
+- [x] **4. A backup reader, retries, and a status the person sees.** The owner's
+      rule, for every call to an outside provider: _"Fallbacks are always
+      needed. Retries too. Plus a status update for the front end to see."_
+      Built here first; see "The rule for every provider call".
+  - `readerOrder` (`["documentAi", "model"]`) replaces `readerKind`; `readers()`
+    gives the ones set up, in order, and `fileWords` asks each in turn. A key
+    file that can't be read is logged and passed over, so the backup still
+    reads.
+  - `after` (pure): only words stop the next reader being asked. **Denied** and
+    **too large** go on to the next too. Each reader has its own account and its
+    own limits, so a wrong key or one provider's 413 says nothing of the other;
+    and `tooLarge` settles a file for good, so it is kept only when the last
+    reader says it.
+  - `retryIn` (pure): only `unavailable` and `quota` are asked again, after
+    `readerRetries` (1 s, then 3 s). Denied, too large and failed are not.
+  - One reader has 30 s for a file, its tries and waits together: a wait that
+    would outlast it isn't begun. So a file takes at most 30 s a reader, and one
+    `reads` whatever it took.
+  - Document AI's token is held in the action for 50 minutes, by account, and
+    dropped when it is turned down.
+  - While it runs, the case's `run.reading` holds each form's latest
+    `vReadStatus`, written by `noteReading` and shown under the working phase
+    (`readingLine` in `ui/easygov/Phases.tsx`). It goes when the run does. Kept,
+    on the words: `by`, `tries` and `backup`.
+  - **Not verified, since nothing was run live:** either provider's real 429 or
+    5xx; that 1 s and 3 s are waits a real quota mends; the status as a person
+    sees it in the browser.
+- [ ] **5. Fetch ways** (survey, row 1). Proof: `fetch.test.ts` unchanged and
       passing.
-- [ ] **5. Decision call** (survey, row 2).
-- [ ] **6. Retire `"link"`?** Not planned: link-only naming stays as the
+- [ ] **6. Decision call** (survey, row 2).
+- [ ] **7. Retire `"link"`?** Not planned: link-only naming stays as the
       fallback (see the answers). Revisit only if stage 3 shows no file needs
       it.
 
@@ -72,7 +99,14 @@ it found. Paths are under `example/convex/easygov`.
 // forms/words.ts
 export type Words =
   | { from: "text" | "xfa"; opening: string }
-  | { from: "ocr"; opening: string; by: string } // by: which reader, for evals
+  // by: which reader; tries: times one was asked; backup: not the first
+  | {
+      from: "ocr";
+      opening: string;
+      by: string;
+      tries?: number;
+      backup?: boolean;
+    }
   | { from: "none"; why: "blank" | "tooLarge" } // settled: read, nothing there
   | {
       from: "none";
@@ -88,7 +122,7 @@ export function settled(words: Words): boolean;
 
 // forms/reader.ts
 /** The one place: the file's own words, else a reader's. */
-export async function fileWords(ctx, file, mayRead: boolean): Promise<Words>;
+export async function fileWords(ctx, file, mayRead, tell?): Promise<Words>;
 ```
 
 `wordsIn` takes what `inspectPdf` already parsed, not the bytes: a second parse
@@ -130,8 +164,8 @@ export async function transcribe(ctx, reader, pdf): Promise<Transcript>;
   reader gets the same small file. Identity comes from the first page with
   words; a picture cover may precede it. Finding blanks on a scan is out of
   scope.
-- **One 30 s timeout, no retry inside.** Words that aren't settled are tried
-  again at the next ask, as `refused` and `busy` already are.
+- **30 s a reader, its retries inside** (stage 4). Words that still aren't
+  settled are tried again at the next ask, as `refused` and `busy` already are.
 - **Budget.** A `reads` kind in `Cost`; a packet may spend 3. It is taken up
   front and given back if unused, like downloads. The model reader also charges
   its tokens (`chargeUsage`).
@@ -140,6 +174,24 @@ export async function transcribe(ctx, reader, pdf): Promise<Transcript>;
   `{rawDocument}` to
   `https://us-documentai.googleapis.com/v1/{processor}:process`. 429 is quota;
   401 and 403 denied; 413 too large; 5xx unavailable; anything else failed.
+
+## The rule for every provider call
+
+A call to an outside provider has a fallback, retries, and a status the person
+can see. `fileWords` is the pattern; a new one follows it:
+
+- **An ordered list** of providers beside the models (`readerOrder`), and a
+  function that gives the ones set up, in order.
+- **Two pure decisions over the outcome union**, each an exhaustive switch:
+  `after` (stop, or ask the next) and `retryIn` (how long to wait, or not to).
+  Only what a short wait may mend is retried.
+- **One loop that does the asking**, bounded by one time limit a provider and
+  one unit of the packet's budget, whatever it took.
+- **A status union in the schema**, told through a `tell` callback, so the loop
+  knows nothing of cases. The case's `run` carries it while the work runs: there
+  is no second channel.
+- **The outcome is kept** where the answer is: which provider, how many tries,
+  whether it was a backup.
 
 ## What it replaces
 
@@ -159,9 +211,9 @@ export async function transcribe(ctx, reader, pdf): Promise<Transcript>;
 
 ## The owner's answers
 
-1. **Both readers stay** as members of the switch. Only one runs at a time,
-   chosen in code beside the other model settings (`convex/modelsForDemo.ts`).
-   No automatic fallback for now.
+1. **Both readers stay** as members of the switch, in an order set in code
+   beside the other model settings (`convex/modelsForDemo.ts`). The second is
+   the first's backup (stage 4; at first only one ran).
 2. **OCR words identify a form like any words.** The person is still asked to
    check the edition. A file with its own text or XFA ranks above an OCR'd copy
    of the same form.
@@ -181,7 +233,7 @@ up: it is tested against a stand-in network only.
 
 ## Where else the pattern fits
 
-A survey of the whole example, ranked. Two are worth doing (stages 4 and 5).
+A survey of the whole example, ranked. Two are worth doing (stages 5 and 6).
 
 | #   | Place                | Now                                                                                                                                                                                        | Union and function                                                                                                                                             | Net lines | Risk                                |
 | --- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ----------------------------------- |

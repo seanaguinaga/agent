@@ -69,6 +69,8 @@ export type Finder = {
   spend: Budget;
   /** Names the packet, so an address knows what this packet asked it. */
   id: string;
+  /** The case that hears what is happening to a scanned form, if one does. */
+  caseId?: Id<"cases">;
   /**
    * The last ask of each address, in any letter case: the spelling asked,
    * what it was asked as, and the answer.
@@ -78,9 +80,13 @@ export type Finder = {
   judging: Map<string, Promise<Site | undefined>>;
 };
 
-export const newFinder = (limits: Limits = PACKET_LIMITS): Finder => ({
+export const newFinder = (
+  limits: Limits = PACKET_LIMITS,
+  caseId?: Id<"cases">,
+): Finder => ({
   spend: budget(limits),
   id: crypto.randomUUID(),
+  caseId,
   asked: new Map(),
   judging: new Map(),
 });
@@ -211,6 +217,7 @@ export async function fileAt(
         spend,
         read,
         packet: finder.id,
+        caseId: finder.caseId,
       }),
   );
 }

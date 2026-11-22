@@ -11,7 +11,9 @@ import {
   test,
   vi,
 } from "vitest";
+import type { WorkflowId } from "@convex-dev/workflow";
 import { internal } from "../../_generated/api";
+import type { Id } from "../../_generated/dataModel";
 import { initConvexTest } from "../../setup.test";
 import { scans, type T } from "../case/cases.testkit";
 import {
@@ -92,6 +94,7 @@ const fetchFile = (
     way?: "request" | "browser";
     spend?: boolean;
     read?: boolean;
+    caseId?: Id<"cases">;
   } = {},
 ) =>
   t.action(actions.fetchFile, {
@@ -694,6 +697,68 @@ describe("whether a file is the form", () => {
       });
       expect(sent).toHaveLength(1);
       expect((await kept(t)).editions).toHaveLength(1);
+    });
+
+    test("a case hears each step of a scan's reading while its work runs, and every try is one read", async () => {
+      const t = initConvexTest();
+      fakeNetwork({ [address]: servePdf(await scanPdf()) });
+      const caseId = await t.run((ctx) =>
+        ctx.db.insert("cases", {
+          userId: "someone",
+          threadId: "thread",
+          status: "active",
+          seq: 0,
+          answers: {},
+          evidence: [],
+          run: { state: "running", workflowId: "w" as WorkflowId },
+        }),
+      );
+      const heard = () =>
+        t.run(async (ctx) => {
+          const { run } = (await ctx.db.get("cases", caseId))!;
+          return run?.state === "running" ? run.reading : undefined;
+        });
+      const down = new Error("socket hang up");
+      const { model, sent } = await fakeReader([down, down, printed]);
+      scans.reader = model;
+      // What the page shows each time the reader is asked.
+      const seen: Awaited<ReturnType<typeof heard>>[] = [];
+      const { doGenerate } = model;
+      model.doGenerate = async (options) => {
+        seen.push(await heard());
+        return await doGenerate(options);
+      };
+
+      const answer = await fetchFile(t, address, { ...v62, caseId });
+      expect(answer).toMatchObject({ namedBy: "ocr", cost: { reads: 1 } });
+      expect(sent).toHaveLength(3);
+      expect([...seen, await heard()]).toEqual(
+        ["reading", "retrying", "retrying", "read"].map((status) => [
+          { code: "V62", status },
+        ]),
+      );
+      // What is kept is how it ended: who read it, and after how many tries.
+      expect((await kept(t)).addresses).toMatchObject([
+        { words: { by: model.modelId, tries: 3, backup: false } },
+      ]);
+
+      // Each form has its latest status, and nobody hears once the work ends.
+      const note = (status: "unread") =>
+        t.mutation(internal.easygov.case.data.noteReading, {
+          caseId,
+          code: "V5C",
+          status,
+        });
+      await note("unread");
+      expect(await heard()).toEqual([
+        { code: "V62", status: "read" },
+        { code: "V5C", status: "unread" },
+      ]);
+      await t.run((ctx) => ctx.db.patch("cases", caseId, { run: undefined }));
+      await note("unread");
+      expect((await t.run((ctx) => ctx.db.get("cases", caseId)))?.run).toBe(
+        undefined,
+      );
     });
 
     test("a scan with nothing to read is settled, and one the reader couldn't answer for is tried again: each still named by its link", async () => {

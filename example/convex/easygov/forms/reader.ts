@@ -8,9 +8,18 @@ import { APICallError, generateText, type LanguageModel } from "ai";
 import { PDFDocument } from "pdf-lib";
 import { z } from "zod/v4";
 import type { ActionCtx } from "../../_generated/server";
-import { readerKind, readerModel } from "../../modelsForDemo";
+import { readerModel, readerOrder, readerRetries } from "../../modelsForDemo";
 import { chargeUsage } from "../limits";
-import { settled, wordsFrom, wordsIn, type Words } from "./words";
+import type { ReadStatus } from "./schema";
+import {
+  after,
+  readAs,
+  retryIn,
+  settled,
+  wordsFrom,
+  wordsIn,
+  type Words,
+} from "./words";
 
 export type Reader =
   | { kind: "model"; model: LanguageModel }
@@ -34,12 +43,9 @@ const zAccount = z.object({
   private_key: z.string(),
 });
 
-/**
- * The reader in use, or undefined where it isn't set up. One runs at a
- * time, with no fallback: `readerKind`, beside the models, says which.
- */
-export function reader(): Reader | undefined {
-  switch (readerKind) {
+/** One kind of reader, or undefined where it isn't set up. */
+function readerOf(kind: Reader["kind"]): Reader | undefined {
+  switch (kind) {
     case "model":
       return readerModel && { kind: "model", model: readerModel };
     case "documentAi": {
@@ -54,12 +60,18 @@ export function reader(): Reader | undefined {
         );
         return { kind: "documentAi", processor, account: { email, key } };
       } catch {
-        // What is wrong with a key is never said in the key's own words.
-        throw new Error("DOCUMENT_AI_CREDENTIALS isn't an account's key file.");
+        // What is wrong with a key is never said in the key's own words. The
+        // readers after it still read.
+        console.error("DOCUMENT_AI_CREDENTIALS isn't an account's key file.");
+        return undefined;
       }
     }
   }
 }
+
+/** The readers set up, in the order they are asked: `readerOrder`. */
+export const readers = (): Reader[] =>
+  readerOrder.flatMap((kind) => readerOf(kind) ?? []);
 
 /** A reader's name, kept with the words it read. */
 function nameOf(reader: Reader): string {
@@ -75,32 +87,68 @@ function nameOf(reader: Reader): string {
 
 /** Whether held words are worth reading again: a reader may now give some. */
 export const worthReading = (words: Words, mayRead: boolean): boolean =>
-  mayRead && !settled(words) && !!reader();
+  mayRead && !settled(words) && readers().length > 0;
 
 /**
  * The one place a file's words are asked for: its own, or where it has none
- * and a read may be spent, a reader's.
+ * and a read may be spent, a reader's. Each reader is asked in turn until
+ * one gives words (`after`), and asked again where a short wait may mend
+ * what went wrong (`retryIn`): all of it is one read. `tell` hears each
+ * step as it happens; what is kept is how it ended.
  */
 export async function fileWords(
   ctx: ActionCtx,
   file: { words: string[]; xfa: boolean; pdf: Uint8Array },
   mayRead: boolean,
+  tell: (status: ReadStatus) => Promise<unknown> = async () => undefined,
 ): Promise<Words> {
   const own = wordsIn(file.words, file.xfa);
   if (own !== "unread") return own;
-  const using = reader();
-  if (!using) {
+  const [first, ...backups] = readers();
+  if (!first) {
     return { from: "none", why: "noReader", note: "No reader is set up." };
   }
   if (!mayRead) return { from: "none", why: "unspent", note: "" };
-  return wordsFrom(await transcribe(ctx, using, file.pdf), nameOf(using));
+  let tries = 0;
+  const read = async (reader: Reader): Promise<Transcript> => {
+    // One reader's tries and waits all end by the one time.
+    const until = Date.now() + TIMEOUT;
+    const signal = AbortSignal.timeout(TIMEOUT);
+    for (let retried = 0; ; retried++) {
+      tries++;
+      const transcript = await transcribe(ctx, reader, file.pdf, signal);
+      const left = until - Date.now();
+      const wait = retryIn(transcript, retried, left, readerRetries);
+      if (wait === undefined) return transcript;
+      await tell("retrying");
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+  };
+  await tell("reading");
+  let by = first;
+  let transcript = await read(by);
+  for (const backup of backups) {
+    if (after(transcript) === "stop") break;
+    // The alert that a reader is failing: search the logs for this line.
+    console.warn("easygov reader fell back", nameOf(by), transcript);
+    await tell("backup");
+    by = backup;
+    transcript = await read(by);
+  }
+  const how = { by: nameOf(by), tries, backup: by !== first };
+  const words = wordsFrom(transcript, how);
+  await tell(readAs(words));
+  return words;
 }
 
 /** As many pages as are read: a form names itself on its first with words. */
 const PAGES = 3;
 /** As much as is sent to a reader, which takes it whole in one request. */
 const MAX_READ = 15 * 1024 * 1024;
-/** Longer than the slowest read measured, 12 s. Nothing is tried twice. */
+/**
+ * As long as one reader has for a file, its tries and the waits between
+ * them together: longer than the slowest read measured, 18 s.
+ */
 const TIMEOUT = 30_000;
 
 /** The first `count` pages of a PDF, as a PDF: all of it if it has no more. */
@@ -138,15 +186,16 @@ export async function transcribe(
   ctx: Pick<ActionCtx, "runQuery" | "runMutation">,
   reader: Reader,
   pdf: Uint8Array,
+  signal: AbortSignal = AbortSignal.timeout(TIMEOUT),
 ): Promise<Transcript> {
   try {
     const start = await firstPages(pdf, PAGES);
     if (start.length > MAX_READ) return { got: "tooLarge" };
     switch (reader.kind) {
       case "model":
-        return await viaModel(ctx, reader.model, start);
+        return await viaModel(ctx, reader.model, start, signal);
       case "documentAi":
-        return await viaDocumentAi(reader, start);
+        return await viaDocumentAi(reader, start, signal);
     }
   } catch (error) {
     const note = `${error instanceof Error ? error.message : error}`.slice(
@@ -166,11 +215,12 @@ async function viaModel(
   ctx: Pick<ActionCtx, "runQuery" | "runMutation">,
   model: LanguageModel,
   pdf: Uint8Array,
+  signal: AbortSignal,
 ): Promise<Transcript> {
   const { text, usage, finishReason } = await generateText({
     model,
     maxRetries: 0,
-    abortSignal: AbortSignal.timeout(TIMEOUT),
+    abortSignal: signal,
     messages: [
       {
         role: "user",
@@ -243,24 +293,35 @@ const zDocument = z.object({
   }),
 });
 
+/**
+ * Each account's access token, held until well before its hour is up: a
+ * second try, or the next file the same action reads, asks for none.
+ */
+export const tokens = new Map<string, { token: string; until: number }>();
+
 /** Google's Document AI, in `us`: a token for the account, then the file. */
 async function viaDocumentAi(
   { processor, account }: Extract<Reader, { kind: "documentAi" }>,
   pdf: Uint8Array,
+  signal: AbortSignal,
 ): Promise<Transcript> {
-  const signal = AbortSignal.timeout(TIMEOUT);
-  const granted = await fetch(TOKEN_URL, {
-    method: "POST",
-    signal,
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion: assertion(account),
-    }),
-  });
-  if (!granted.ok) {
-    return turnedAway(granted.status, `No token: HTTP ${granted.status}.`);
+  const held = tokens.get(account.email);
+  let token = held && held.until > Date.now() ? held.token : undefined;
+  if (!token) {
+    const granted = await fetch(TOKEN_URL, {
+      method: "POST",
+      signal,
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion: assertion(account),
+      }),
+    });
+    if (!granted.ok) {
+      return turnedAway(granted.status, `No token: HTTP ${granted.status}.`);
+    }
+    ({ access_token: token } = zToken.parse(await granted.json()));
+    tokens.set(account.email, { token, until: Date.now() + 50 * 60_000 });
   }
-  const { access_token: token } = zToken.parse(await granted.json());
   const response = await fetch(
     `https://us-documentai.googleapis.com/v1/${processor}:process`,
     {
@@ -279,6 +340,8 @@ async function viaDocumentAi(
     },
   );
   if (!response.ok) {
+    // A token that was turned down isn't offered again.
+    if (response.status === 401) tokens.delete(account.email);
     return turnedAway(response.status, `Document AI: HTTP ${response.status}.`);
   }
   // Each page says which stretches of the document's text are its own.

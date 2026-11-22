@@ -42,7 +42,7 @@ const IRS_8822_PROPOSAL = JSON.stringify({
  */
 export const scans = {
   reader: undefined as LanguageModel | undefined,
-  kind: "model" as "model" | "documentAi",
+  order: ["model"] as ("documentAi" | "model")[],
 };
 
 /** The stand-in for `modelsForDemo`. */
@@ -71,9 +71,10 @@ export async function mockModels() {
     get readerModel() {
       return scans.reader;
     },
-    get readerKind() {
-      return scans.kind;
+    get readerOrder() {
+      return scans.order;
     },
+    readerRetries: [1, 3],
   };
 }
 

@@ -104,8 +104,18 @@ export const vWords = v.union(
     from: v.union(v.literal("text"), v.literal("xfa")),
     opening: v.string(),
   }),
-  /** Read by a reader, `by`: see `reader.ts`. */
-  v.object({ from: v.literal("ocr"), opening: v.string(), by: v.string() }),
+  /**
+   * Read by a reader, `by`: see `reader.ts`. `tries` is how many times a
+   * reader was asked, and `backup` whether the first in order didn't read
+   * it. A row kept before these were recorded has neither.
+   */
+  v.object({
+    from: v.literal("ocr"),
+    opening: v.string(),
+    by: v.string(),
+    tries: v.optional(v.number()),
+    backup: v.optional(v.boolean()),
+  }),
   /** Read, and there is nothing there to read again. */
   v.object({
     from: v.literal("none"),
@@ -124,6 +134,21 @@ export const vWords = v.union(
     note: v.string(),
   }),
 );
+
+/**
+ * What is happening to a scanned form while a reader is asked for its words
+ * (`fileWords` in `reader.ts`): shown while the work runs, and not kept.
+ * "backup" is the next reader being asked; the last three are how it ended.
+ */
+export const vReadStatus = v.union(
+  v.literal("reading"),
+  v.literal("retrying"),
+  v.literal("backup"),
+  v.literal("read"),
+  v.literal("readByBackup"),
+  v.literal("unread"),
+);
+export type ReadStatus = Infer<typeof vReadStatus>;
 
 /** What says a file is a form: see `namedBy` in `sources.ts`. */
 export const vNamedBy = v.union(

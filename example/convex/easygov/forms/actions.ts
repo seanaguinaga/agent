@@ -148,6 +148,8 @@ type Ask = {
   again?: boolean;
   /** True if a read may be spent on a file with no words of its own. */
   read?: boolean;
+  /** The case that hears what is happening to a scan: see `noteReading`. */
+  caseId?: Id<"cases">;
 };
 type Asked =
   | {
@@ -341,7 +343,7 @@ const factsNow = (words: Words, facts: ReadFacts): FormFacts => ({
  */
 async function ask(
   ctx: ActionCtx,
-  { url, from, way, spend, form, packet, again, read = false }: Ask,
+  { url, from, way, spend, form, packet, again, read = false, caseId }: Ask,
 ): Promise<Asked> {
   const cost = {
     downloads: 0,
@@ -554,7 +556,22 @@ async function ask(
     return no("unusable", why);
   }
   const { pages, edition, fillable, targets, ...own } = await inspectPdf(ready);
-  const words = await fileWords(ctx, { ...own, pdf: ready }, read);
+  // A case hears each step of a scan's reading. Telling it never fails one.
+  const { code } = form;
+  const words = await fileWords(
+    ctx,
+    { ...own, pdf: ready },
+    read,
+    async (status) =>
+      caseId &&
+      (await ctx
+        .runMutation(internal.easygov.case.data.noteReading, {
+          caseId,
+          code,
+          status,
+        })
+        .catch(() => undefined)),
+  );
   if (costRead(words)) cost.reads++;
   const opening = openingOf(words);
   const facts: ReadFacts = {
@@ -631,13 +648,15 @@ export const fetchFile = internalAction({
     packet: v.optional(v.string()),
     /** True if a read may be spent on a file with no words of its own. */
     read: v.optional(v.boolean()),
+    /** The case that hears what is happening to a scan: see `noteReading`. */
+    caseId: v.optional(v.id("cases")),
   },
   returns: vFileAnswer,
   handler: async (
     ctx,
-    { url, from, way, spend, packet, read, ...form },
+    { url, from, way, spend, packet, read, caseId, ...form },
   ): Promise<FileAnswer> => {
-    const asked = { url, from, way, spend, packet, read, form };
+    const asked = { url, from, way, spend, packet, read, caseId, form };
     const answer = await ask(ctx, asked);
     if (!answer.ok) return answer;
     if (!("file" in answer)) throw new Error("A form was asked for");

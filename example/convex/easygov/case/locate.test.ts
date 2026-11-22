@@ -1024,8 +1024,14 @@ test("a form read from a scan ranks below one with words of its own, and the per
   );
   scans.reader = model;
   const sites = async () => {
+    const scanned = servePdf(await scanPdf());
     fakeNetwork({
-      [scan]: servePdf(await scanPdf()),
+      // Served once the booklet is kept: the stand-in database can't keep
+      // two files at the same moment.
+      [scan]: async (asked) => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return scanned(asked);
+      },
       [booklet]: servePdf(await formPdf(["Form SSA-561"], { field: false })),
     });
     return ctxOf(await withSites());

@@ -2,7 +2,7 @@
 // words are, never how they were got: see WORDS.md. Pure.
 import type { Infer } from "convex/values";
 import type { Transcript } from "./reader";
-import type { vWords } from "./schema";
+import type { ReadStatus, vWords } from "./schema";
 
 export type Words = Infer<typeof vWords>;
 
@@ -35,14 +35,84 @@ export function wordsIn(pages: string[], xfa: boolean): Words | "unread" {
     : { from: xfa ? "xfa" : "text", opening };
 }
 
-/** The words a reader gave for a file that has none of its own. */
-export function wordsFrom(transcript: Transcript, by: string): Words {
+/**
+ * Whether what a reader said is the answer, or the next reader is asked.
+ * Only words stop it. Each reader has its own account, limits and faults,
+ * so "denied" and "tooLarge" are one reader's too: a wrong key shouldn't
+ * leave the person without, and "tooLarge" settles a file for good, so it
+ * is said only once every reader has declined.
+ */
+export function after(transcript: Transcript): "stop" | "next" {
+  switch (transcript.got) {
+    case "text":
+      return "stop";
+    case "refused":
+    case "tooLarge":
+    case "unavailable":
+    case "failed":
+      return "next";
+  }
+}
+
+/**
+ * How long to wait before asking the same reader again, or undefined not
+ * to: only for what a short wait may mend, while `waits` and the time
+ * `left` to the reader last. Being denied, a file too large and a failure
+ * would only happen again.
+ */
+export function retryIn(
+  transcript: Transcript,
+  retried: number,
+  left: number,
+  waits: number[],
+): number | undefined {
+  const wait = retried < waits.length ? waits[retried] : Infinity;
+  const soon = wait < left ? wait : undefined;
+  switch (transcript.got) {
+    case "text":
+    case "tooLarge":
+    case "failed":
+      return undefined;
+    case "unavailable":
+      return soon;
+    case "refused":
+      switch (transcript.why) {
+        case "quota":
+          return soon;
+        case "denied":
+          return undefined;
+      }
+  }
+}
+
+/** How a read ended, as the person is told while the work still runs. */
+export function readAs(words: Words): ReadStatus {
+  switch (words.from) {
+    case "text":
+    case "xfa":
+      return "read";
+    case "ocr":
+      return words.backup ? "readByBackup" : "read";
+    case "none":
+      return "unread";
+  }
+}
+
+/**
+ * The words a reader gave for a file that has none of its own, with how
+ * they were got: which reader, after how many tries, and whether it was a
+ * backup.
+ */
+export function wordsFrom(
+  transcript: Transcript,
+  how: { by: string; tries: number; backup: boolean },
+): Words {
   switch (transcript.got) {
     case "text": {
       const opening = openingIn(transcript.pages);
       return opening === undefined
         ? { from: "none", why: "blank" }
-        : { from: "ocr", opening, by };
+        : { from: "ocr", opening, ...how };
     }
     case "tooLarge":
       return { from: "none", why: "tooLarge" };

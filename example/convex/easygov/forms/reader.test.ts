@@ -15,8 +15,17 @@ import {
   scanPdf,
   type Served,
 } from "./network.testkit";
-import { firstPages, reader, transcribe, type Reader } from "./reader";
-import { costRead, settled, wordsFrom } from "./words";
+import {
+  fileWords,
+  firstPages,
+  readers,
+  tokens as heldTokens,
+  transcribe,
+  type Reader,
+  type Transcript,
+} from "./reader";
+import type { ReadStatus } from "./schema";
+import { after, costRead, retryIn, settled, wordsFrom } from "./words";
 
 vi.mock("../../modelsForDemo", async () =>
   (await import("../case/cases.testkit")).mockModels(),
@@ -24,8 +33,11 @@ vi.mock("../../modelsForDemo", async () =>
 afterEach(() => {
   restoreNetwork();
   vi.unstubAllEnvs();
-  scans.kind = "model";
+  scans.order = ["model"];
+  scans.reader = undefined;
+  heldTokens.clear();
 });
+const once = { by: "a-model", tries: 1, backup: false };
 
 const ctx = () => {
   const t = initConvexTest();
@@ -73,10 +85,10 @@ describe("a model as the reader", () => {
       ],
     });
     // A picture cover is passed over: the first page with words tells it.
-    expect(wordsFrom(transcript, "a-model")).toEqual({
+    expect(wordsFrom(transcript, once)).toEqual({
       from: "ocr",
       opening: "\nV62 Application for a vehicle registration certificate\n",
-      by: "a-model",
+      ...once,
     });
     expect(sent).toHaveLength(1);
     expect(sent[0].words).toHaveLength(1);
@@ -86,7 +98,7 @@ describe("a model as the reader", () => {
 
   test("with no words on any page, the file is blank: settled, and a read was spent", async () => {
     const { transcript } = await read("=====\n=====\n  \n");
-    const words = wordsFrom(transcript, "a-model");
+    const words = wordsFrom(transcript, once);
     expect(words).toEqual({ from: "none", why: "blank" });
     expect(settled(words)).toBe(true);
     expect(costRead(words)).toBe(true);
@@ -110,7 +122,7 @@ describe("a model as the reader", () => {
     const stopped = (await read("", "content-filter")).transcript;
     expect(stopped).toMatchObject({ got: "failed" });
     for (const transcript of [down, stopped]) {
-      expect(settled(wordsFrom(transcript, "a-model"))).toBe(false);
+      expect(settled(wordsFrom(transcript, once))).toBe(false);
     }
   });
 });
@@ -226,20 +238,176 @@ describe("Document AI as the reader", () => {
     });
   });
 
-  test("runs only where it is chosen and its account and processor are set", () => {
-    scans.kind = "documentAi";
-    expect(reader()).toBeUndefined();
+  test("runs only where it is in the order and its account and processor are set", () => {
+    scans.order = ["documentAi", "model"];
+    expect(readers()).toEqual([]);
     vi.stubEnv("DOCUMENT_AI_PROCESSOR", processor);
     vi.stubEnv(
       "DOCUMENT_AI_CREDENTIALS",
       JSON.stringify({ client_email: email, private_key: privateKey }),
     );
-    expect(reader()).toEqual(documentAi);
-    // A key that can't be read is said so, without a word of it.
+    expect(readers()).toEqual([documentAi]);
+    // A key that can't be read is said so, without a word of it, and the
+    // reader after it still reads.
     vi.stubEnv("DOCUMENT_AI_CREDENTIALS", `{"private_key": "${privateKey}`);
-    expect(reader).toThrow(/^DOCUMENT_AI_CREDENTIALS isn't an account's key/);
-    // The model reads only where it is the one chosen, and there is one.
-    scans.kind = "model";
-    expect(reader()).toBeUndefined();
+    const said = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    scans.reader = "a-model";
+    expect(readers()).toEqual([{ kind: "model", model: "a-model" }]);
+    expect(said.mock.calls).toEqual([
+      ["DOCUMENT_AI_CREDENTIALS isn't an account's key file."],
+    ]);
+    said.mockRestore();
+  });
+
+  describe("first of two readers", () => {
+    const words = "=====\nV62 Application";
+    /** Reads a scan with Document AI answering `served`, then the model. */
+    const read = async (served: Served, backup: string | Error = words) => {
+      vi.stubEnv("DOCUMENT_AI_PROCESSOR", processor);
+      vi.stubEnv(
+        "DOCUMENT_AI_CREDENTIALS",
+        JSON.stringify({ client_email: email, private_key: privateKey }),
+      );
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      scans.order = ["documentAi", "model"];
+      const { model, sent } = await fakeReader(backup);
+      scans.reader = model;
+      const net = fakeNetwork({ [tokens]: grant, [process]: served });
+      const told: ReadStatus[] = [];
+      const got = await fileWords(
+        ctx(),
+        { words: [], xfa: false, pdf: await scanPdf() },
+        true,
+        async (status) => told.push(status),
+      );
+      return { got, told, net, sent, model: model.modelId };
+    };
+    const status = (...statuses: number[]) => {
+      const queue = [...statuses];
+      return () =>
+        queue.length > 1 || queue[0] !== 200
+          ? new Response(null, {
+              status: queue.length > 1 ? queue.shift() : queue[0],
+            })
+          : Response.json({
+              document: {
+                text: "V62",
+                pages: [
+                  {
+                    layout: { textAnchor: { textSegments: [{ endIndex: 3 }] } },
+                  },
+                ],
+              },
+            });
+    };
+
+    test("unavailable, it is asked three times with one token, then the model reads and the words say so", async () => {
+      const { got, told, net, sent, model } = await read(status(503));
+      expect(got).toEqual({
+        from: "ocr",
+        opening: "\nV62 Application",
+        by: model,
+        tries: 4,
+        backup: true,
+      });
+      expect(told).toEqual([
+        "reading",
+        "retrying",
+        "retrying",
+        "backup",
+        "readByBackup",
+      ]);
+      expect(net.asked(tokens)).toBe(1);
+      expect(net.asked(process)).toBe(3);
+      expect(sent).toHaveLength(1);
+    });
+
+    test("unavailable twice, it reads on the third try: one read, and no backup", async () => {
+      const { got, told, sent } = await read(status(503, 500, 200));
+      expect(got).toEqual({
+        from: "ocr",
+        opening: "V62",
+        by: "documentAi",
+        tries: 3,
+        backup: false,
+      });
+      expect(costRead(got)).toBe(true);
+      expect(told).toEqual(["reading", "retrying", "retrying", "read"]);
+      expect(sent).toHaveLength(0);
+    });
+
+    test("over its quota, it is asked again, then the model is", async () => {
+      const { got, told, net } = await read(status(429));
+      expect(got).toMatchObject({ from: "ocr", tries: 4, backup: true });
+      expect(told).toContain("backup");
+      expect(net.asked(process)).toBe(3);
+    });
+
+    test.each([400, 403, 413])(
+      "turned away with %i, it isn't asked again: the model is",
+      async (code) => {
+        const { got, told, net } = await read(status(code));
+        expect(got).toMatchObject({ from: "ocr", tries: 2, backup: true });
+        expect(told).toEqual(["reading", "backup", "readByBackup"]);
+        expect(net.asked(process)).toBe(1);
+      },
+    );
+
+    test("with every reader failing there are no words, for the last one's reason, and the person completes it by hand", async () => {
+      const { got, told, sent } = await read(status(503), refusal(400));
+      expect(got).toEqual({ from: "none", why: "failed", note: "HTTP 400" });
+      expect(settled(got)).toBe(false);
+      expect(told).toEqual([
+        "reading",
+        "retrying",
+        "retrying",
+        "backup",
+        "unread",
+      ]);
+      expect(sent).toHaveLength(1);
+    });
+  });
+});
+
+describe("what a reader said decides what happens next", () => {
+  const said: Transcript[] = [
+    { got: "text", pages: [""] },
+    { got: "refused", why: "quota", note: "" },
+    { got: "unavailable", note: "" },
+    { got: "refused", why: "denied", note: "" },
+    { got: "tooLarge" },
+    { got: "failed", note: "" },
+  ];
+
+  test("only words stop the next reader being asked", () => {
+    expect(said.map(after)).toEqual([
+      "stop",
+      "next",
+      "next",
+      "next",
+      "next",
+      "next",
+    ]);
+  });
+
+  test("only a full quota and an unavailable reader are asked again, while waits and time last", () => {
+    const waits = [1_000, 3_000];
+    const first = said.map((transcript) =>
+      retryIn(transcript, 0, 30_000, waits),
+    );
+    expect(first).toEqual([
+      undefined,
+      1_000,
+      1_000,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    const down = said[2];
+    expect(retryIn(down, 1, 30_000, waits)).toBe(3_000);
+    expect(retryIn(down, 2, 30_000, waits)).toBeUndefined();
+    // A wait that would outlast the reader's time isn't begun.
+    expect(retryIn(down, 1, 3_000, waits)).toBeUndefined();
+    expect(retryIn(down, 0, 0, waits)).toBeUndefined();
   });
 });

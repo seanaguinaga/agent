@@ -322,9 +322,14 @@ export async function scanPdf(pages = 1): Promise<Uint8Array> {
 
 /**
  * A model that reads a scan: it answers every file with `answer`, or throws
- * it, and keeps the words and the files it was sent.
+ * it, and keeps the words and the files it was sent. Given several, it
+ * answers with each in turn, and with the last from then on.
  */
-export async function fakeReader(answer: string | Error, finish = "stop") {
+export async function fakeReader(
+  answers: string | Error | (string | Error)[],
+  finish = "stop",
+) {
+  const queue = [answers].flat();
   const { MockLanguageModelV4 } = await import("ai/test");
   const sent: { words: string[]; files: Uint8Array[] }[] = [];
   const model = new MockLanguageModelV4({
@@ -342,6 +347,7 @@ export async function fakeReader(answer: string | Error, finish = "stop") {
             : [],
         ),
       });
+      const answer = queue.length > 1 ? queue.shift()! : queue[0];
       if (answer instanceof Error) throw answer;
       return {
         content: [{ type: "text", text: answer }],

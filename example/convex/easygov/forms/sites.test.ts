@@ -1,168 +1,177 @@
-// Who an official site belongs to, from CISA's register.
+// Whose a government's site is, and which pages and files confirm a form.
 import { describe, expect, test } from "vitest";
 import { internal } from "../../_generated/api";
 import { initConvexTest } from "../../setup.test";
-import { domainOf, ownSite, parseRegister, type Domain } from "./sites";
+import { confirms, parseRegister, type Owner, type Site } from "./sites";
+import { handFor } from "./sources";
 
+const header =
+  "Domain name,Domain type,Organization name,Suborganization name,City,State,Security contact email";
 const csv = [
-  "Domain name,Domain type,Organization name,Suborganization name,City,State,Security contact email",
+  header,
   "ssa.gov,Federal - Executive,Social Security Administration,,Baltimore,MD,soc@ssa.gov",
   'va.gov,Federal - Executive,Department of Veterans Affairs,"Office of IT, Operations",Washington,DC,x@va.gov',
   "ca.gov,State or territory,State of California,,Rancho Cordova,CA,(blank)",
+  "alamedacountyca.gov,County,Alameda County,,Oakland,CA,(blank)",
+  "navajo-nsn.gov,Tribal,Navajo Nation,,Window Rock,AZ,(blank)",
+  "nowhere.gov,State or territory,A State,,,,(blank)",
 ].join("\n");
 
-test("the register is read for who owns each domain, and never its contacts", () => {
+const via = { kind: "register", register: "cisa" } as const;
+const national: Owner = { level: "national", country: "us" };
+
+test("the register is read for whose each domain is, and never its contacts", () => {
   const sites = parseRegister(csv);
   expect(sites).toEqual([
     {
       domain: "ssa.gov",
-      kind: "Federal - Executive",
-      organization: "Social Security Administration",
-      state: "MD",
+      name: "Social Security Administration",
+      owner: national,
+      via,
     },
     {
       domain: "va.gov",
-      kind: "Federal - Executive",
-      organization: "Department of Veterans Affairs",
-      suborganization: "Office of IT, Operations",
-      state: "DC",
+      name: "Office of IT, Operations",
+      owner: national,
+      via,
     },
     {
       domain: "ca.gov",
-      kind: "State or territory",
-      organization: "State of California",
-      state: "CA",
+      name: "State of California",
+      owner: { level: "region", country: "us", region: "us-ca" },
+      via,
     },
+    {
+      domain: "alamedacountyca.gov",
+      name: "Alameda County",
+      owner: {
+        level: "local",
+        country: "us",
+        region: "us-ca",
+        body: "Alameda County",
+      },
+      via,
+    },
+    {
+      domain: "navajo-nsn.gov",
+      name: "Navajo Nation",
+      owner: {
+        level: "local",
+        country: "us",
+        region: "us-az",
+        body: "Navajo Nation",
+      },
+      via,
+    },
+    // A state's domain in no state is nobody's: it is left out.
   ]);
   expect(JSON.stringify(sites)).not.toContain("@");
+  // A kind of domain the register didn't have isn't guessed at.
+  expect(() =>
+    parseRegister(`${header}\nx.gov,Regional,Some Body,,,CA,`),
+  ).toThrow("new kind of domain");
 });
 
-describe("ownSite", () => {
-  const on = (domain: string, kind: string, state?: string) =>
-    domainOf(domain, { domain, kind, state })!;
-  const ssa = on("ssa.gov", "Federal - Executive", "MD");
-  const ca = on("ca.gov", "State or territory", "CA");
-  const nv = on("nv.gov", "State or territory", "NV");
-  const alameda = on("acgov.gov", "County", "CA");
-  const own = (
-    jurisdiction: string,
-    page: Domain | undefined,
-    file: Domain | undefined,
-    code = "X-1",
-  ) => ownSite({ jurisdiction, code }, page, file);
-  /** A page and the file it links, both on one domain. */
-  const both = (jurisdiction: string, site: Domain) =>
-    own(jurisdiction, site, site);
+describe("confirms", () => {
+  const site = (domain: string, owner: Owner): Site => ({
+    domain,
+    name: domain,
+    owner,
+    via,
+  });
+  const region = (code: string) =>
+    site(`${code}.gov`, { level: "region", country: "us", region: code });
+  const local = (body: string, code = "us-ca", domain = `${body}.gov`) =>
+    site(domain, { level: "local", country: "us", region: code, body });
+  const ssa = site("ssa.gov", national);
+  const irs = site("irs.gov", national);
+  const [ca, nv] = [region("us-ca"), region("us-nv")];
+  const alameda = local("alameda");
 
-  test("a page and a file on one domain of the packet's government", () => {
-    expect(both("us", ssa)).toBe(true);
-    expect(both("us/ca", ca)).toBe(true);
-    expect(both("us/ca/alameda", alameda)).toBe(true);
-    // An agency with a domain of its own, or on the state's: no path needed.
-    expect(both("us/tx", on("txdmv.gov", "State or territory", "TX"))).toBe(
-      true,
-    );
-    expect(both("us/or", on("oregon.gov", "State or territory", "OR"))).toBe(
-      true,
-    );
-    expect(both("us/az", on("navajo-nsn.gov", "Tribal", "AZ"))).toBe(true);
+  test("a page and a file of the packet's government, on one site or two", () => {
+    expect(confirms("us", ssa, ssa)).toBe(true);
+    expect(confirms("us/ca", ca, ca)).toBe(true);
+    expect(confirms("us/ca/alameda", alameda, alameda)).toBe(true);
+    // A national government is one owner: an agency's page, another's file.
+    expect(confirms("us", irs, ssa)).toBe(true);
+    // One body's two sites.
+    expect(
+      confirms("us/ca/alameda", alameda, local("alameda", "us-ca", "ac.org")),
+    ).toBe(true);
   });
 
-  test("the file has to be on the page's domain, and both in the register", () => {
-    expect(own("us", ssa, on("irs.gov", "Federal - Executive", "DC"))).toBe(
-      false,
-    );
-    expect(own("us", ssa, undefined)).toBe(false);
-    expect(own("us", undefined, ssa)).toBe(false);
+  test("a government above the packet's is accepted, never one below or beside", () => {
+    // A county's page linking the state's file, and a state's the nation's.
+    expect(confirms("us/ca/alameda", alameda, ca)).toBe(true);
+    expect(confirms("us/ca/alameda", ca, ssa)).toBe(true);
+    expect(confirms("us/ca", ca, ssa)).toBe(true);
+    // A state's copy of a federal form, and a county's of a state one.
+    expect(confirms("us", ssa, ca)).toBe(false);
+    expect(confirms("us", ca, ca)).toBe(false);
+    expect(confirms("us/ca", ca, alameda)).toBe(false);
+    expect(confirms("us/ca", alameda, alameda)).toBe(false);
+    // Another state's site, another state's county, another country's.
+    expect(confirms("us/ca", nv, nv)).toBe(false);
+    expect(confirms("us/ca", ca, nv)).toBe(false);
+    expect(confirms("us/tx/travis", alameda, alameda)).toBe(false);
+    expect(confirms("ca", ssa, ssa)).toBe(false);
   });
 
-  test("another state's site is not the authority's", () => {
-    expect(both("us/ca", nv)).toBe(false);
-    // A row kept before the register's state was: nothing is confirmed on it.
-    expect(both("us/ca", on("ca.gov", "State or territory"))).toBe(false);
+  test("two local bodies are never one another's", () => {
+    expect(confirms("us/ca/alameda", alameda, local("oakland"))).toBe(false);
+    // A local body the register puts in no state is in no packet's.
+    const lost = site("lost.gov", { level: "local", country: "us", body: "x" });
+    expect(confirms("us/ca/alameda", lost, lost)).toBe(false);
   });
 
-  test("another level of government's site is not the authority's", () => {
-    // A county's copy of a state form, a state's of a federal one, and back.
-    expect(both("us/ca", alameda)).toBe(false);
-    expect(both("us", ca)).toBe(false);
-    expect(both("us/ca", ssa)).toBe(false);
-    expect(both("us/ca/alameda", ca)).toBe(false);
-  });
-
-  test(".mil is federal, each domain its own", () => {
-    const army = domainOf("www.armypubs.army.mil");
-    expect(army).toEqual({ domain: "army.mil", levels: ["federal"] });
-    expect(own("us", army, domainOf("home.army.mil"))).toBe(true);
-    expect(own("us", army, domainOf("www.navy.mil"))).toBe(false);
-    expect(own("us/va", army, army)).toBe(false);
-  });
-
-  test("the GSA's standard and optional forms are on gsa.gov for any federal page", () => {
-    const gsa = on("gsa.gov", "Federal - Executive", "DC");
-    expect(own("us", ssa, gsa, "SF-180")).toBe(true);
-    expect(own("us", ssa, gsa, "OF 306")).toBe(true);
-    expect(own("us", ssa, gsa, "SSA-561")).toBe(false);
-    expect(own("us/ca", ca, gsa, "SF-180")).toBe(false);
+  test("both have to be on vouched sites", () => {
+    expect(confirms("us", ssa, undefined)).toBe(false);
+    expect(confirms("us", undefined, ssa)).toBe(false);
   });
 });
 
-test("a host is looked up by the domain it is registered under", async () => {
+test("a host is looked up by its registrable domain, or its hand-kept line", async () => {
   const t = initConvexTest();
-  await t.mutation(internal.easygov.forms.sites.putSites, {
-    sites: parseRegister(csv),
-    at: 1,
-  });
+  const sites = parseRegister(csv);
+  await t.mutation(internal.easygov.forms.sites.putSites, { sites, at: 1 });
+  const sitesOf = (hosts: string[]) =>
+    t.query(internal.easygov.forms.sites.sitesOf, { hosts });
   expect(
-    await t.query(internal.easygov.forms.sites.sitesOf, {
-      hosts: ["www.dmv.ca.gov", "www.ssa.gov", "forms.example.gov"],
-    }),
+    await sitesOf([
+      "www.dmv.ca.gov",
+      "www.ssa.gov",
+      "forms.example.gov",
+      "www.acgov.org",
+      "www.esd.whs.mil",
+      "www.dmv.org",
+    ]),
   ).toEqual([
-    {
-      host: "www.dmv.ca.gov",
-      domain: "ca.gov",
-      kind: "State or territory",
-      organization: "State of California",
-      state: "CA",
-    },
-    {
-      host: "www.ssa.gov",
-      domain: "ssa.gov",
-      kind: "Federal - Executive",
-      organization: "Social Security Administration",
-      state: "MD",
-    },
+    { host: "www.dmv.ca.gov", site: sites[2] },
+    { host: "www.ssa.gov", site: sites[0] },
+    { host: "www.acgov.org", site: handFor("acgov.org") },
+    { host: "www.esd.whs.mil", site: handFor("army.mil") },
   ]);
+  // The county's hand-kept site and its registered one are one body's.
+  const [{ site: registered }] = await sitesOf(["www.alamedacountyca.gov"]);
+  expect(confirms("us/ca/alameda", handFor("www.acgov.org"), registered)).toBe(
+    true,
+  );
+  // The military's sites are the nation's.
+  expect(confirms("us", handFor("www.army.mil"), handFor("www.navy.mil"))).toBe(
+    true,
+  );
+  expect(confirms("us/va", handFor("army.mil"), handFor("army.mil"))).toBe(
+    true,
+  );
   // A domain the register stops listing is forgotten.
   await t.mutation(internal.easygov.forms.sites.putSites, {
-    sites: parseRegister(csv).slice(0, 1),
+    sites: sites.slice(0, 1),
     at: 2,
   });
   expect(
     await t.mutation(internal.easygov.forms.sites.dropSites, { before: 2 }),
   ).toBe(false);
-  expect(
-    await t.query(internal.easygov.forms.sites.sitesOf, { hosts: ["va.gov"] }),
-  ).toEqual([]);
-});
-
-test("a government's site kept by hand is looked up as the register would list it", async () => {
-  const t = initConvexTest();
-  const [row] = await t.query(internal.easygov.forms.sites.sitesOf, {
-    hosts: ["www.acgov.org", "www.dmv.org"],
-  });
-  expect(row).toEqual({
-    host: "www.acgov.org",
-    domain: "acgov.org",
-    kind: "County",
-    organization: "Alameda County",
-    state: "CA",
-  });
-  const alameda = domainOf(row.host, row);
-  expect(
-    ownSite({ jurisdiction: "us/ca/alameda", code: "X-1" }, alameda, alameda),
-  ).toBe(true);
-  expect(
-    ownSite({ jurisdiction: "us/tx/travis", code: "X-1" }, alameda, alameda),
-  ).toBe(false);
+  expect(await sitesOf(["va.gov", "www.ssa.gov"])).toEqual([
+    { host: "www.ssa.gov", site: sites[0] },
+  ]);
 });

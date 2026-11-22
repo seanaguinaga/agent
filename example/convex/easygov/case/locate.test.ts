@@ -8,6 +8,7 @@ import { internal } from "../../_generated/api";
 import type { ActionCtx } from "../../_generated/server";
 import { initConvexTest } from "../../setup.test";
 import { decide } from "../decisions";
+import type { Owner } from "../forms/sites";
 import {
   browserKey,
   fakeNetwork,
@@ -73,21 +74,24 @@ const ctxOf = (t: T) =>
 /** A test deployment whose register knows whose these domains are. */
 async function withSites() {
   const t = initConvexTest();
-  const row = (domain: string, kind: string, state: string) => ({
+  const row = (domain: string, owner: Owner, name = domain) => ({
     domain,
-    kind,
-    organization: domain,
-    state,
+    name,
+    owner,
+    via: { kind: "register" as const, register: "cisa" as const },
   });
+  const national = { level: "national" as const, country: "us" };
   await t.mutation(internal.easygov.forms.sites.putSites, {
     sites: [
-      {
-        ...row("ssa.gov", "Federal - Executive", "MD"),
-        organization: "Social Security Administration",
-      },
-      row("gsa.gov", "Federal - Executive", "DC"),
-      row("county.gov", "County", "CA"),
-      row("nv.gov", "State or territory", "NV"),
+      row("ssa.gov", national, "Social Security Administration"),
+      row("gsa.gov", national),
+      row("county.gov", {
+        level: "local",
+        country: "us",
+        region: "us-ca",
+        body: "county.gov",
+      }),
+      row("nv.gov", { level: "region", country: "us", region: "us-nv" }),
     ],
     at: 0,
   });
@@ -791,7 +795,7 @@ test("a form whose file can't be found again loses what was said of its old file
   expect(earlier.packetForms![0]).toMatchObject({ backed: true });
 });
 
-test("a link confirms a file only where the register puts the page and the file on the authority's own site", async () => {
+test("a link confirms a file only where the page and the file are on the packet's government's own sites", async () => {
   const file = `${ssa}/ssa-561.pdf`;
   const copy = "https://www.county.gov/forms/ssa-561.pdf";
   const army = "https://armypubs.army.mil/pub/da-4187.pdf";
@@ -839,7 +843,7 @@ test("a link confirms a file only where the register puts the page and the file 
   expect(
     await located(army, "https://www.army.mil/forms", "DA 4187"),
   ).toMatchObject({ backed: true });
-  // A GSA form on gsa.gov, linked from a federal agency's page.
+  // A sister agency's file: the national government is one owner.
   expect(await located(gsa, index, "SF-180")).toMatchObject({ backed: true });
   // A California form on Nevada's site, page and all.
   expect(

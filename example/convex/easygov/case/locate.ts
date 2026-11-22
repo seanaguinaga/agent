@@ -13,8 +13,8 @@
 // 5. What makes the binding is the authority's own page linking a file as
 //    the form, chosen with confidence: looked for on the pages research read
 //    and, failing that, one link further on, and no further. The page and
-//    the file have to be on the authority's own site, as the .gov register
-//    says whose each is (see `ownSite`): nobody approves a site.
+//    the file have to be on sites of the packet's government, or of one
+//    above it (see `confirms`): nobody approves a site.
 // 6. A file that prints an expiry that has passed is never given as
 //    confirmed, and is chosen only when no current file serves the form.
 // 7. Among the authority's own files, the latest revision is chosen, even
@@ -31,7 +31,7 @@ import type { FileAnswer, LinksAnswer } from "../forms/actions";
 import { budget, type Budget, type Limits } from "../forms/budget";
 import { rankForms, type FormFacts } from "../forms/facts";
 import type { FormQuestion } from "../forms/mapping";
-import { domainOf, ownSite, type Registered } from "../forms/sites";
+import { confirms, type Site } from "../forms/sites";
 import {
   addressKey,
   isOfficialHost,
@@ -69,15 +69,12 @@ export type Finder = {
    * what it was asked as, and the answer.
    */
   asked: Map<string, Promise<{ url: string; as: string; answer: Answer }>>;
-  /** The register's row for each host looked up, if it has one. */
-  owners: Map<string, Promise<Registered | undefined>>;
 };
 
 export const newFinder = (limits: Limits = PACKET_LIMITS): Finder => ({
   spend: budget(limits),
   id: crypto.randomUUID(),
   asked: new Map(),
-  owners: new Map(),
 });
 
 type Answer = FileAnswer | LinksAnswer;
@@ -257,33 +254,15 @@ type Designated = {
   further: boolean;
 };
 
-/**
- * Who owns each of these hosts, where the register says. A host is looked
- * up once in a packet.
- */
-async function ownersOf(
+/** The vouched site each of these hosts is on, where it is on one. */
+async function sitesOf(
   ctx: ActionCtx,
-  { owners }: Finder,
   hosts: string[],
-): Promise<Map<string, Registered>> {
-  const fresh = [...new Set(hosts)].filter((host) => !owners.has(host));
-  if (fresh.length) {
-    const found = ctx.runQuery(internal.easygov.forms.sites.sitesOf, {
-      hosts: fresh,
-    });
-    for (const host of fresh) {
-      owners.set(
-        host,
-        found.then((rows) => rows.find((row) => row.host === host)),
-      );
-    }
-  }
-  const known = await Promise.all(
-    hosts.map(async (host) => ({ host, owner: await owners.get(host) })),
-  );
-  return new Map(
-    known.flatMap(({ host, owner }) => (owner ? [[host, owner]] : [])),
-  );
+): Promise<Map<string, Site>> {
+  const found = await ctx.runQuery(internal.easygov.forms.sites.sitesOf, {
+    hosts,
+  });
+  return new Map(found.map(({ host, site }) => [host, site]));
 }
 
 const hostOf = (url: string) => new URL(url).hostname;
@@ -320,16 +299,13 @@ async function chooseLink(
   // The page's words for the link: its own, and the heading it sits under.
   // Then who owns the file's site and the page's: any government's page can
   // link a form, and only the authority's own says which file is its form.
-  const owners = await ownersOf(
+  const sites = await sitesOf(
     ctx,
-    finder,
     links.flatMap(({ url, on }) => [url, ...(on ? [on] : [])]).map(hostOf),
   );
   const whose = (host: string) => {
-    const owner = owners.get(host);
-    return owner
-      ? `${owner.suborganization ?? owner.organization} (${host})`
-      : host;
+    const site = sites.get(host);
+    return site ? `${site.name} (${host})` : host;
   };
   const describe = ({ url, label, under, on }: LabelledLink) => {
     const { hostname, pathname } = new URL(url);
@@ -522,17 +498,15 @@ export async function locateForm(
   const { code } = form;
   const asForm = (linkedAs?: string) => ({ jurisdiction, code, linkedAs });
   const as = (via: Via) => (url: string) => ({ url, via });
-  // Which of these addresses are on the own site of the authority whose
-  // page links the form (see `ownSite`): none, where no page does.
+  // Which of these addresses are, with the page that links the form, the
+  // packet's government's own (see `confirms`): none, where no page does.
   const ownTo = async (page: string | undefined, urls: string[]) => {
     if (!page) return () => false;
     const official = [page, ...urls].filter(isOfficialHost);
-    const owners = await ownersOf(ctx, finder, official.map(hostOf));
+    const sites = await sitesOf(ctx, official.map(hostOf));
     const on = (url: string) =>
-      official.includes(url)
-        ? domainOf(hostOf(url), owners.get(hostOf(url)))
-        : undefined;
-    return (url: string) => ownSite({ jurisdiction, code }, on(page), on(url));
+      official.includes(url) ? sites.get(hostOf(url)) : undefined;
+    return (url: string) => confirms(jurisdiction, on(page), on(url));
   };
 
   /** Chooses the form's link among these, and asks it as the form. */
@@ -665,8 +639,8 @@ export async function locateForm(
 
 /**
  * Whether the chosen file is confirmed as the form: it is the file the
- * authority's page links as the form, the page and the file are on the
- * authority's own site (see `ownSite`), and it prints no expiry that has
+ * authority's page links as the form, the page and the file are on its
+ * government's own sites (see `confirms`), and it prints no expiry that has
  * passed. A later edition chosen over the linked one isn't confirmed: the
  * person is asked to check the edition.
  */

@@ -134,10 +134,34 @@ Each item is replaced, never kept beside the new one:
 
 Each stage is one commit, with its proof.
 
-- [ ] **0. Reshape.** `Owner`, `Site`, the `sites` table, one lookup,
+- [x] **0. Reshape.** `Owner`, `Site`, the `sites` table, one lookup,
       `confirms`. Register rows become `register`, and acgov.org becomes `hand`.
       _Proof:_ tests pass, and the 272 US links give the same confirmed set as
-      before.
+      before: each is confirmed for its page's own government, as it was, and
+      nothing confirmed before is lost.
+  - _Changed from the plan:_
+    - `Site` has only the `vouched` shape and the `register` and `hand` vias so
+      far. The rest arrive with the stages that write them.
+    - `Site` carries a `name` (the agency, in words), because the link chooser
+      is told whose each site is.
+    - `.mil` is a `hand` line until stage 2 makes it a suffix.
+    - Which local body a packet is for can't be told from its name, so a local
+      packet accepts any local body of its region, as before. Page and file must
+      still be the same body.
+    - The registrable domain comes from `tldts`, which carries the Public Suffix
+      List.
+  - _Newly confirmed, on purpose:_
+    - a page and a file on two sites of one national government (decision 1),
+      which covers what the GSA exception did, and any two `.mil` sites;
+    - a state or local packet whose page or file is on a government above it
+      (decision 2);
+    - acgov.org with alamedacountyca.gov, as one body's two sites.
+  - _No longer confirmed:_ a tribal or interstate body's site for a state
+    packet. Those are local bodies now.
+  - _To run once after deploying:_
+    `npx convex run easygov/forms/sites:importSites`, or nothing is confirmed
+    until Monday's import. The old `officialSites` table is then unused, and can
+    be deleted.
 - [ ] **1. Browser.** Read `getHTML({ shadowRoots })` once the link count holds
       on two polls. _Proof:_ a fixture test with a shadow root, and bund.de
       gives ≥ 51 links.

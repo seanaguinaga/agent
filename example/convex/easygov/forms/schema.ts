@@ -175,6 +175,34 @@ export const vPacketPdf = v.object({
   ...vFilledDocument.fields,
 });
 
+/** The government a site belongs to. See `sites.ts`. */
+export const vOwner = v.union(
+  v.object({ level: v.literal("national"), country: v.string() }),
+  v.object({
+    level: v.literal("region"),
+    country: v.string(),
+    /** ISO 3166-2, in lower case: "us-ca". */
+    region: v.string(),
+  }),
+  v.object({
+    level: v.literal("local"),
+    country: v.string(),
+    region: v.optional(v.string()),
+    /** The body's name, as its register gives it. */
+    body: v.string(),
+  }),
+);
+
+/** A site as an official register vouches for it. */
+export const vRegistered = v.object({
+  /** The registrable domain: every host under it is the site. */
+  domain: v.string(),
+  /** Who publishes from it, in words: the agency, where one is named. */
+  name: v.string(),
+  owner: vOwner,
+  via: v.object({ kind: v.literal("register"), register: v.literal("cisa") }),
+});
+
 export default {
   formBlueprints: defineTable({
     editionId: v.id("formEditions"),
@@ -233,16 +261,11 @@ export default {
     ]),
 
   /**
-   * Who each .gov domain belongs to, from CISA's register (see `sites.ts`):
-   * what decides whether a page or a file is on an authority's own site.
+   * The sites a register vouches for, by registrable domain (see `sites.ts`):
+   * what decides whether a page or a file is a government's own.
    */
-  officialSites: defineTable({
-    domain: v.string(),
-    kind: v.string(),
-    organization: v.string(),
-    suborganization: v.optional(v.string()),
-    /** Absent until the weekly import next reads the register. */
-    state: v.optional(v.string()),
+  sites: defineTable({
+    ...vRegistered.fields,
     /** When the register last listed it. */
     at: v.number(),
   })

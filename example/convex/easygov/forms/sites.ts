@@ -1,31 +1,41 @@
-// Who an official site belongs to. Every .gov domain is registered to a
-// verified US government body, listed in CISA's public register: its
-// organization, what kind of government it is, and its state. That decides,
+// Whose a government's site is. Every vouched site records its owner: a
+// national government, a region of one, or a local body (see VOUCHING.md).
+// A site is vouched by CISA's public register of .gov domains, which says
+// who each belongs to, or by a line kept by hand (see `HAND`). That decides,
 // with nobody's approval, whether a page that links a form and the file it
-// links are the authority's own (see `ownSite`): both on one registered
-// domain, of the packet's level of government and, below federal, its state.
-import { v } from "convex/values";
+// links are the packet's government's own (see `confirms`).
+import { v, type Infer } from "convex/values";
+import { getDomain } from "tldts";
 import { internal } from "../../_generated/api";
 import {
   internalAction,
   internalMutation,
   internalQuery,
-  type QueryCtx,
 } from "../../_generated/server";
-import { unregisteredFor } from "./sources";
+import { vOwner, vRegistered } from "./schema";
+import { handFor } from "./sources";
 
 const REGISTER =
   "https://raw.githubusercontent.com/cisagov/dotgov-data/main/current-full.csv";
 
-/** One registered domain, as the register lists it. */
-export type Registered = {
-  domain: string;
-  kind: string;
-  organization: string;
-  suborganization?: string;
-  /** The state it is in, as two letters. Absent on a row kept before this was. */
-  state?: string;
-};
+/** The government a site belongs to. */
+export type Owner = Infer<typeof vOwner>;
+
+/** A site as the register vouches for it. */
+type Registered = Infer<typeof vRegistered>;
+
+/**
+ * A site a government publishes from, whose it is, and what vouches for
+ * that: an official register, or a line kept by hand with its evidence.
+ */
+const vSite = v.object({
+  ...vRegistered.fields,
+  via: v.union(
+    vRegistered.fields.via,
+    v.object({ kind: v.literal("hand"), note: v.string() }),
+  ),
+});
+export type Site = Infer<typeof vSite>;
 
 /** The fields of one line of a CSV file, quotes and all. */
 function fields(line: string): string[] {
@@ -49,6 +59,35 @@ function fields(line: string): string[] {
   return [...out, field];
 }
 
+/** Whose a domain is, from the register's kind of domain. */
+function ownerOf(
+  kind: string,
+  organization: string,
+  state?: string,
+): Owner | undefined {
+  const region = state && `us-${state.toLowerCase()}`;
+  if (kind.startsWith("Federal")) return { level: "national", country: "us" };
+  switch (kind) {
+    case "State or territory":
+      // A state's domain the register puts in no state is nobody's.
+      return region ? { level: "region", country: "us", region } : undefined;
+    case "City":
+    case "County":
+    case "School district":
+    case "Special district":
+    case "Tribal":
+    case "Interstate":
+      return {
+        level: "local",
+        country: "us",
+        ...(region && { region }),
+        body: organization,
+      };
+    default:
+      throw new Error(`The register has a new kind of domain: ${kind}.`);
+  }
+}
+
 /**
  * The domains in the register, from its CSV. Only who each belongs to is
  * kept: never its contacts.
@@ -70,132 +109,85 @@ export function parseRegister(csv: string): Registered[] {
     const row = fields(line);
     const name = row[domain]?.trim().toLowerCase();
     if (!name?.endsWith(".gov") || !row[organization]) return [];
-    const sub = row[suborganization]?.trim();
-    const where = row[state]?.trim().toUpperCase();
+    const body = row[organization].trim();
+    const owner = ownerOf(row[kind].trim(), body, row[state]?.trim());
+    if (!owner) return [];
     return [
       {
         domain: name,
-        kind: row[kind].trim(),
-        organization: row[organization].trim(),
-        ...(sub && { suborganization: sub }),
-        ...(where && { state: where }),
+        name: row[suborganization]?.trim() || body,
+        owner,
+        via: { kind: "register" as const, register: "cisa" as const },
       },
     ];
   });
 }
 
-type Level = "federal" | "state" | "local";
-
-/** "us" is federal, "us/ca" a state, anything narrower local. */
-const levelOf = (jurisdiction: string): Level =>
-  (["federal", "state"] as const)[jurisdiction.split("/").length - 1] ??
-  "local";
-
-/** The levels of government the register's kind of domain serves. */
-function levelsOf(kind: string): Level[] {
-  if (kind.startsWith("Federal")) return ["federal"];
-  switch (kind) {
-    case "State or territory":
-      return ["state"];
-    case "Interstate":
-    case "Tribal":
-      return ["state", "local"];
-    default:
-      // City, County, School district, Special district.
-      return ["local"];
+/**
+ * Whether an owner is a packet's government or one above it: "us" is
+ * national, "us/ca" a region, anything narrower local. Which local body a
+ * packet is for isn't told from its name: any of its region's is taken.
+ */
+function governs(owner: Owner, jurisdiction: string): boolean {
+  const [country, region, ...local] = jurisdiction.split("/");
+  if (owner.country !== country) return false;
+  switch (owner.level) {
+    case "national":
+      return true;
+    case "region":
+      return owner.region === `${country}-${region}`;
+    case "local":
+      return local.length > 0 && owner.region === `${country}-${region}`;
   }
 }
 
-/** The registered domain a host is on, and whose it can be. */
-export type Domain = { domain: string; levels: Level[]; state?: string };
-
 /**
- * The domain a host is on: the one the register lists it under, or, for
- * .mil, which the register doesn't list, its last two labels, federal.
+ * Whether a page and the file it links are the packet's government's own:
+ * both on vouched sites, each owned by that government or one above it,
+ * and, where both are local, by the same body. So an agency's page confirms
+ * a sister agency's file, and a county's page the state's, but never
+ * another state's or another county's.
  */
-export function domainOf(
-  host: string,
-  registered?: Pick<Registered, "domain" | "kind" | "state">,
-): Domain | undefined {
-  const name = host.toLowerCase();
-  if (name.endsWith(".mil")) {
-    return { domain: name.split(".").slice(-2).join("."), levels: ["federal"] };
-  }
-  return (
-    registered && {
-      domain: registered.domain,
-      levels: levelsOf(registered.kind),
-      state: registered.state,
-    }
-  );
-}
-
-/**
- * Whether a file is on the own site of the authority whose page links the
- * form. The page's domain has to be of the packet's level of government
- * and, below federal, of its state; and the file has to be on that same
- * domain. The one exception is a form one government publishes for others:
- * the GSA's standard and optional forms (SF, OF) are on gsa.gov, whichever
- * federal agency's page links them.
- */
-export function ownSite(
-  form: { jurisdiction: string; code: string },
-  page: Domain | undefined,
-  file: Domain | undefined,
+export function confirms(
+  jurisdiction: string,
+  page: Site | undefined,
+  file: Site | undefined,
 ): boolean {
   if (!page || !file) return false;
-  const level = levelOf(form.jurisdiction);
-  const federal = level === "federal";
-  const state = form.jurisdiction.split("/")[1]?.toUpperCase();
+  const [a, b] = [page.owner, file.owner];
   return (
-    page.levels.includes(level) &&
-    (federal || page.state === state) &&
-    (file.domain === page.domain ||
-      (federal &&
-        file.domain === "gsa.gov" &&
-        /^(?:SF|OF)[\s-]?\d/i.test(form.code.trim())))
+    governs(a, jurisdiction) &&
+    governs(b, jurisdiction) &&
+    (a.level !== "local" || b.level !== "local" || a.body === b.body)
   );
-}
-
-const vRegistered = v.object({
-  domain: v.string(),
-  kind: v.string(),
-  organization: v.string(),
-  suborganization: v.optional(v.string()),
-  state: v.optional(v.string()),
-});
-
-/** The registered domain a host is under, if it is in the register. */
-async function registeredFor(ctx: QueryCtx, host: string) {
-  const labels = host.toLowerCase().split(".");
-  // A registered .gov domain is the host's last two labels.
-  const domain = labels.slice(-2).join(".");
-  return await ctx.db
-    .query("officialSites")
-    .withIndex("by_domain", (q) => q.eq("domain", domain))
-    .unique();
 }
 
 /** As many hosts as are looked up at once. */
 const MAX_HOSTS = 50;
 
 /**
- * The register's row for each of these hosts, or its hand-kept entry (see
- * `UNREGISTERED`). A host in neither is left out.
+ * The vouched site each of these hosts is on: its hand-kept line (see
+ * `HAND`), or the register's row for its registrable domain, which the
+ * Public Suffix List tells. A host on neither is left out.
  */
 export const sitesOf = internalQuery({
   args: { hosts: v.array(v.string()) },
-  returns: v.array(v.object({ host: v.string(), ...vRegistered.fields })),
+  returns: v.array(v.object({ host: v.string(), site: vSite })),
   handler: async (ctx, { hosts }) => {
     const found = await Promise.all(
       [...new Set(hosts)].slice(0, MAX_HOSTS).map(async (host) => {
-        // A site kept by hand is taken as the register would list it.
-        const listed = unregisteredFor(host);
-        if (listed) return [{ host, ...listed }];
-        const registered = await registeredFor(ctx, host);
-        if (!registered) return [];
-        const { _id, _creationTime, at: _at, ...row } = registered;
-        return [{ host, ...row }];
+        const hand = handFor(host);
+        if (hand) return [{ host, site: hand }];
+        const domain = getDomain(host);
+        const row =
+          domain &&
+          (await ctx.db
+            .query("sites")
+            .withIndex("by_domain", (q) => q.eq("domain", domain))
+            .unique());
+        if (!row) return [];
+        const { _id, _creationTime, at: _at, ...site } = row;
+        return [{ host, site }];
       }),
     );
     return found.flat();
@@ -209,11 +201,11 @@ export const putSites = internalMutation({
   handler: async (ctx, { sites, at }) => {
     for (const site of sites) {
       const row = await ctx.db
-        .query("officialSites")
+        .query("sites")
         .withIndex("by_domain", (q) => q.eq("domain", site.domain))
         .unique();
-      if (row) await ctx.db.replace("officialSites", row._id, { ...site, at });
-      else await ctx.db.insert("officialSites", { ...site, at });
+      if (row) await ctx.db.replace("sites", row._id, { ...site, at });
+      else await ctx.db.insert("sites", { ...site, at });
     }
     return null;
   },
@@ -225,10 +217,10 @@ export const dropSites = internalMutation({
   returns: v.boolean(),
   handler: async (ctx, { before }) => {
     const stale = await ctx.db
-      .query("officialSites")
+      .query("sites")
       .withIndex("by_at", (q) => q.lt("at", before))
       .take(BATCH);
-    for (const row of stale) await ctx.db.delete("officialSites", row._id);
+    for (const row of stale) await ctx.db.delete("sites", row._id);
     return stale.length === BATCH;
   },
 });

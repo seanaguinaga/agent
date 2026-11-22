@@ -1,5 +1,6 @@
 // What counts as an official address, one address, one form and one file,
 // and when an address is asked again. Pure.
+import type { Site } from "./sites";
 
 /** How a form's bytes were got. */
 export type Via = "request" | "browser";
@@ -347,34 +348,46 @@ export function sameFormCode(a: string, b: string): boolean {
 }
 
 /**
- * Governments' own sites outside .gov and .mil. No register lists these, so
- * each is added here by hand, once someone has checked that the government
- * itself publishes from it, and is read as the register would list it (see
- * `sites.ts`). Never a site that only looks official, such as dmv.org.
+ * Governments' own sites that no register vouches for. Each is a line added
+ * here by hand, with the evidence that the government itself publishes from
+ * it. Never a site that only looks official, such as dmv.org.
  */
-const UNREGISTERED = [
+const HAND: Site[] = [
+  {
+    domain: "mil",
+    name: "US Department of Defense",
+    owner: { level: "national", country: "us" },
+    via: { kind: "hand", note: ".mil is only ever the US military's." },
+  },
   {
     domain: "acgov.org",
-    kind: "County",
-    organization: "Alameda County",
-    state: "CA",
+    name: "Alameda County",
+    owner: {
+      level: "local",
+      country: "us",
+      region: "us-ca",
+      body: "Alameda County",
+    },
+    via: {
+      kind: "hand",
+      note: "alamedacountyca.gov, the county's registered site, and acgov.org link each other.",
+    },
   },
 ];
 
-/** The hand-kept entry a host is under, if it is one of `UNREGISTERED`. */
-export function unregisteredFor(host: string) {
+/** The hand-kept site a host is on, if it is on one of `HAND`. */
+export function handFor(host: string): Site | undefined {
   const name = host.toLowerCase();
-  return UNREGISTERED.find(
+  return HAND.find(
     ({ domain }) => name === domain || name.endsWith(`.${domain}`),
   );
 }
 
 /**
- * Whether an address is on a government's own site: https, on a .gov or
- * .mil host, or on one of the few kept by hand (`UNREGISTERED`). .gov and
- * .mil are only ever registered to verified US government bodies, so the
- * name is the proof; an open name such as .us or .org is not. Which
- * government's site it is, is `sites.ts`'s to say.
+ * Whether an address is on a government's own site: https, on a .gov host
+ * or one kept by hand (`HAND`). .gov is only ever registered to verified US
+ * government bodies, so the name is the proof; an open name such as .us or
+ * .org is not. Which government's site it is, is `sites.ts`'s to say.
  */
 export function isOfficialHost(url: string): boolean {
   try {
@@ -384,7 +397,7 @@ export function isOfficialHost(url: string): boolean {
       !username &&
       !password &&
       (!port || port === "443") &&
-      (/\.(?:gov|mil)$/.test(hostname) || !!unregisteredFor(hostname))
+      (hostname.endsWith(".gov") || !!handFor(hostname))
     );
   } catch {
     return false;

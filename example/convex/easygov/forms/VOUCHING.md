@@ -225,9 +225,28 @@ Each stage is one commit, with its proof.
   - _To do once before deploying:_ the `sites` rows written by stage 0 have no
     `state`, and the `by_at` index is replaced. Clear the `sites` table, deploy,
     then run `npx convex run easygov/forms/sites:importSites`.
-- [ ] **3. Measure.** Run the 15 forms through the app's own link chooser (the
+- [x] **3. Measure.** Run the 15 forms through the app's own link chooser (the
       decision model), with the browser. This is paid. If the small model
       reaches few forms, finding is the bottleneck, not confirming.
+  - _Measured 2026-11-21:_ the `world` eval group (6 forms: UK SA100 and V62,
+    Canada T1-ADJ and IMM 5257, Ireland Form 12S, NZ IR3), one trial each, on
+    the local dev backend, after stages 0–2, 4 and 5. Runs `mx76ypbr…` and,
+    after ef9d7026, `mx7d0z21…`.
+  - The first run read no place outside the US: the request reader had only US
+    examples, and wrote "uk" for "gb". Fixed in ef9d7026.
+  - Second run: **1 right and confirmed** (SA100, linked from its gov.uk page,
+    97% sure); **2 right but unconfirmed** (IR3, found with no vouched page
+    linking it; T1-ADJ, the fillable copy of the same 2023 form, which the
+    grader calls another edition since neither prints a revision); **3 not
+    found**.
+  - **Finding is the bottleneck, as expected.** Two of the misses are files the
+    app fetched but couldn't read as the form: V62 has no text on its first
+    page, and IMM 5257 is an XFA form whose plain view is a "please wait" page.
+    The third is Ireland: research cited revenue.ie directly, but no vouched
+    page linked it in that packet, so decision 6 kept it unread.
+  - Open: unreadable files (trust a very sure link, read XFA, or OCR); vouching
+    a search-cited domain that the country's root portal links; grading a
+    fillable copy of the same form as the same edition.
 - [x] **4. Link vouching.** _Proof:_ acgov.org and formulare-bfinv.de are
       vouched; iorder.com.au, taxadmin.org, careeronestop.org and auspost.com.au
       are declined; the hand list shrinks to dgid.sn.

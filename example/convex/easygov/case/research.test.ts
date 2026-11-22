@@ -89,6 +89,14 @@ test("a page given as a form's PDF is where the form is asked for, not its PDF",
   expect(viaFile.pdfUrl).toBe(
     "https://example.gov/portal/file/renewal-ol-45-pdf/",
   );
+  // A download address is a file lead, though it doesn't say "pdf".
+  const [download] = tidy({
+    findings: "File it.",
+    methods: [],
+    forms: [form("CJP 27", "https://www.mass.gov/doc/cjp-27/download")],
+    sources: [],
+  }).forms;
+  expect(download.pdfUrl).toBe("https://www.mass.gov/doc/cjp-27/download");
   // A bare title with no PDF can't be told apart from another form.
   expect(isIdentified(contest)).toBe(false);
   expect(isIdentified(viaFile)).toBe(true);
@@ -163,6 +171,12 @@ test("codeIn keeps a form's code and drops its title", () => {
     "SF 180",
   );
   expect(codeIn("DD Form 214 (Certificate of Release)")).toBe("DD Form 214");
+  // A title written after the code, with no separator before it.
+  expect(codeIn("735-515 Application for Replacement / Duplicate Title")).toBe(
+    "735-515",
+  );
+  expect(codeIn("VA Form 21-526EZ Application")).toBe("VA Form 21-526EZ");
+  expect(codeIn("DL 410 FO Renewal by Mail")).toBe("DL 410 FO");
   expect(codeIn("Claim for Damages Form (Rev. 12/18)")).toBe(
     "Claim for Damages Form (Rev. 12/18)",
   );

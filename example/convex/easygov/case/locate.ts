@@ -291,15 +291,19 @@ const hostOf = (url: string) => new URL(url).hostname;
 /** What a choice of link considered, when it wasn't acted on. */
 type Considered = { choice: string; confidence?: number };
 
-/** Below this, a choice of link is a guess, and isn't acted on. */
+/**
+ * Below this, a choice of link is a guess: it isn't taken as the authority's
+ * word, but its address is still asked like any other lead, and its file has
+ * to name the form on its own.
+ */
 const SURE = 0.5;
 
 /**
  * Which of an authority's own links is the form. The choice is among links
  * that exist, so no address can be made up, and it has to come with a
- * confidence of at least `SURE`. Where the decision model can't be reached,
- * no link is chosen: the form is then found, if at all, by its other leads,
- * and isn't given as confirmed.
+ * confidence of at least `SURE`. Below that, the link is a `guess`. Where
+ * the decision model can't be reached, no link is chosen: the form is then
+ * found, if at all, by its other leads, and isn't given as confirmed.
  */
 async function chooseLink(
   ctx: ActionCtx,
@@ -310,6 +314,8 @@ async function chooseLink(
 ): Promise<{
   designated?: Omit<Designated, "further">;
   considered?: Considered;
+  /** The link chosen below `SURE`, if one was. */
+  guess?: string;
 }> {
   const { spend } = finder;
   if (!links.length) return {};
@@ -369,15 +375,20 @@ async function chooseLink(
     const choice = link
       ? `${link.label} [${link.url.split("/").pop()}]`
       : "none";
-    return { considered: { choice, confidence } };
+    return { considered: { choice, confidence }, guess: link?.url };
   }
   const { url, label, under, on } = link;
   return { designated: { url, label, under, on, confidence } };
 }
 
 /** How an address for a form was come by, most trusted first. */
-type Via = "linked" | "given" | "variant" | "known" | "search";
-type Lead = { url: string; via: Via };
+type Via = "linked" | "given" | "variant" | "known" | "guessed" | "search";
+type Lead = {
+  url: string;
+  via: Via;
+  /** The page's words for its link here, where a link gave it. */
+  linkedAs?: string;
+};
 
 /** A file fetched for a form, and what it says about itself. */
 type FormFile = {
@@ -387,6 +398,8 @@ type FormFile = {
   facts: FormFacts;
   /** Whether it is the file the authority's own link gives. */
   designated: boolean;
+  /** The words it was asked with, remembered with it if chosen. */
+  linkedAs?: string;
 };
 
 type Failure = { url: string; via: Via; why: string; note: string };
@@ -432,11 +445,25 @@ async function tryLeads(
   form: { jurisdiction: string; code: string; linkedAs?: string },
   leads: Lead[],
 ): Promise<Tried> {
+  // An address given twice is asked once, with any words a link gave it.
+  const wordsFor = (url: string) =>
+    leads.find((l) => l.linkedAs && addressKey(l.url) === addressKey(url))
+      ?.linkedAs;
   const answers = await Promise.all(
-    eachOnce(leads.filter(({ url }) => url)).map(async (lead) => ({
-      lead,
-      answer: await fileAt(ctx, finder, form, lead.url),
-    })),
+    eachOnce(leads.filter(({ url }) => url))
+      .map((lead) => ({
+        ...lead,
+        linkedAs: lead.linkedAs ?? wordsFor(lead.url),
+      }))
+      .map(async (lead) => ({
+        lead,
+        answer: await fileAt(
+          ctx,
+          finder,
+          { ...form, linkedAs: lead.linkedAs ?? form.linkedAs },
+          lead.url,
+        ),
+      })),
   );
   return {
     files: answers.flatMap(({ lead, answer }) =>
@@ -448,6 +475,7 @@ async function tryLeads(
               editionId: answer.editionId,
               facts: answer.facts,
               designated: lead.via === "linked",
+              linkedAs: lead.linkedAs ?? form.linkedAs,
             },
           ]
         : [],
@@ -570,7 +598,8 @@ export async function locateForm(
         jurisdiction,
         code,
       })
-    ).map(as("known")),
+    ).map(({ url, linkedAs }) => ({ url, via: "known" as const, linkedAs })),
+    ...(first.guess ? [as("guessed")(first.guess)] : []),
   ];
   const linkGave = filesOf(first.tried ? [first.tried] : []);
   const own = await ownTo(
@@ -603,8 +632,18 @@ export async function locateForm(
       )
     : undefined;
 
+  // The link guessed one page further on, asked like any lead.
+  const guessed =
+    further?.guess &&
+    !filesOf([...sofar, ...(further.tried ? [further.tried] : [])]).length
+      ? await tryLeads(ctx, finder, asForm(), [as("guessed")(further.guess)])
+      : undefined;
   // The search model, for this form alone, only if no lead gave a file.
-  const before = [...sofar, ...(further?.tried ? [further.tried] : [])];
+  const before = [
+    ...sofar,
+    ...(further?.tried ? [further.tried] : []),
+    ...(guessed ? [guessed] : []),
+  ];
   const searched =
     filesOf(before).length || options.search === false
       ? undefined
@@ -646,6 +685,7 @@ export async function locateForm(
     jurisdiction,
     code,
     url: best.url,
+    linkedAs: best.linkedAs,
   });
   const { url, editionId, via, facts } = best;
   return {

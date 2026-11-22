@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { isOfficialHost, namesForm, notAPdf } from "./sources";
+import { isOfficialHost, namesForm, notAPdf, sameFormCode } from "./sources";
+
+test("a federal series is the same spelled out or not", () => {
+  expect(sameFormCode("Standard Form 180", "SF-180")).toBe(true);
+  expect(sameFormCode("Optional Form 74", "OF 74")).toBe(true);
+  expect(sameFormCode("Standard Form 180", "SF-181")).toBe(false);
+});
 
 const pdf = new TextEncoder().encode("%PDF-1.7 a form");
 const page = new TextEncoder().encode("<html>Access denied</html>");

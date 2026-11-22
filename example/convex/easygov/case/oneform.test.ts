@@ -93,5 +93,5 @@ describe("onePerForm", () => {
 test("a code written as two spellings is the first of them", () => {
   expect(codeIn("SSA-3441-BK / SSA-3441")).toBe("SSA-3441-BK");
   // A slash inside a code is part of it.
-  expect(codeIn("DE 1/2 Claim")).toBe("DE 1/2 Claim");
+  expect(codeIn("DE 1/2 Claim")).toBe("DE 1/2");
 });

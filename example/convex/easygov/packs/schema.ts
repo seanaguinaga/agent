@@ -224,6 +224,8 @@ export function parseJurisdiction(raw: string): string | null {
   ) {
     return null;
   }
+  // "uk" is how people write the United Kingdom; its ISO code is "gb".
+  if (segments[0] === "uk") segments[0] = "gb";
   return segments.join("/");
 }
 

@@ -99,6 +99,9 @@ describe("jurisdictions and forms", () => {
   test("a jurisdiction is a country code, then narrower places", () => {
     expect(parseJurisdiction(" US/CA/Alameda ")).toBe("us/ca/alameda");
     expect(parseJurisdiction("us")).toBe("us");
+    // The United Kingdom is "gb", however it is written.
+    expect(parseJurisdiction("UK")).toBe("gb");
+    expect(parseJurisdiction("gb/eng")).toBe("gb/eng");
     expect(parseJurisdiction("california")).toBeNull();
     expect(parseJurisdiction("us/ca/alameda/oakland/x")).toBeNull();
     expect(parseJurisdiction("")).toBeNull();

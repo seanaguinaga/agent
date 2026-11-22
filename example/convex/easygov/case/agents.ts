@@ -183,8 +183,9 @@ const zRequest = z.object({
     .string()
     .optional()
     .describe(
-      'Where it applies, narrowest known: "us" for federal, "us/ca" for a state, "us/ca/alameda" for a county. ' +
-        'A federal agency or program is "us" wherever the person lives, so name it even if they say no place.',
+      "Where it applies, narrowest known: the country's two-letter ISO code, then narrower places. " +
+        '"us" for US federal, "us/ca" for a state, "us/ca/alameda" for a county; "gb" for the United Kingdom, "ca" for Canada, "ca/on" for Ontario, "ie" for Ireland. ' +
+        'A national agency or program is the country alone (the IRS is "us") wherever the person lives, so name it even if they say no place.',
     ),
   authority: z
     .string()

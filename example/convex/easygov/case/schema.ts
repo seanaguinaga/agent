@@ -4,7 +4,7 @@
 // built from the schema, so they can't also be an input to it.
 import { vWorkflowId } from "@convex-dev/workflow";
 import { v, type Infer } from "convex/values";
-import { vFilledDocument, vPacketPdf } from "../forms/schema";
+import { vFilledDocument, vPacketPdf, vReadStatus } from "../forms/schema";
 import {
   vPackDeadline,
   vLetterRoute,
@@ -205,12 +205,20 @@ export const caseFields = {
    * The work in hand, by `state`: a workflow `running`; `delayed` until a
    * rate limit allows it to start; or `failed` while it waits for a retry or
    * a give-up (with no workflow when the case was parked as a runaway).
+   * `reading` is what a running workflow is doing with each scanned form,
+   * by its code: gone with the run, since the file keeps how it ended.
    * Unset while the case waits for the person with nothing to do, and once
    * it has ended.
    */
   run: v.optional(
     v.union(
-      v.object({ state: v.literal("running"), workflowId: vWorkflowId }),
+      v.object({
+        state: v.literal("running"),
+        workflowId: vWorkflowId,
+        reading: v.optional(
+          v.array(v.object({ code: v.string(), status: vReadStatus })),
+        ),
+      }),
       v.object({ state: v.literal("delayed"), until: v.number() }),
       v.object({
         state: v.literal("failed"),

@@ -1,12 +1,23 @@
 // Shared by the tests of finding a form: a stand-in for the network (the
 // authority's sites and the hosted browser service), and small real PDFs to
 // serve from it. The extra dot keeps Convex from deploying this file.
-import { PDFDocument, StandardFonts } from "pdf-lib";
+import {
+  PDFBool,
+  PDFDocument,
+  PDFName,
+  PDFString,
+  StandardFonts,
+} from "pdf-lib";
 import { vi } from "vitest";
 import type { T } from "../case/cases.testkit";
 
 /** One request the code under test made. */
-export type Asked = { url: string; method: string; headers: Headers };
+export type Asked = {
+  url: string;
+  method: string;
+  headers: Headers;
+  body?: BodyInit | null;
+};
 
 /** What an address answers a request with. */
 export type Served = (asked: Asked) => Response | Promise<Response>;
@@ -19,8 +30,12 @@ export type FakeBrowser = {
   sessions?: number;
   /** The file the browser downloads, if it downloads one. */
   download?: Uint8Array;
-  /** The page the browser shows, if it shows one, and where it ends up. */
-  page?: { html: string; at: string };
+  /**
+   * The page the browser shows, if it shows one, and where it ends up.
+   * `scripted` is what its scripts then put in an open shadow root, a piece
+   * each time the page is looked at: seen only by a read of shadow roots.
+   */
+  page?: { html: string; at: string; scripted?: string[] };
 };
 
 /**
@@ -43,6 +58,7 @@ export function fakeNetwork(
       url,
       method: init?.method ?? "GET",
       headers: new Headers(init?.headers),
+      body: init?.body,
     };
     if (url.startsWith(BROWSER_API)) {
       service.push(asked);
@@ -94,6 +110,24 @@ export function fakeNetwork(
  * `browser.page` once asked what is loaded: a blank tab if there is none.
  */
 function browserSocket({ page }: FakeBrowser) {
+  /** How many pieces the page's scripts have built so far. */
+  let built = 0;
+  const shadow = () => (page?.scripted ?? []).slice(0, built).join("");
+  const links = (html: string) => html.match(/<a\b/g)?.length ?? 0;
+  /** What an expression evaluates to in the page. */
+  const evaluate = (expression: string) => {
+    const deep = expression.includes("shadowRoot");
+    if (expression.startsWith("JSON.stringify")) {
+      if (!page)
+        return JSON.stringify(["about:blank", "complete", "text/html"]);
+      const count = links(page.html) + (deep ? links(shadow()) : 0);
+      built++;
+      return JSON.stringify([page.at, "complete", "text/html", count]);
+    }
+    return page && deep && shadow()
+      ? `${page.html}<template shadowrootmode="open">${shadow()}</template>`
+      : page?.html;
+  };
   return class {
     private listeners: Record<string, ((event: { data?: string }) => void)[]> =
       {};
@@ -115,15 +149,7 @@ function browserSocket({ page }: FakeBrowser) {
         method: string;
         params: { expression?: string };
       };
-      const value = !params.expression
-        ? undefined
-        : params.expression.startsWith("JSON.stringify")
-          ? JSON.stringify(
-              page
-                ? [page.at, "complete", "text/html"]
-                : ["about:blank", "complete", "text/html"],
-            )
-          : page?.html;
+      const value = params.expression && evaluate(params.expression);
       const result =
         method === "Target.createTarget"
           ? { targetId: "t1" }
@@ -243,6 +269,98 @@ export async function formPdf(
       .addToPage(page, { x: 48, y: 500, width: 300, height: 18 });
   }
   return await doc.save();
+}
+
+/**
+ * A small real XFA form, as Adobe's designer saves one: its one page says
+ * only "Please wait...", and `lines` are in the XFA template, with no field
+ * a PDF reader could fill.
+ */
+export async function xfaPdf(lines: string[]): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  doc.addPage([612, 792]).drawText("Please wait...", { x: 48, y: 740, font });
+  const draws = [...lines, ...ENGLISH].map(
+    (line, i) =>
+      `<draw y="${i * 6}mm" w="180mm" h="6mm"><value><text>${line}</text></value></draw>`,
+  );
+  const packets = {
+    "xdp:xdp": '<xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/">',
+    template:
+      '<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform>' +
+      '<pageSet><pageArea><contentArea w="190mm" h="270mm"/></pageArea></pageSet>' +
+      `<subform w="190mm" h="270mm">${draws.join("")}</subform></subform></template>`,
+    datasets:
+      '<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data/></xfa:datasets>',
+    "/xdp:xdp": "</xdp:xdp>",
+  };
+  const { context, catalog } = doc;
+  catalog.set(PDFName.of("NeedsRendering"), PDFBool.True);
+  catalog.set(
+    PDFName.of("AcroForm"),
+    context.obj({
+      XFA: Object.entries(packets).flatMap(([name, xml]) => [
+        PDFString.of(name),
+        context.register(context.stream(xml)),
+      ]),
+    }),
+  );
+  return await doc.save();
+}
+
+/** A small real scan: each page is one picture, with no word to read. */
+export async function scanPdf(pages = 1): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const pixel = await doc.embedPng(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  );
+  for (let page = 0; page < pages; page++) {
+    doc.addPage([612, 792]).drawImage(pixel, { width: 612, height: 792 });
+  }
+  return await doc.save();
+}
+
+/**
+ * A model that reads a scan: it answers every file with `answer`, or throws
+ * it, and keeps the words and the files it was sent. Given several, it
+ * answers with each in turn, and with the last from then on.
+ */
+export async function fakeReader(
+  answers: string | Error | (string | Error)[],
+  finish = "stop",
+) {
+  const queue = [answers].flat();
+  const { MockLanguageModelV4 } = await import("ai/test");
+  const sent: { words: string[]; files: Uint8Array[] }[] = [];
+  const model = new MockLanguageModelV4({
+    doGenerate: async ({ prompt }) => {
+      const parts = prompt.flatMap((message) =>
+        message.role === "user" ? message.content : [],
+      );
+      sent.push({
+        words: parts.flatMap((part) => (part.type === "text" ? part.text : [])),
+        files: parts.flatMap((part) =>
+          part.type === "file" &&
+          part.data.type === "data" &&
+          typeof part.data.data !== "string"
+            ? part.data.data
+            : [],
+        ),
+      });
+      const answer = queue.length > 1 ? queue.shift()! : queue[0];
+      if (answer instanceof Error) throw answer;
+      return {
+        content: [{ type: "text", text: answer }],
+        finishReason: { unified: finish as "stop", raw: undefined },
+        usage: {
+          inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 1, text: 1, reasoning: 0 },
+        },
+        warnings: [],
+      };
+    },
+  });
+  return { model, sent };
 }
 
 /** The rows kept, to say what finding a form stored. */

@@ -49,7 +49,7 @@ import {
   type Research,
   type ResearchForm,
 } from "./research";
-import { isOfficialHost } from "../forms/sources";
+import { mayRead, sitesAt } from "../forms/sites";
 import {
   compilePacketForms,
   locateForm,
@@ -183,8 +183,9 @@ const zRequest = z.object({
     .string()
     .optional()
     .describe(
-      'Where it applies, narrowest known: "us" for federal, "us/ca" for a state, "us/ca/alameda" for a county. ' +
-        'A federal agency or program is "us" wherever the person lives, so name it even if they say no place.',
+      "Where it applies, narrowest known: the country's two-letter ISO code, then narrower places. " +
+        '"us" for US federal, "us/ca" for a state, "us/ca/alameda" for a county; "gb" for the United Kingdom, "ca" for Canada, "ca/on" for Ontario, "ie" for Ireland. ' +
+        'A national agency or program is the country alone (the IRS is "us") wherever the person lives, so name it even if they say no place.',
     ),
   authority: z
     .string()
@@ -364,7 +365,8 @@ export async function research(
   trace.searched = pagesSearched(result);
   // The pages a report rests on are the ones the search says it read, where
   // it names any on an official site, not the ones the model wrote down.
-  const read = trace.searched.filter(isOfficialHost);
+  const on = await sitesAt(ctx, trace.searched);
+  const read = trace.searched.filter((url) => mayRead(url, on(url)));
   const found = tidy({
     ...output,
     sources: read.length ? read : output.sources,
@@ -644,7 +646,7 @@ export const propose = internalAction({
       // A failed search isn't worth failing the case for: the draft then says
       // only what to verify, as it would with no research at all.
       // One allowance for everything the packet's forms cost to find.
-      const finder = newFinder();
+      const finder = newFinder(undefined, caseId);
       const found = await research(ctx, threadId, subject, {}, finder).catch(
         (error) => {
           console.error("easygov research failed", error);
@@ -1042,6 +1044,7 @@ export const assessPacket = internalAction({
 /** Rebuild incomplete research on the same case. Keep the existing packet if research is unavailable. */
 export const revisitDraft = internalAction({
   args: {
+    caseId: v.id("cases"),
     threadId: v.string(),
     draft: vProcessPackDefinition,
     notes: v.string(),
@@ -1052,7 +1055,7 @@ export const revisitDraft = internalAction({
   ),
   handler: async (
     ctx,
-    { threadId, draft, notes },
+    { caseId, threadId, draft, notes },
   ): Promise<{
     draft: Infer<typeof vProcessPackDefinition>;
     notes: string;
@@ -1063,7 +1066,7 @@ export const revisitDraft = internalAction({
       process: draft.title,
       forms: draft.forms,
     };
-    const finder = newFinder();
+    const finder = newFinder(undefined, caseId);
     return await withTelemetry(ctx, threadId, async () => {
       try {
         // A usable source already in the original research doesn't need another research-and-draft cycle.

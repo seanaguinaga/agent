@@ -1,5 +1,6 @@
 import { defineTable } from "convex/server";
 import { v, type Infer } from "convex/values";
+import { vNamedBy } from "../forms/schema";
 
 export const vProcessPackQuestions = v.array(
   v.object({
@@ -122,6 +123,12 @@ export const vPacketForm = v.object({
    * pack made before this was recorded.
    */
   backed: v.optional(v.boolean()),
+  /**
+   * What says the file is this form. "link": the file has no words to read,
+   * so the authority's link alone says so (see `namedBy` in
+   * `forms/sources.ts`). Absent: as `backed`.
+   */
+  namedBy: v.optional(vNamedBy),
 });
 export const vEligibility = v.array(
   v.object({
@@ -224,6 +231,8 @@ export function parseJurisdiction(raw: string): string | null {
   ) {
     return null;
   }
+  // "uk" is how people write the United Kingdom; its ISO code is "gb".
+  if (segments[0] === "uk") segments[0] = "gb";
   return segments.join("/");
 }
 

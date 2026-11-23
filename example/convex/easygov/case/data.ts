@@ -21,7 +21,7 @@ import {
   type Evidence,
   type HistoryKind,
 } from "./schema";
-import { vPacketPdf, vFilledDocument } from "../forms/schema";
+import { vPacketPdf, vFilledDocument, vReadStatus } from "../forms/schema";
 import { intakeAgent, proposalFields } from "./agents";
 import { selectionAgent } from "./selection";
 import { stalenessOf } from "../packs/freshness";
@@ -63,6 +63,23 @@ export async function writeCase(
   if (!found) throw new Error(`No case ${caseId}`);
   await ctx.db.patch("cases", caseId, { ...patch, seq: found.seq + 1 });
 }
+
+/**
+ * Says what the case's running work is doing with a scanned form: its
+ * latest status, one for each form. Nobody hears it once the work is over.
+ */
+export const noteReading = internalMutation({
+  args: { caseId: v.id("cases"), code: v.string(), status: vReadStatus },
+  returns: v.null(),
+  handler: async (ctx, { caseId, ...now }) => {
+    const found = await ctx.db.get("cases", caseId);
+    if (found?.run?.state !== "running") return null;
+    const others = found.run.reading?.filter(({ code }) => code !== now.code);
+    const reading = [...(others ?? []), now];
+    await writeCase(ctx, caseId, { run: { ...found.run, reading } });
+    return null;
+  },
+});
 
 /** Appends to `caseEvents`, the history of a case. */
 export async function logCaseEvent(
@@ -682,6 +699,7 @@ export const draftToRevisit = internalQuery({
   returns: v.union(
     v.null(),
     v.object({
+      caseId: v.id("cases"),
       threadId: v.string(),
       draft: vProcessPackDefinition,
       notes: v.string(),
@@ -692,6 +710,7 @@ export const draftToRevisit = internalQuery({
     const choice = c && currentChoice(c);
     if (!c || !needsRevisit(c) || choice?.kind !== "draft") return null;
     return {
+      caseId,
       threadId: c.threadId,
       draft: choice.draft,
       notes: choice.research ?? "",

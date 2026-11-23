@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { isOfficialHost, namesForm, notAPdf, sameFormCode } from "./sources";
+import { namesForm, notAPdf, sameFormCode, selfDescribed } from "./sources";
 
 test("a federal series is the same spelled out or not", () => {
   expect(sameFormCode("Standard Form 180", "SF-180")).toBe(true);
@@ -46,17 +46,11 @@ describe("getting a form's bytes", () => {
   );
 });
 
-test("only a .gov or .mil host is a government's own: an open name like .us is not", () => {
-  expect(isOfficialHost("https://www.ssa.gov/forms/ssa-561.pdf")).toBe(true);
-  expect(isOfficialHost("https://www.army.mil/forms")).toBe(true);
-  expect(isOfficialHost("https://forms-irs.us/f8822.pdf")).toBe(false);
-  expect(isOfficialHost("http://www.ssa.gov/forms")).toBe(false);
-  expect(isOfficialHost("https://ssa.gov.example.com/")).toBe(false);
-});
-
-test("a government's site outside .gov counts only if it is kept by hand", () => {
-  expect(isOfficialHost("https://www.acgov.org/forms/a.pdf")).toBe(true);
-  expect(isOfficialHost("https://notacgov.org/a.pdf")).toBe(false);
-  expect(isOfficialHost("https://acgov.org.example.com/a.pdf")).toBe(false);
-  expect(isOfficialHost("https://www.dmv.org/forms/a.pdf")).toBe(false);
+test("a page says of itself its title and its footer's words", () => {
+  expect(
+    selfDescribed(
+      "<title>Inland  Revenue</title><footer><p>© New Zealand&nbsp;Government</p></footer>",
+    ),
+  ).toEqual({ title: "Inland Revenue", footer: "© New Zealand Government" });
+  expect(selfDescribed("<p>No title</p>")).toEqual({});
 });

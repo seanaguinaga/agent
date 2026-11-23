@@ -8,12 +8,15 @@ import { internal } from "../../_generated/api";
 import type { ActionCtx } from "../../_generated/server";
 import { initConvexTest } from "../../setup.test";
 import { decide } from "../decisions";
+import type { Owner } from "../forms/sites";
 import {
   browserKey,
   fakeNetwork,
+  fakeReader,
   formPdf,
   kept,
   restoreNetwork,
+  scanPdf,
   servePage,
   servePdf,
   serveStatus,
@@ -25,7 +28,7 @@ import {
   locateForms,
   newFinder,
 } from "./locate";
-import type { T } from "./cases.testkit";
+import { scans, type T } from "./cases.testkit";
 
 vi.mock("../../modelsForDemo", async () =>
   (await import("./cases.testkit")).mockModels(),
@@ -56,6 +59,7 @@ beforeEach(() => {
 afterEach(() => {
   restoreKey();
   restoreNetwork();
+  scans.reader = undefined;
 });
 
 /**
@@ -73,21 +77,25 @@ const ctxOf = (t: T) =>
 /** A test deployment whose register knows whose these domains are. */
 async function withSites() {
   const t = initConvexTest();
-  const row = (domain: string, kind: string, state: string) => ({
+  const row = (domain: string, owner: Owner, name = domain) => ({
+    state: "vouched" as const,
     domain,
-    kind,
-    organization: domain,
-    state,
+    name,
+    owner,
+    via: { kind: "register" as const, register: "cisa" as const },
   });
+  const national = { level: "national" as const, country: "us" };
   await t.mutation(internal.easygov.forms.sites.putSites, {
     sites: [
-      {
-        ...row("ssa.gov", "Federal - Executive", "MD"),
-        organization: "Social Security Administration",
-      },
-      row("gsa.gov", "Federal - Executive", "DC"),
-      row("county.gov", "County", "CA"),
-      row("nv.gov", "State or territory", "NV"),
+      row("ssa.gov", national, "Social Security Administration"),
+      row("gsa.gov", national),
+      row("county.gov", {
+        level: "local",
+        country: "us",
+        region: "us-ca",
+        body: "county.gov",
+      }),
+      row("nv.gov", { level: "region", country: "us", region: "us-nv" }),
     ],
     at: 0,
   });
@@ -792,7 +800,7 @@ test("a form whose file can't be found again loses what was said of its old file
   expect(earlier.packetForms![0]).toMatchObject({ backed: true });
 });
 
-test("a link confirms a file only where the register puts the page and the file on the authority's own site", async () => {
+test("a link confirms a file only where the page and the file are on the packet's government's own sites", async () => {
   const file = `${ssa}/ssa-561.pdf`;
   const copy = "https://www.county.gov/forms/ssa-561.pdf";
   const army = "https://armypubs.army.mil/pub/da-4187.pdf";
@@ -840,12 +848,261 @@ test("a link confirms a file only where the register puts the page and the file 
   expect(
     await located(army, "https://www.army.mil/forms", "DA 4187"),
   ).toMatchObject({ backed: true });
-  // A GSA form on gsa.gov, linked from a federal agency's page.
+  // A sister agency's file: the national government is one owner.
   expect(await located(gsa, index, "SF-180")).toMatchObject({ backed: true });
   // A California form on Nevada's site, page and all.
   expect(
     await located(nevada, "https://dmv.nv.gov/forms/", "DL-44", "us/ca"),
   ).toMatchObject({ url: nevada, backed: false });
+});
+
+test("a site on a suffix governments share is judged whose it is: once, and from the packet's allowance", async () => {
+  const page = "https://www.gov.uk/government/publications/sa100";
+  const file = "https://assets.publishing.service.gov.uk/media/1/SA100.pdf";
+  const net = fakeNetwork({
+    [file]: servePdf(await formPdf(["Form SA100 (2026)"])),
+    "https://www.gov.uk/": servePage("<title>GOV.UK</title>"),
+  });
+  const t = await withSites();
+  decideMock.mockImplementation((async (
+    _ctx: ActionCtx,
+    question: { criteria: Offered },
+  ) => ({
+    choice: "national" in question.criteria ? "national" : "link1",
+    confidence: 0.9,
+  })) as never);
+  const located = async (finder: ReturnType<typeof newFinder>) =>
+    (
+      await locateForm(
+        ctxOf(t),
+        "thread",
+        { code: "SA100", leads: [] },
+        { jurisdiction: "gb" },
+        finder,
+        {
+          links: async () => [
+            { url: file, label: "SA100", pdf: true, on: page },
+          ],
+        },
+      )
+    ).file;
+
+  // With nothing to spend on it, the form is found and not confirmed.
+  const poor = finderWith({ vouches: 0 });
+  expect(await located(poor)).toMatchObject({ url: file, backed: false });
+  expect(poor.spend.spent).toMatchObject({ vouches: 0, refused: 2 });
+  expect(decideMock).toHaveBeenCalledTimes(1);
+
+  // The page's site and the file's are each judged, with the page's words
+  // for its link to the file, and the form is confirmed.
+  const finder = finderWith();
+  expect(await located(finder)).toMatchObject({ url: file, backed: true });
+  expect(finder.spend.spent).toMatchObject({ vouches: 2, refused: 0 });
+  expect(decideMock.mock.calls.map(([, { state }]) => state)).toEqual([
+    expect.anything(),
+    expect.anything(),
+    { site: "www.gov.uk", title: "GOV.UK" },
+    { site: "service.gov.uk", label: "SA100" },
+  ]);
+  expect(net.asked("https://www.gov.uk/")).toBe(1);
+
+  // What was judged is kept: the next packet pays nothing, and asks nobody.
+  const next = finderWith();
+  expect(await located(next)).toMatchObject({ backed: true });
+  expect(next.spend.spent.vouches).toBe(0);
+  expect(decideMock).toHaveBeenCalledTimes(5);
+});
+
+test("a site the authority's page links is judged before the link is followed: only a vouched one is read further and confirms", async () => {
+  const own = "https://forms.partner.org/ssa-561.html";
+  const file = "https://forms.partner.org/ssa-561.pdf";
+  const front = "https://forms.partner.org/";
+  const located = async (verdict: "own" | "contractor") => {
+    const net = fakeNetwork({
+      [index]: servePage(`<a href="${own}">Form SSA-561</a>`),
+      [front]: servePage(`<title>SSA forms</title><a href="${index}">SSA</a>`),
+      [own]: servePage('<h1>Form SSA-561</h1><a href="ssa-561.pdf">PDF</a>'),
+      [file]: servePdf(ssa561),
+    });
+    decideMock.mockImplementation((async (
+      _ctx: ActionCtx,
+      { criteria }: { criteria: Offered },
+    ) => ({
+      choice: "own" in criteria ? verdict : "link1",
+      confidence: 0.9,
+    })) as never);
+    const finder = finderWith();
+    const [found] = await locateForms(
+      ctxOf(await withSites()),
+      "thread",
+      [{ code: "SSA-561", sourceUrl: "" }],
+      subject,
+      [index],
+      finder,
+    );
+    return { file: found.located.file, net, spent: finder.spend.spent };
+  };
+
+  // It links the authority back, and the model says it is the authority's.
+  const vouched = await located("own");
+  expect(vouched.file).toMatchObject({ url: file, backed: true });
+  expect(vouched.net.addresses()).toEqual([index, front, own, file]);
+  expect(vouched.spent.vouches).toBe(1);
+  // A vendor's: its page is read as one link from the authority's, and its
+  // file, a link further, is never asked for.
+  const vendor = await located("contractor");
+  expect(vendor.file).toBeUndefined();
+  expect(vendor.net.addresses()).toEqual([index, front, own]);
+});
+
+test("a file with no words to read is the form only on a very sure link, between the government's own sites, whose words name it", async () => {
+  const file = `${ssa}/ssa-561.pdf`;
+  const scan = await scanPdf();
+  const located = async (confidence: number, on = index, label = "SSA-561") => {
+    fakeNetwork({ [file]: servePdf(scan) });
+    choosing(/ssa-561/, confidence);
+    return await locateForm(
+      ctxOf(await withSites()),
+      "thread",
+      { code: "SSA-561", leads: [file] },
+      subject,
+      finderWith(),
+      { links: async () => [{ url: file, label, pdf: true, on }] },
+    );
+  };
+
+  // Confirmed, and known as named by the link alone, with nothing read.
+  const found = await located(0.9);
+  expect(found.file).toMatchObject({
+    url: file,
+    via: "linked",
+    backed: true,
+    namedBy: "link",
+    facts: { places: 0, language: "unknown" },
+  });
+  // Sure enough to follow, not to stand for the file.
+  const unsure = await located(0.89);
+  expect(unsure.file).toBeUndefined();
+  expect(unsure.failed).toContainEqual(
+    expect.objectContaining({ url: file, via: "linked", why: "otherForm" }),
+  );
+  // Another government's page, a site nobody vouches for, and a link whose
+  // words don't name the form.
+  expect((await located(1, "https://www.nv.gov/forms/")).file).toBeUndefined();
+  expect((await located(1, "https://example.org/forms")).file).toBeUndefined();
+  expect((await located(1, index, "Download PDF")).file).toBeUndefined();
+});
+
+test("a packet reads as many scans as its allowance, and a file with words of its own costs no read", async () => {
+  const t = await withSites();
+  const urls = [1, 2, 3].map((n) => `${ssa}/scan-${n}.pdf`);
+  fakeNetwork({
+    [urls[0]]: servePdf(await scanPdf(1)),
+    [urls[1]]: servePdf(await scanPdf(2)),
+    [urls[2]]: servePdf(ssa561),
+  });
+  const { model, sent } = await fakeReader("=====\nForm SSA-561 (08-2025)");
+  scans.reader = model;
+  const finder = finderWith({ reads: 1 });
+  const ask = (url: string) =>
+    fileAt(ctxOf(t), finder, { ...us, code: "SSA-561" }, url);
+
+  expect(await ask(urls[2])).toMatchObject({ ok: true, namedBy: "text" });
+  expect(finder.spend.spent.reads).toBe(0);
+  expect(await ask(urls[0])).toMatchObject({ ok: true, namedBy: "ocr" });
+  // The allowance is spent: the next scan goes unread, and is no form.
+  expect(await ask(urls[1])).toMatchObject({ ok: false, why: "otherForm" });
+  expect(finder.spend.spent.reads).toBe(1);
+  expect(sent).toHaveLength(1);
+  expect(newFinder().spend.take("reads")).toBe(true);
+});
+
+test("a form read from a scan ranks below one with words of its own, and the person is asked to check its edition", async () => {
+  const scan = `${ssa}/ssa-561-scan.pdf`;
+  const booklet = `${ssa}/ssa-561-notes.pdf`;
+  const { model } = await fakeReader(
+    "=====\nForm SSA-561 (08-2025) Use this form if you do not agree with the decision that is made on your claim and you are asking for the review of it.",
+  );
+  scans.reader = model;
+  const sites = async () => {
+    const scanned = servePdf(await scanPdf());
+    fakeNetwork({
+      // Served once the booklet is kept: the stand-in database can't keep
+      // two files at the same moment.
+      [scan]: async (asked) => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return scanned(asked);
+      },
+      [booklet]: servePdf(await formPdf(["Form SSA-561"], { field: false })),
+    });
+    return ctxOf(await withSites());
+  };
+
+  const found = await locateForm(
+    await sites(),
+    "thread",
+    { code: "SSA-561", leads: [scan, booklet] },
+    subject,
+    finderWith({ decisions: 0 }),
+  );
+  expect(found.file).toMatchObject({ url: booklet, namedBy: "text" });
+  expect(found.others).toMatchObject([{ url: scan }]);
+
+  const draft = await compilePacketForms(
+    await sites(),
+    "thread",
+    {
+      jurisdiction: "us",
+      authority: subject.authority,
+      output: { sources: [] },
+      packetForms: [{ code: "SSA-561", sourceUrl: scan, inputs: [] }],
+    } as unknown as Parameters<typeof compilePacketForms>[2],
+    finderWith({ decisions: 0 }),
+  );
+  expect(draft.packetForms).toMatchObject([
+    {
+      sourceUrl: scan,
+      namedBy: "ocr",
+      openItem: expect.stringMatching(
+        /^Complete SSA-561 by hand\. EasyGov read this form from a scan.* current edition/,
+      ),
+    },
+  ]);
+});
+
+test("a form named by its link alone is confirmed, never filled, and the person is told it couldn't be read", async () => {
+  const t = await withSites();
+  const file = `${ssa}/ssa-561.pdf`;
+  fakeNetwork({
+    [index]: servePage(`<h2>Form SSA-561</h2><a href="${file}">PDF</a>`),
+    [file]: servePdf(await scanPdf()),
+  });
+  choosing(/ssa-561/, 0.95);
+
+  const draft = await compilePacketForms(
+    ctxOf(t),
+    "thread",
+    {
+      jurisdiction: "us",
+      authority: subject.authority,
+      output: { sources: [index] },
+      packetForms: [{ code: "SSA-561", sourceUrl: "", inputs: [] }],
+    } as unknown as Parameters<typeof compilePacketForms>[2],
+    finderWith(),
+  );
+
+  expect(draft.packetForms).toEqual([
+    {
+      code: "SSA-561",
+      sourceUrl: file,
+      inputs: [],
+      backed: true,
+      namedBy: "link",
+      openItem: expect.stringMatching(
+        /^Complete SSA-561 by hand\. EasyGov could not read the file .* links as this form/,
+      ),
+    },
+  ]);
 });
 
 test("a later edition on the authority's own site is chosen over the old one its page links, and isn't confirmed", async () => {

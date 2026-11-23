@@ -32,7 +32,7 @@ describe("opening a form to fill it", () => {
     const form = await inspectPdf(bytes);
     expect(form.fillable).toBe(true);
     expect(form.targets.length).toBeGreaterThan(20);
-    expect(form.opening).toMatch(/AR-11/);
+    expect(form.words[0]).toMatch(/AR-11/);
   });
 
   test("a form that doesn't allow filling is refused", async () => {

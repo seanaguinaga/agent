@@ -228,12 +228,34 @@ function commander(socket: WebSocket, deadline: number) {
     });
 }
 
+/** Every open shadow root in the page, however deep. Closed ones stay shut. */
+const ROOTS = `(() => {
+  const roots = [];
+  const within = (node) => {
+    for (const element of node.querySelectorAll("*")) {
+      if (element.shadowRoot) {
+        roots.push(element.shadowRoot);
+        within(element.shadowRoot);
+      }
+    }
+  };
+  within(document);
+  return roots;
+})()`;
+
+/** Where the page is, whether it has loaded, and how many links it has. */
+const STATE = `JSON.stringify([location.href, document.readyState, document.contentType, [document, ...${ROOTS}].reduce((count, root) => count + root.querySelectorAll("a[href]").length, 0)])`;
+
+/** The page as it stands, with what its scripts put in open shadow roots. */
+const HTML = `document.documentElement.getHTML({ serializableShadowRoots: true, shadowRoots: ${ROOTS} })`;
+
 /**
  * Opens `url` in a hosted browser: what it downloads, if it downloads a
- * file, or else the page it shows once that has loaded, and where that is.
- * So an address is asked once, whichever it turns out to be. Throws if it
- * gives neither, and never waits long: every step has a limit, and a stall
- * says which step.
+ * file, or else the page it shows, and where that is. A page is taken once
+ * it has loaded and its scripts have stopped adding links: it has as many
+ * on two looks running, or the time is up. So an address is asked once,
+ * whichever it turns out to be. Throws if it gives neither, and never waits
+ * long: every step has a limit, and a stall says which step.
  */
 export async function openViaBrowser(
   url: string,
@@ -268,6 +290,8 @@ export async function openViaBrowser(
           )
         ).result?.value;
 
+      /** What the page said when last looked at, if it had loaded. */
+      let before: string | undefined;
       for (;;) {
         const listed = await step(
           "looking for the download",
@@ -307,25 +331,27 @@ export async function openViaBrowser(
         }
         // A new tab starts as a blank page that already counts as loaded:
         // a page is taken once it is somewhere, and has finished loading.
-        const state = await evaluate(
-          "JSON.stringify([location.href, document.readyState, document.contentType])",
-        ).catch(() => undefined);
+        const state = await evaluate(STATE).catch(() => undefined);
         const [at, ready, type] =
           typeof state === "string"
             ? (JSON.parse(state) as string[])
             : ["", "", ""];
-        if (/^https?:/.test(at) && ready === "complete" && /html/.test(type)) {
-          const html = await evaluate("document.documentElement.outerHTML");
+        const loaded =
+          /^https?:/.test(at) && ready === "complete" && /html/.test(type);
+        const late = Date.now() >= deadline;
+        if (loaded && (state === before || late)) {
+          const html = await evaluate(HTML);
           if (typeof html !== "string" || !html) {
             throw new Error("The browser opened the page but read nothing.");
           }
           return { got: "page", html, at };
         }
-        if (Date.now() >= deadline) {
+        if (late) {
           throw new Error(
             "The browser opened the address but it gave neither a file nor a page.",
           );
         }
+        before = loaded && typeof state === "string" ? state : undefined;
         await sleep(pollMs);
       }
     },

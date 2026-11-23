@@ -1,6 +1,7 @@
 // The forms registry and its editions: what the test pages and the fill
 // action read and write. The PDF work itself is in `actions.ts`.
-import { addressKey, bareCode, isOfficialHost, sameFormCode } from "./sources";
+import { mayRead, siteOn } from "./sites";
+import { addressKey, bareCode, sameFormCode } from "./sources";
 import { requireOperator } from "../operators";
 import { ConvexError, v, type Infer } from "convex/values";
 import { internal } from "../../_generated/api";
@@ -25,7 +26,9 @@ import {
   vReadFacts,
   vTarget,
   vVia,
+  vWords,
 } from "./schema";
+import { settled, type Words } from "./words";
 
 /** Adds a form to the registry, or changes where one is fetched from. */
 export const createForm = mutation({
@@ -48,10 +51,12 @@ export const createForm = mutation({
     if (!code.trim() || !title.trim()) {
       throw new ConvexError("A form needs a code and a title.");
     }
-    if (![sourceUrl, ...(alternateUrls ?? [])].every(isOfficialHost)) {
-      throw new ConvexError(
-        "A form is fetched from its authority's own https site (.gov).",
-      );
+    for (const url of [sourceUrl, ...(alternateUrls ?? [])]) {
+      if (!mayRead(url, await siteOn(ctx, url, Date.now()))) {
+        throw new ConvexError(
+          "A form is fetched from a government's own https site.",
+        );
+      }
     }
     const form = {
       code: code.trim(),
@@ -467,6 +472,17 @@ const addressRow = (ctx: QueryCtx, key: string) =>
     .withIndex("by_key", (q) => q.eq("key", key))
     .unique();
 
+/**
+ * A file's words as they are kept now. A row from before `words` has only
+ * its `opening`: those were its own words, and with none it was never read.
+ * Remove with `opening`, once `wordsFromOpening` has run everywhere.
+ */
+const wordsOf = (file: { words?: Words; opening?: string }): Words =>
+  file.words ??
+  (file.opening
+    ? { from: "text", opening: file.opening }
+    : { from: "none", why: "noReader", note: "Kept before scans were read." });
+
 /** How an address last answered, if it has been asked. */
 export const addressOf = internalQuery({
   args: { key: v.string() },
@@ -475,7 +491,9 @@ export const addressOf = internalQuery({
     const row = await addressRow(ctx, key);
     if (!row) return null;
     const { _id, _creationTime, key: _key, chosen: _chosen, ...held } = row;
-    return held;
+    if (held.outcome !== "file") return held;
+    const { opening: _old, ...file } = held;
+    return { ...file, words: wordsOf(held) };
   },
 });
 
@@ -538,7 +556,7 @@ export const keepFile = internalMutation({
     editionId: v.optional(v.id("formEditions")),
     /** True if this call kept it: otherwise the caller's copy isn't needed. */
     kept: v.boolean(),
-    opening: v.optional(v.string()),
+    words: v.optional(vWords),
     facts: v.optional(vReadFacts),
   }),
   handler: async (ctx, { sha256, fresh }) => {
@@ -546,15 +564,16 @@ export const keepFile = internalMutation({
       .query("formEditions")
       .withIndex("by_sha256", (q) => q.eq("sha256", sha256))
       .first();
-    const read = await ctx.db
+    const rows = await ctx.db
       .query("formAddresses")
       .withIndex("by_sha256", (q) => q.eq("sha256", sha256))
-      .first();
-    // Only a file is held by its hash.
-    const known =
-      read?.outcome === "file"
-        ? { opening: read.opening, facts: read.facts }
-        : {};
+      .take(20);
+    // Only a file is held by its hash. One address's reading of the bytes
+    // serves every other: so a reading that is settled comes first.
+    const files = rows.flatMap((row) =>
+      row.outcome === "file" ? [{ words: wordsOf(row), facts: row.facts }] : [],
+    );
+    const known = files.find(({ words }) => settled(words)) ?? files[0] ?? {};
     if (existing || !fresh) {
       return { editionId: existing?._id, kept: false, ...known };
     }
@@ -695,6 +714,37 @@ export const clearChosenAt = internalMutation({
         {
           cursor: continueCursor,
         },
+      );
+    }
+    return null;
+  },
+});
+
+/**
+ * Turns each held file's old `opening` into its `words`, a batch at a time,
+ * so the schema can drop `opening`. Run once per deployment:
+ *   npx convex run easygov/forms/data:wordsFromOpening '{"cursor":null}'
+ */
+export const wordsFromOpening = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
+  returns: v.null(),
+  handler: async (ctx, { cursor }) => {
+    const { page, isDone, continueCursor } = await ctx.db
+      .query("formAddresses")
+      .paginate({ numItems: 50, cursor });
+    for (const row of page) {
+      if (row.outcome === "file" && !row.words) {
+        await ctx.db.patch("formAddresses", row._id, {
+          words: wordsOf(row),
+          opening: undefined,
+        });
+      }
+    }
+    if (!isDone) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.easygov.forms.data.wordsFromOpening,
+        { cursor: continueCursor },
       );
     }
     return null;

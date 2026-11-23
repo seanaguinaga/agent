@@ -11,22 +11,28 @@ import {
   test,
   vi,
 } from "vitest";
+import type { WorkflowId } from "@convex-dev/workflow";
 import { internal } from "../../_generated/api";
+import type { Id } from "../../_generated/dataModel";
 import { initConvexTest } from "../../setup.test";
-import type { T } from "../case/cases.testkit";
+import { scans, type T } from "../case/cases.testkit";
 import {
   browserKey,
   fakeNetwork,
+  fakeReader,
   formPdf,
   kept,
   restoreNetwork,
+  scanPdf,
   servePage,
   servePdf,
   serveRevalidating,
   serveStatus,
   withoutWaiting,
+  xfaPdf,
 } from "./network.testkit";
 import { inspectPdf } from "./pdf";
+import { wordsIn } from "./words";
 
 vi.mock("../../modelsForDemo", async () =>
   (await import("../case/cases.testkit")).mockModels(),
@@ -73,6 +79,7 @@ beforeEach(() => {
 afterEach(() => {
   restoreKey();
   restoreNetwork();
+  scans.reader = undefined;
 });
 
 /** Asks an address for the form by a plain request, spending. */
@@ -82,8 +89,12 @@ const fetchFile = (
   more: {
     code?: string;
     linkedAs?: string;
+    trusted?: boolean;
+    from?: string;
     way?: "request" | "browser";
     spend?: boolean;
+    read?: boolean;
+    caseId?: Id<"cases">;
   } = {},
 ) =>
   t.action(actions.fetchFile, {
@@ -97,12 +108,15 @@ const fetchFile = (
 const readLinks = (
   t: T,
   url: string,
-  more: { way?: "request" | "browser"; spend?: boolean } = {},
+  more: { from?: string; way?: "request" | "browser"; spend?: boolean } = {},
 ) => t.action(actions.readLinks, { url, way: "request", spend: true, ...more });
 
 test("the generated form is read as a form: its words, its place to write and its revision", async () => {
-  const { opening, targets, pages } = await inspectPdf(ssa561);
-  expect(opening).toContain("Form SSA-561 (08-2025)");
+  const { words, xfa, targets, pages } = await inspectPdf(ssa561);
+  expect(wordsIn(words, xfa)).toEqual({
+    from: "text",
+    opening: expect.stringContaining("Form SSA-561 (08-2025)"),
+  });
   expect(targets).toHaveLength(1);
   expect(pages).toBe(1);
 });
@@ -344,6 +358,7 @@ describe("an address that gives no file", () => {
         held: 0,
         reused: 0,
         unchanged: 0,
+        reads: 0,
       },
     });
     expect(net.requests).toHaveLength(0);
@@ -359,21 +374,82 @@ describe("an address that gives no file", () => {
     expect(net.requests).toHaveLength(0);
   });
 
-  test("a redirect off the authority's sites is not followed", async () => {
+  const cdn = "https://cdn.example.com/ssa-561.pdf";
+  const mirror = "https://mirror.example.org/ssa-561.pdf";
+  const to = (location: string) => () =>
+    new Response(null, { status: 302, headers: { location } });
+
+  test("a redirect is followed one step off a government's site, and no further", async () => {
     const t = initConvexTest();
     const net = fakeNetwork({
-      [address]: () =>
-        new Response(null, {
-          status: 302,
-          headers: { location: "https://cdn.example.com/ssa-561.pdf" },
-        }),
-      "https://cdn.example.com/ssa-561.pdf": servePdf(ssa561),
+      [address]: to(cdn),
+      [cdn]: servePdf(ssa561),
+      [`${ssa}/moved.pdf`]: to("https://cdn.example.com/again"),
+      "https://cdn.example.com/again": to(mirror),
+      [mirror]: servePdf(ssa561),
     });
-    expect(await fetchFile(t, address)).toMatchObject({
+    expect(await fetchFile(t, address)).toMatchObject({ ok: true });
+    expect(await fetchFile(t, `${ssa}/moved.pdf`)).toMatchObject({
       ok: false,
       why: "unusable",
     });
-    expect(net.asked("https://cdn.example.com/ssa-561.pdf")).toBe(0);
+    expect(net.asked(mirror)).toBe(0);
+  });
+
+  test("an address on nobody's site is read only as a government's page links it", async () => {
+    const t = initConvexTest();
+    const net = fakeNetwork({
+      [cdn]: servePdf(ssa561),
+      [mirror]: to(cdn),
+      "https://www.dmv.org/": servePage('<a href="/reg-343.pdf">REG 343</a>'),
+      [`${ssa}/`]: servePage(
+        `<a href="${cdn}">SSA-561</a><a href="${mirror}">A mirror</a><a href="https://www.dmv.org/">DMV</a>`,
+      ),
+      [`${ssa}/other`]: servePage("<a href='/forms/'>Forms</a>"),
+    });
+    const unread = { ok: false, why: "unusable", cost: { downloads: 0 } };
+    // Come by from a search, or from a page that is itself on nobody's site.
+    expect(await fetchFile(t, cdn)).toMatchObject(unread);
+    expect(await fetchFile(t, cdn, { from: mirror })).toMatchObject(unread);
+    expect(await readLinks(t, "https://www.dmv.org/")).toMatchObject({
+      ok: false,
+      why: "unusable",
+    });
+    // Nor on the caller's word that a government's page links it: the page
+    // has to have been read, and to link it.
+    expect(await fetchFile(t, cdn, { from: `${ssa}/` })).toMatchObject(unread);
+    await readLinks(t, `${ssa}/other`);
+    expect(await fetchFile(t, cdn, { from: `${ssa}/other` })).toMatchObject(
+      unread,
+    );
+    expect(net.addresses()).toEqual([`${ssa}/other`]);
+    await readLinks(t, `${ssa}/`);
+    // Linked from a government's page, it is read: but not where it then
+    // redirects, off to another site that is nobody's.
+    expect(await fetchFile(t, mirror, { from: `${ssa}/` })).toMatchObject({
+      ok: false,
+      why: "unusable",
+    });
+    expect(net.asked(cdn)).toBe(0);
+    expect(await fetchFile(t, cdn, { from: `${ssa}/` })).toMatchObject({
+      ok: true,
+    });
+    // A page on nobody's site keeps only its links to its own site and onto
+    // governments' sites. Its own are read only once the site is vouched.
+    net.routes["https://www.dmv.org/"] = servePage(
+      `<a href="/reg-343.pdf">A copy</a><a href="${address}">SSA-561</a><a href="${cdn}">Elsewhere</a>`,
+    );
+    const links = await readLinks(t, "https://www.dmv.org/", {
+      from: `${ssa}/`,
+    });
+    const copy = "https://www.dmv.org/reg-343.pdf";
+    expect(links.ok && links.links.map(({ url }) => url)).toEqual([
+      copy,
+      address,
+    ]);
+    expect(
+      await fetchFile(t, copy, { from: "https://www.dmv.org/" }),
+    ).toMatchObject(unread);
   });
 
   test("a redirect within the authority's sites is followed to the file", async () => {
@@ -433,11 +509,17 @@ test("a lead that is a web page answers as a page, and its links are kept for re
     ok: true,
     cost: { pages: 0, held: 1, reused: 1 },
   });
-  // Only the authority's own links are kept.
+  // A government's page vouches for one link: every link on it is kept.
   expect(links.ok && links.links).toEqual([
     {
       url: address,
       label: "Download PDF",
+      pdf: true,
+      under: "Form SSA-561 | Request for Reconsideration",
+    },
+    {
+      url: "https://example.com/ssa-561.pdf",
+      label: "A copy elsewhere",
       pdf: true,
       under: "Form SSA-561 | Request for Reconsideration",
     },
@@ -461,7 +543,7 @@ describe("whether a file is the form", () => {
       { outcome: "file", facts: { places: 1 } },
     ]);
     expect(after.addresses[0]).toMatchObject({
-      opening: expect.stringContaining("SSA-827"),
+      words: { from: "text", opening: expect.stringContaining("SSA-827") },
     });
   });
 
@@ -473,6 +555,265 @@ describe("whether a file is the form", () => {
       ok: true,
     });
     expect((await kept(t)).editions).toHaveLength(1);
+  });
+
+  // Canada's IMM 5257 is such a form: a plain reading of its one page gives
+  // only "Please wait...".
+  test("an XFA form is named by the words in its XFA, and has no place to write in", async () => {
+    const t = initConvexTest();
+    fakeNetwork({
+      [address]: servePdf(await xfaPdf(["IMM 5257 (09-2023) E"])),
+    });
+
+    expect(await fetchFile(t, address, { code: "IMM 5257" })).toMatchObject({
+      ok: true,
+      namedBy: "xfa",
+      facts: { pages: 1, places: 0, language: "en", revision: 202309 },
+    });
+    const [edition] = (await kept(t)).editions;
+    expect(edition).toMatchObject({ fillable: false, targets: [] });
+    // Its words are all it is known by: it is no other form.
+    expect(await fetchFile(t, address, { code: "IMM 5709" })).toMatchObject({
+      ok: false,
+      why: "otherForm",
+    });
+  });
+
+  // The UK's V62 is such a file: each page is one picture.
+  test("a file with no words to read is the form only on a trusted link whose words name it", async () => {
+    const t = initConvexTest();
+    fakeNetwork({ [address]: servePdf(await scanPdf()) });
+    const v62 = { code: "V62", linkedAs: "Apply for a V5C (form V62)" };
+
+    expect(await fetchFile(t, address, v62)).toMatchObject({
+      ok: false,
+      why: "otherForm",
+    });
+    expect(
+      await fetchFile(t, address, { ...v62, linkedAs: "PDF", trusted: true }),
+    ).toMatchObject({ ok: false, why: "otherForm" });
+    expect((await kept(t)).editions).toHaveLength(0);
+
+    // It says the link alone named it, and nothing it couldn't read.
+    const answer = await fetchFile(t, address, { ...v62, trusted: true });
+    expect(answer).toMatchObject({
+      ok: true,
+      namedBy: "link",
+      facts: { pages: 1, places: 0, language: "unknown" },
+    });
+    expect(answer.ok && answer.facts).not.toHaveProperty("revision");
+    const after = await kept(t);
+    expect(after.editions).toHaveLength(1);
+    // Nothing read it: that is why it has no words, kept with the file.
+    expect(after.addresses).toMatchObject([
+      { words: { from: "none", why: "noReader" } },
+    ]);
+    // Kept, it is still no form to a link that isn't trusted.
+    expect(await fetchFile(t, address, v62)).toMatchObject({
+      ok: false,
+      why: "otherForm",
+    });
+  });
+
+  describe("with a reader", () => {
+    const other = `${ssa}/v62-copy.pdf`;
+    const v62 = { code: "V62", read: true };
+    const printed = "=====\nV62 Application for a V5C (Rev 11/25)";
+
+    test("a scan is named by the words read off it, once for the same bytes, and the reader is never told the form", async () => {
+      const t = initConvexTest();
+      const scan = await scanPdf(5);
+      const net = fakeNetwork({
+        [address]: servePdf(scan),
+        [other]: servePdf(scan),
+      });
+      const { model, sent } = await fakeReader(printed);
+      scans.reader = model;
+
+      const answer = await fetchFile(t, address, v62);
+      expect(answer).toMatchObject({
+        ok: true,
+        namedBy: "ocr",
+        // A reader's words have no place on the page: none to write in.
+        facts: { pages: 5, places: 0, revision: 202511 },
+        cost: { reads: 1 },
+      });
+      expect((await kept(t)).addresses).toMatchObject([
+        { words: { from: "ocr", by: model.modelId } },
+      ]);
+      // It is sent the instruction and the file's first pages: no code.
+      expect(sent).toHaveLength(1);
+      expect(sent[0].files).toHaveLength(1);
+      expect(sent[0].words.join(" ")).not.toMatch(/V62|SSA/);
+
+      // Its words are held with its hash: from another address, when the
+      // server says it hasn't changed, and to someone who may not read.
+      for (const [url, read] of [
+        [other, true],
+        [address, true],
+        [other, false],
+      ] as const) {
+        expect(await fetchFile(t, url, { ...v62, read })).toMatchObject({
+          ok: true,
+          namedBy: "ocr",
+          cost: { reads: 0 },
+        });
+      }
+      expect(sent).toHaveLength(1);
+      expect(net.asked(other)).toBe(2);
+      // Words that name the form are held to the rule any words are.
+      expect(await fetchFile(t, address, { code: "V55" })).toMatchObject({
+        ok: false,
+        why: "otherForm",
+      });
+    });
+
+    test("a scan held from before there was a reader is read once, when a read may be spent", async () => {
+      const t = initConvexTest();
+      fakeNetwork({
+        [address]: serveRevalidating(await scanPdf(), '"v1"', "Mon"),
+      });
+      const linked = { ...v62, linkedAs: "Form V62", trusted: true };
+      expect(await fetchFile(t, address, linked)).toMatchObject({
+        namedBy: "link",
+        cost: { reads: 0 },
+      });
+      const { model, sent } = await fakeReader(printed);
+      scans.reader = model;
+
+      // Without a read to spend it stands as it was, and says why.
+      expect(
+        await fetchFile(t, address, { ...linked, read: false }),
+      ).toMatchObject({ namedBy: "link", cost: { unchanged: 1 } });
+      expect(sent).toHaveLength(0);
+      // With one, the file is asked for whole, and read.
+      expect(await fetchFile(t, address, linked)).toMatchObject({
+        namedBy: "ocr",
+        cost: { reads: 1, unchanged: 0 },
+      });
+      expect(await fetchFile(t, address, linked)).toMatchObject({
+        namedBy: "ocr",
+        cost: { reads: 0, unchanged: 1 },
+      });
+      expect(sent).toHaveLength(1);
+      expect((await kept(t)).editions).toHaveLength(1);
+    });
+
+    test("a case hears each step of a scan's reading while its work runs, and every try is one read", async () => {
+      const t = initConvexTest();
+      fakeNetwork({ [address]: servePdf(await scanPdf()) });
+      const caseId = await t.run((ctx) =>
+        ctx.db.insert("cases", {
+          userId: "someone",
+          threadId: "thread",
+          status: "active",
+          seq: 0,
+          answers: {},
+          evidence: [],
+          run: { state: "running", workflowId: "w" as WorkflowId },
+        }),
+      );
+      const heard = () =>
+        t.run(async (ctx) => {
+          const { run } = (await ctx.db.get("cases", caseId))!;
+          return run?.state === "running" ? run.reading : undefined;
+        });
+      const down = new Error("socket hang up");
+      const { model, sent } = await fakeReader([down, down, printed]);
+      scans.reader = model;
+      // What the page shows each time the reader is asked.
+      const seen: Awaited<ReturnType<typeof heard>>[] = [];
+      const { doGenerate } = model;
+      model.doGenerate = async (options) => {
+        seen.push(await heard());
+        return await doGenerate(options);
+      };
+
+      const answer = await fetchFile(t, address, { ...v62, caseId });
+      expect(answer).toMatchObject({ namedBy: "ocr", cost: { reads: 1 } });
+      expect(sent).toHaveLength(3);
+      expect([...seen, await heard()]).toEqual(
+        ["reading", "retrying", "retrying", "read"].map((status) => [
+          { code: "V62", status },
+        ]),
+      );
+      // What is kept is how it ended: who read it, and after how many tries.
+      expect((await kept(t)).addresses).toMatchObject([
+        { words: { by: model.modelId, tries: 3, backup: false } },
+      ]);
+
+      // Each form has its latest status, and nobody hears once the work ends.
+      const note = (status: "unread") =>
+        t.mutation(internal.easygov.case.data.noteReading, {
+          caseId,
+          code: "V5C",
+          status,
+        });
+      await note("unread");
+      expect(await heard()).toEqual([
+        { code: "V62", status: "read" },
+        { code: "V5C", status: "unread" },
+      ]);
+      await t.run((ctx) => ctx.db.patch("cases", caseId, { run: undefined }));
+      await note("unread");
+      expect((await t.run((ctx) => ctx.db.get("cases", caseId)))?.run).toBe(
+        undefined,
+      );
+    });
+
+    test("a scan with nothing to read is settled, and one the reader couldn't answer for is tried again: each still named by its link", async () => {
+      const t = initConvexTest();
+      fakeNetwork({
+        [address]: servePdf(await scanPdf()),
+        [other]: servePdf(await scanPdf(2)),
+      });
+      const linked = { ...v62, linkedAs: "Form V62", trusted: true };
+      const reading = async (answer: string | Error) => {
+        const { model, sent } = await fakeReader(answer);
+        scans.reader = model;
+        const answers = [
+          await fetchFile(t, address, linked),
+          await fetchFile(t, address, linked),
+        ];
+        const [{ words }] = (await kept(t)).addresses as { words: unknown }[];
+        return { answers, words, reads: sent.length };
+      };
+
+      const down = await reading(new Error("socket hang up"));
+      expect(down.answers).toMatchObject([
+        { namedBy: "link", cost: { reads: 1 } },
+        { namedBy: "link", cost: { reads: 1 } },
+      ]);
+      expect(down.words).toEqual({
+        from: "none",
+        why: "unavailable",
+        note: "socket hang up",
+      });
+      const blank = await reading("=====\n");
+      expect(blank.words).toEqual({ from: "none", why: "blank" });
+      expect(blank.reads).toBe(1);
+      // Read, its words name another form: no link then stands for it.
+      scans.reader = (await fakeReader("=====\nV5C Certificate")).model;
+      expect(await fetchFile(t, other, linked)).toMatchObject({
+        ok: false,
+        why: "otherForm",
+      });
+    });
+  });
+
+  test("a trusted link doesn't let through a file whose words name another form", async () => {
+    const t = initConvexTest();
+    fakeNetwork({ [address]: servePdf(ssa827) });
+    const linked = { linkedAs: "Form SSA-561", trusted: true };
+
+    expect(await fetchFile(t, address, linked)).toMatchObject({
+      ok: false,
+      why: "otherForm",
+    });
+    // A file that names itself says so, whatever its link.
+    expect(
+      await fetchFile(t, address, { ...linked, code: "SSA-827" }),
+    ).toMatchObject({ ok: true, namedBy: "text" });
   });
 
   // The authority renamed "SSA-561-U2" to "SSA-561": its file prints only
@@ -687,7 +1028,7 @@ describe("a page's links", () => {
       ok: true,
       cost: { pages: 1, held: 0, reused: 0 },
     });
-    // PDFs first; a link off the authority's sites is left out.
+    // PDFs first; a link off the government's sites is one link from it.
     expect(answer.ok && answer.links).toEqual([
       {
         url: `${ssa}/ssa-561.pdf`,
@@ -712,6 +1053,12 @@ describe("a page's links", () => {
         label: "All forms",
         pdf: false,
         under: "Forms",
+      },
+      {
+        url: "https://www.adobe.com/reader",
+        label: "Get a PDF reader",
+        pdf: false,
+        under: "Form SSA-827 | Authorization to Disclose Information",
       },
     ]);
   });
@@ -831,6 +1178,7 @@ describe("an address that refuses a plain request, opened in the browser", () =>
   test("is read as a page when it is one, so its links can be followed", async () => {
     restoreKey();
     restoreKey = browserKey("key");
+    vi.useFakeTimers();
     const t = initConvexTest();
     const net = fakeNetwork(
       { [page]: serveStatus(403) },
@@ -842,7 +1190,9 @@ describe("an address that refuses a plain request, opened in the browser", () =>
       },
     );
 
-    expect(await fetchFile(t, page, { way: "browser" })).toMatchObject({
+    expect(
+      await withoutWaiting(fetchFile(t, page, { way: "browser" })),
+    ).toMatchObject({
       ok: false,
       why: "page",
       cost: { browser: 1 },
@@ -857,12 +1207,17 @@ describe("an address that refuses a plain request, opened in the browser", () =>
     expect(net.service).toHaveLength(asked);
   });
 
-  test("is unusable when the browser ends up off the authority's sites", async () => {
+  test("is unusable when the browser ends up two steps off a government's sites", async () => {
     restoreKey();
     restoreKey = browserKey("key");
+    vi.useFakeTimers();
     const t = initConvexTest();
+    const linked = "https://forms.example.org/ssa-561.html";
     fakeNetwork(
-      { [page]: serveStatus(403) },
+      {
+        [linked]: serveStatus(403),
+        [page]: servePage(`<a href="${linked}">SSA-561</a>`),
+      },
       {
         page: {
           at: "https://forms.example.com/ssa-561.html",
@@ -870,12 +1225,49 @@ describe("an address that refuses a plain request, opened in the browser", () =>
         },
       },
     );
+    await readLinks(t, page);
 
-    expect(await readLinks(t, page, { way: "browser" })).toMatchObject({
-      ok: false,
-      why: "unusable",
+    expect(
+      await withoutWaiting(
+        readLinks(t, linked, { from: page, way: "browser" }),
+      ),
+    ).toMatchObject({ ok: false, why: "unusable" });
+    expect((await kept(t)).addresses).toMatchObject([
+      { outcome: "page" },
+      { outcome: "unusable" },
+    ]);
+  });
+
+  test("is read with the links its scripts add, in a shadow root or late", async () => {
+    restoreKey();
+    restoreKey = browserKey("key");
+    vi.useFakeTimers();
+    const t = initConvexTest();
+    fakeNetwork(
+      { [page]: serveStatus(403) },
+      {
+        page: {
+          at: page,
+          html: '<a href="/forms/">All forms</a><forms-list></forms-list>',
+          // What scripts build once the page has loaded, a look apart.
+          scripted: [
+            '<h2>Form SSA-561</h2><a href="/forms/ssa-561.pdf">English PDF</a>',
+            '<h2>Form SSA-827</h2><a href="/forms/ssa-827.pdf">English PDF</a>',
+          ],
+        },
+      },
+    );
+
+    expect(
+      await withoutWaiting(readLinks(t, page, { way: "browser" })),
+    ).toMatchObject({
+      ok: true,
+      links: [
+        { url: `${ssa}/ssa-561.pdf`, under: "Form SSA-561", pdf: true },
+        { url: `${ssa}/ssa-827.pdf`, under: "Form SSA-827", pdf: true },
+        { url: `${ssa}/`, label: "All forms", pdf: false },
+      ],
     });
-    expect((await kept(t)).addresses).toMatchObject([{ outcome: "unusable" }]);
   });
 });
 

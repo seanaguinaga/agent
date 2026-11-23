@@ -64,8 +64,13 @@ function fakeService(Socket: typeof WebSocket) {
 }
 
 const STATE = "JSON.stringify([location.href";
-const state = (at: string, ready = "complete", type = "text/html") => ({
-  result: { value: JSON.stringify([at, ready, type]) },
+const state = (
+  at: string,
+  ready = "complete",
+  type = "text/html",
+  links = 1,
+) => ({
+  result: { value: JSON.stringify([at, ready, type, links]) },
 });
 
 /** A browser that opens a tab, and shows `pages` in turn as it loads. */
@@ -119,6 +124,32 @@ test("reads a page once it has loaded, says where it ended up, and releases the 
   expect(JSON.parse(String(release[1]?.body))).toMatchObject({
     status: "REQUEST_RELEASE",
   });
+});
+
+test("a page whose scripts go on adding links is read once they stop, or the time is up", async () => {
+  const at = "https://www.bund.de/";
+  const growing = (to: number) =>
+    Array.from({ length: to }, (_, links) =>
+      state(at, "complete", "text/html", links),
+    );
+  const html = '<html><a href="/a">A</a></html>';
+  const settling = showing(growing(4), html);
+  await openViaBrowser(at, fakeService(settling.Socket).service);
+  const looks = settling.sent.filter(({ params }) =>
+    String(params.expression).startsWith(STATE),
+  );
+  // Four looks as the links came, and one more that found as many.
+  expect(looks).toHaveLength(5);
+  // The read takes in what scripts put in open shadow roots.
+  expect(settling.sent.at(-1)!.params.expression).toContain("shadowRoots");
+
+  const endless = showing(growing(10_000), html);
+  expect(
+    await openViaBrowser(at, {
+      ...fakeService(endless.Socket).service,
+      timeoutMs: 30,
+    }),
+  ).toEqual({ got: "page", html, at });
 });
 
 test("says so when the page gives nothing, and still releases the browser", async () => {

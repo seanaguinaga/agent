@@ -20,7 +20,8 @@ crons.interval(
 );
 
 // Who each .gov domain belongs to, from CISA's register: what decides
-// whether a form's file is on its authority's own site.
+// whether a form's file is on its authority's own site. The same run has
+// the sites vouched by a link judged again before their vouch lapses.
 crons.weekly(
   "importOfficialSites",
   { dayOfWeek: "monday", hourUTC: 6, minuteUTC: 17 },

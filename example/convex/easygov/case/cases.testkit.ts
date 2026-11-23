@@ -8,6 +8,7 @@
 //     (await import("./cases.testkit")).mockModels(),
 //   );
 import { listMessages } from "@convex-dev/agent";
+import type { LanguageModel } from "ai";
 import { vi } from "vitest";
 import { api, components } from "../../_generated/api";
 import type { Id } from "../../_generated/dataModel";
@@ -35,6 +36,15 @@ const IRS_8822_PROPOSAL = JSON.stringify({
   choice: 1,
 });
 
+/**
+ * What reads a scan: nothing, until a test sets a reader (see `fakeReader`
+ * in `network.testkit.ts`). A test that sets one unsets it after.
+ */
+export const scans = {
+  reader: undefined as LanguageModel | undefined,
+  order: ["model"] as ("documentAi" | "model")[],
+};
+
 /** The stand-in for `modelsForDemo`. */
 export async function mockModels() {
   const { MockLanguageModelV4 } = await import("ai/test");
@@ -58,6 +68,13 @@ export async function mockModels() {
     languageModel,
     researchModel: languageModel,
     embeddingModel: undefined,
+    get readerModel() {
+      return scans.reader;
+    },
+    get readerOrder() {
+      return scans.order;
+    },
+    readerRetries: [1, 3],
   };
 }
 

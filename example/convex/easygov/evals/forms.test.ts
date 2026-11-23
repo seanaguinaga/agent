@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { isOfficialHost } from "../forms/sources";
+import { governed } from "../forms/governments";
+import { mayRead } from "../forms/sites";
 import { forms } from "./cases";
 import { gradeForms, passes } from "./grading";
 import { references } from "./references";
@@ -15,8 +16,9 @@ describe("the forms cases", () => {
   });
 
   test.each(expected)(
-    "$id: $code is published on an official host",
-    ({ url }) => expect(isOfficialHost(url)).toBe(true),
+    "$id: $code is published on a government's own site",
+    ({ url }) =>
+      expect(mayRead(url, governed(new URL(url).hostname))).toBe(true),
   );
 
   test.each(Object.entries(references))(

@@ -3,7 +3,9 @@
 // expire, so every current pack's forms are asked again on a schedule: the
 // server mostly says "unchanged", which costs nothing. A pack whose file has
 // changed, expired or gone is stale: operators see it in `stalePacks`, and a
-// case built on it tells the person what to check before they file.
+// case built on it tells the person what to check before they file. A file
+// on a site that is no longer vouched (see `forms/sites.ts`) isn't read, so
+// its form counts as gone.
 import { v } from "convex/values";
 import { internal } from "../../_generated/api";
 import type { Id } from "../../_generated/dataModel";
@@ -16,6 +18,7 @@ import {
 } from "../../_generated/server";
 import { fileAt, newFinder } from "../case/locate";
 import type { FileAnswer } from "../forms/actions";
+import { vNamedBy } from "../forms/schema";
 import { requireOperator } from "../operators";
 import { vFormStanding } from "./schema";
 
@@ -165,6 +168,7 @@ export const packForms = internalQuery({
           code: v.string(),
           sourceUrl: v.string(),
           editionId: v.optional(v.id("formEditions")),
+          namedBy: v.optional(vNamedBy),
         }),
       ),
     }),
@@ -175,12 +179,13 @@ export const packForms = internalQuery({
     const forms = await Promise.all(
       (pack.packetForms ?? [])
         .filter(({ sourceUrl }) => sourceUrl)
-        .map(async ({ code, sourceUrl, blueprintId }) => {
+        .map(async ({ code, sourceUrl, blueprintId, namedBy }) => {
           const blueprint =
             blueprintId && (await ctx.db.get("formBlueprints", blueprintId));
           return {
             code,
             sourceUrl,
+            namedBy,
             ...(blueprint && { editionId: blueprint.editionId }),
           };
         }),
@@ -204,13 +209,19 @@ export const checkPack = internalAction({
     if (!pack) return null;
     const finder = newFinder(CHECK_LIMITS);
     const forms = await Promise.all(
-      pack.forms.map(async ({ code, sourceUrl, editionId }) => {
+      pack.forms.map(async ({ code, sourceUrl, editionId, namedBy }) => {
         // The pack bound this address to the form when it was made: asked
-        // again, its file still has to carry the form's number.
+        // again, its file still has to carry the form's number. One bound
+        // on a trusted link alone still has to have no words to read.
         const answer = await fileAt(
           ctx,
           finder,
-          { jurisdiction: pack.jurisdiction, code, linkedAs: code },
+          {
+            jurisdiction: pack.jurisdiction,
+            code,
+            linkedAs: code,
+            trusted: namedBy === "link",
+          },
           sourceUrl,
         );
         return { code, sourceUrl, ...standingOf(answer, editionId) };

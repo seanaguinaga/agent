@@ -52,8 +52,10 @@ export type Inspection = {
   /** False for a flat PDF: its targets were found on the page. */
   fillable: boolean;
   targets: Target[];
-  /** The start and end of the first page's words: enough to tell which form it is. */
-  opening: string;
+  /** Each page's words, in order: empty where a page has none to read. */
+  words: string[];
+  /** True for a form drawn only by XFA: its words are read from there. */
+  xfa: boolean;
 };
 
 type Text = { str: string; x: number; y: number; w: number; h: number };
@@ -86,11 +88,16 @@ const apply = (m: Matrix, x: number, y: number): [number, number] => [
 ];
 
 /** The text and the drawn lines of each page, in page coordinates. */
-async function readMarks(bytes: Uint8Array): Promise<PageMarks[]> {
+async function readMarks(
+  bytes: Uint8Array,
+): Promise<{ marks: PageMarks[]; xfa: boolean }> {
   const pdf = await pdfjs.getDocument({
     // pdfjs takes ownership of the buffer it's given.
     data: bytes.slice(),
     useSystemFonts: true,
+    // A form drawn only by XFA shows a "please wait" page: its words are
+    // then read from its XFA template and data, as the pages they make.
+    enableXfa: true,
     verbosity: 0,
   }).promise;
   const { OPS } = pdfjs;
@@ -101,12 +108,14 @@ async function readMarks(bytes: Uint8Array): Promise<PageMarks[]> {
     const text: Text[] = [];
     for (const item of content.items) {
       if (!("str" in item) || !item.str.trim()) continue;
+      // Words read from XFA have no place on a page.
+      const [, , , , x = 0, y = 0] = (item.transform ?? []) as number[];
       text.push({
         str: item.str,
-        x: item.transform[4],
-        y: item.transform[5],
-        w: item.width,
-        h: item.height,
+        x,
+        y,
+        w: item.width ?? 0,
+        h: item.height ?? 0,
       });
     }
     const ops = await page.getOperatorList();
@@ -174,7 +183,7 @@ async function readMarks(bytes: Uint8Array): Promise<PageMarks[]> {
     }
     pages.push({ text, rules, dividers, boxes });
   }
-  return pages;
+  return { marks: pages, xfa: pdf.isPureXfa };
 }
 
 const overlap = (a1: number, a2: number, b1: number, b2: number) =>
@@ -346,7 +355,7 @@ function findRegions(marks: PageMarks): { rect: Rect; kind: Target["kind"] }[] {
 
 /** What a PDF form is: its edition, and every place a value can go. */
 export async function inspectPdf(bytes: Uint8Array): Promise<Inspection> {
-  const marks = await readMarks(bytes);
+  const { marks, xfa } = await readMarks(bytes);
   const doc = await PDFDocument.load(bytes, LOAD);
   const pages = doc.getPages();
   const edition = marks
@@ -426,16 +435,8 @@ export async function inspectPdf(bytes: Uint8Array): Promise<Inspection> {
       }
     });
   }
-  // A form prints its code somewhere on page one: at the top, in the footer
-  // ("DL 410 FO (REV. 7/2024)" is the page's last line), or between an
-  // instruction panel and the form ("MV-232 (2/26)"). So the whole page is
-  // kept, unless it is longer than any form's.
-  const first = (marks[0]?.text ?? []).map((t) => t.str).join(" ");
-  const opening =
-    first.length <= 12_000
-      ? first
-      : `${first.slice(0, 10_000)} … ${first.slice(-2_000)}`;
-  return { pages: pages.length, edition, fillable, targets, opening };
+  const words = marks.map((page) => page.text.map((t) => t.str).join(" "));
+  return { pages: marks.length, edition, fillable, targets, words, xfa };
 }
 
 // --- Filling ----------------------------------------------------------------
@@ -565,7 +566,7 @@ export async function verifyPdf(
   const doc = await PDFDocument.load(bytes, LOAD);
   const form = doc.getForm();
   const drawn = targets.some((target) => !target.field);
-  const marks = drawn ? await readMarks(bytes) : [];
+  const marks = drawn ? (await readMarks(bytes)).marks : [];
   for (const target of targets) {
     const want = values[target.id];
     if (want === undefined || want === "" || want === false) continue;

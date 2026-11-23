@@ -539,6 +539,81 @@ export const forms: {
   },
 ];
 
+// --- World: the forms cases, outside the US ---------------------------------
+//
+// The same step as "forms", for countries with no .gov register: each file
+// was reached on 2026-11-21 by following links from the country's national
+// portal (see forms/VOUCHING.md), and checked to be a PDF.
+
+export const world: typeof forms = [
+  // gov.uk → HMRC → Self Assessment tax return.
+  {
+    id: "uk-self-assessment-paper",
+    goal: "I'm self-employed in England and want to file my Self Assessment tax return on paper this year, not online.",
+    expect: [
+      {
+        code: "SA100",
+        url: "https://assets.publishing.service.gov.uk/media/69c14d07cfa346b9d4704a8d/SA100-2026.pdf",
+      },
+    ],
+  },
+  // gov.uk → DVLA → apply for a vehicle log book.
+  {
+    id: "uk-replace-logbook",
+    goal: "I live in the UK and lost my car's log book (V5C). I want to apply for a replacement by post.",
+    expect: [
+      {
+        code: "V62",
+        url: "https://assets.publishing.service.gov.uk/media/691afc5a0dcbf6343e9a2883/v62-application-for-a-registration-certificate.pdf",
+      },
+    ],
+  },
+  // canada.ca → CRA forms → adjustment request.
+  {
+    id: "ca-change-tax-return",
+    goal: "I live in Canada and found a mistake on my income tax return after it was assessed. I want to ask the CRA to change it, by mail.",
+    expect: [
+      {
+        code: "T1-ADJ",
+        url: "https://www.canada.ca/content/dam/cra-arc/formspubs/pbg/t1-adj/t1-adj-23e.pdf",
+      },
+    ],
+  },
+  // canada.ca → IRCC → visitor visa application.
+  {
+    id: "ca-visitor-visa-paper",
+    goal: "I'm outside Canada and want to visit as a tourist. I need to apply for a Canadian visitor visa on paper.",
+    expect: [
+      {
+        code: "IMM 5257",
+        url: "https://www.canada.ca/content/dam/ircc/documents/pdf/english/kits/forms/imm5257/01-11-2026/imm5257e.pdf",
+      },
+    ],
+  },
+  // gov.ie → Revenue → income tax return for routine tax affairs.
+  {
+    id: "ie-paper-tax-return",
+    goal: "I'm an employee in Ireland with simple tax affairs. I can't use Revenue's online service and want to file my 2025 income tax return on paper, claiming medical expenses.",
+    expect: [
+      {
+        code: "Form 12S",
+        url: "https://www.revenue.ie/en/self-assessment-and-self-employment/documents/form-12s.pdf",
+      },
+    ],
+  },
+  // govt.nz → Inland Revenue → individual income tax return.
+  {
+    id: "nz-individual-tax-return",
+    goal: "I live in New Zealand and had self-employed income this year. I need to file my individual income tax return on paper.",
+    expect: [
+      {
+        code: "IR3",
+        url: "https://www.ird.govt.nz/-/media/project/ir/home/documents/forms-and-guides/ir1---ir99/ir3/ir3-2026.pdf",
+      },
+    ],
+  },
+];
+
 // --- Draft: a process and frozen notes in; a checklist and letter out -------
 //
 // The notes are frozen so a grade moves with the prompt, not with the web.

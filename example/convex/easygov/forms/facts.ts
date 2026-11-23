@@ -135,8 +135,9 @@ const LANGUAGE_ORDER: Record<Language, number> = {
 /**
  * Candidates for one form, best first: a file with places to write in before
  * one without, English (or bilingual) before a translation, a current file
- * before one that prints an expiry that has passed, and a file on the
- * authority's own site (see `ownSite`) before any other. Among the
+ * before one that prints an expiry that has passed, a file with words of its
+ * own before a scan a reader read (`namedBy` is "ocr"), and a file on the
+ * authority's own site (see `confirms`) before any other. Among the
  * authority's own, the latest revision printed comes first, even before the
  * file its page links: a page can go on linking an edition the authority has
  * replaced, and only the linked file is confirmed (see `backs`). Among the
@@ -145,12 +146,18 @@ const LANGUAGE_ORDER: Record<Language, number> = {
  * can be trusted in.
  */
 export function rankForms<
-  T extends { facts: FormFacts; designated?: boolean; own?: boolean },
+  T extends {
+    facts: FormFacts;
+    designated?: boolean;
+    own?: boolean;
+    namedBy?: string;
+  },
 >(candidates: T[]): T[] {
-  const key = ({ facts, designated, own }: T) => [
+  const key = ({ facts, designated, own, namedBy }: T) => [
     facts.places > 0 ? 0 : 1,
     LANGUAGE_ORDER[facts.language],
     facts.expired ? 1 : 0,
+    namedBy === "ocr" ? 1 : 0,
     own ? 0 : 1,
     own ? -(facts.revision ?? 0) : 0,
     designated ? 0 : 1,

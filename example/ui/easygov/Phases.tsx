@@ -6,6 +6,7 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { CaseView } from "../../convex/easygov/autopilot";
 import type { HistoryKind, Phase } from "../../convex/easygov/case/schema";
+import type { ReadStatus } from "../../convex/easygov/forms/schema";
 
 type Step = {
   phase: Phase;
@@ -116,6 +117,28 @@ export function phaseLine(
   return c.endReason ?? ENDS[c.phase]?.label ?? c.phase;
 }
 
+/** What the workflow is doing with a scanned form, while it works. */
+export function readingLine(form: {
+  code: string;
+  status: ReadStatus;
+}): string {
+  const copy = `a scanned copy of ${form.code}`;
+  switch (form.status) {
+    case "reading":
+      return `Reading ${copy}`;
+    case "retrying":
+      return `Reading ${copy}: retrying`;
+    case "backup":
+      return `Reading ${copy} with the backup reader`;
+    case "read":
+      return `Read ${copy}`;
+    case "readByBackup":
+      return `Read ${copy} with the backup reader`;
+    case "unread":
+      return `Couldn’t read ${copy}; it may need completing by hand`;
+  }
+}
+
 type State = "past" | "skipped" | "now" | "working" | "ahead";
 
 function Mark({ state }: { state: State }) {
@@ -214,13 +237,25 @@ export function Phases({ c, guestKey }: { c: CaseView; guestKey?: string }) {
                     className={`ml-auto text-xs text-blue-700 ${state === "working" ? "animate-pulse" : ""}`}
                     role="status"
                   >
-                    {step.doing}
+                    {/* A scan being read says so in the header too, so it
+                        shows with the phase folded. */}
+                    {(c.run?.state === "running" &&
+                      c.run.reading?.at(-1) &&
+                      readingLine(c.run.reading.at(-1)!)) ||
+                      step.doing}
                     {state === "working" && "…"}
                   </span>
                 )}
               </summary>
               <div className="mt-2 space-y-1 pl-6">
                 {!now && <p className="text-gray-500">{step.doing}.</p>}
+                {now &&
+                  c.run?.state === "running" &&
+                  c.run.reading?.map((form) => (
+                    <p key={form.code} className="text-blue-700" role="status">
+                      {readingLine(form)}
+                    </p>
+                  ))}
                 {events.length > 0 ? (
                   <Events events={events} />
                 ) : (

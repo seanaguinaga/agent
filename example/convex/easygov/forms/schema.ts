@@ -98,6 +98,66 @@ export const vFormFacts = v.object({
   expired: v.optional(v.boolean()),
 });
 
+/** A file's words, and where they were read from: see `words.ts`. */
+export const vWords = v.union(
+  v.object({
+    from: v.union(v.literal("text"), v.literal("xfa")),
+    opening: v.string(),
+  }),
+  /**
+   * Read by a reader, `by`: see `reader.ts`. `tries` is how many times a
+   * reader was asked, and `backup` whether the first in order didn't read
+   * it. A row kept before these were recorded has neither.
+   */
+  v.object({
+    from: v.literal("ocr"),
+    opening: v.string(),
+    by: v.string(),
+    tries: v.optional(v.number()),
+    backup: v.optional(v.boolean()),
+  }),
+  /** Read, and there is nothing there to read again. */
+  v.object({
+    from: v.literal("none"),
+    why: v.union(v.literal("blank"), v.literal("tooLarge")),
+  }),
+  /** Not read yet: tried again at the next ask. */
+  v.object({
+    from: v.literal("none"),
+    why: v.union(
+      v.literal("noReader"),
+      v.literal("unspent"),
+      v.literal("refused"),
+      v.literal("unavailable"),
+      v.literal("failed"),
+    ),
+    note: v.string(),
+  }),
+);
+
+/**
+ * What is happening to a scanned form while a reader is asked for its words
+ * (`fileWords` in `reader.ts`): shown while the work runs, and not kept.
+ * "backup" is the next reader being asked; the last three are how it ended.
+ */
+export const vReadStatus = v.union(
+  v.literal("reading"),
+  v.literal("retrying"),
+  v.literal("backup"),
+  v.literal("read"),
+  v.literal("readByBackup"),
+  v.literal("unread"),
+);
+export type ReadStatus = Infer<typeof vReadStatus>;
+
+/** What says a file is a form: see `namedBy` in `sources.ts`. */
+export const vNamedBy = v.union(
+  v.literal("text"),
+  v.literal("xfa"),
+  v.literal("ocr"),
+  v.literal("link"),
+);
+
 /** A link on a page: where it goes, the page's words for it, and its kind. */
 export const vPageLink = v.object({
   url: v.string(),
@@ -117,13 +177,18 @@ export const vPageLink = v.object({
 const fileAnswer = {
   outcome: v.literal("file"),
   sha256: v.string(),
-  opening: v.string(),
+  words: vWords,
   facts: vReadFacts,
   editionId: v.optional(v.id("formEditions")),
   etag: v.optional(v.string()),
   lastModified: v.optional(v.string()),
 };
-const pageAnswer = { outcome: v.literal("page"), links: v.array(vPageLink) };
+const pageAnswer = {
+  outcome: v.literal("page"),
+  links: v.array(vPageLink),
+  /** Where a redirect had it served from, if on another host. */
+  at: v.optional(v.string()),
+};
 const failedAnswer = {
   outcome: v.union(
     v.literal("gone"),
@@ -181,6 +246,104 @@ export const vPacketPdf = v.object({
   ...vFilledDocument.fields,
 });
 
+/** The government a site belongs to. See `sites.ts`. */
+export const vOwner = v.union(
+  v.object({ level: v.literal("national"), country: v.string() }),
+  v.object({
+    level: v.literal("region"),
+    country: v.string(),
+    /** ISO 3166-2, in lower case: "us-ca". */
+    region: v.string(),
+  }),
+  v.object({
+    level: v.literal("local"),
+    country: v.string(),
+    region: v.optional(v.string()),
+    /** The body's name, as its register gives it. */
+    body: v.string(),
+  }),
+);
+
+const vouched = {
+  state: v.literal("vouched"),
+  /** The registrable domain: every host under it is the site. */
+  domain: v.string(),
+  /** Who publishes from it, in words: the agency, where one is named. */
+  name: v.string(),
+  owner: vOwner,
+};
+
+/** A site as an official register vouches for it. */
+export const vRegistered = v.object({
+  ...vouched,
+  via: v.object({ kind: v.literal("register"), register: v.literal("cisa") }),
+});
+
+/** A site on a suffix its country keeps for government, judged whose. */
+export const vSuffixed = v.object({
+  ...vouched,
+  via: v.object({ kind: v.literal("suffix"), suffix: v.string() }),
+});
+
+/** A site on a hand-kept line, with its evidence. See `governments.ts`. */
+export const vHandKept = v.object({
+  ...vouched,
+  via: v.object({ kind: v.literal("hand"), note: v.string() }),
+});
+
+/**
+ * What, beyond a government's page linking a site, says the site is that
+ * government's: it links back to one of the government's sites, a second of
+ * those sites links it, or one of the government's hosts redirects to it.
+ */
+export const vSupport = v.union(
+  v.literal("back"),
+  v.literal("second"),
+  v.literal("redirect"),
+);
+
+/** A site its government's page links, judged its own, with support. */
+export const vLinked = v.object({
+  ...vouched,
+  via: v.object({
+    kind: v.literal("link"),
+    /** The government's page that links it. */
+    from: v.string(),
+    /** A second of the government's sites' pages that links it. */
+    also: v.optional(v.string()),
+    support: vSupport,
+    /** How many links it is from a register, suffix or hand site. */
+    steps: v.number(),
+  }),
+  /** True once a re-check found what vouched for it gone: see `rechecked`. */
+  missed: v.optional(v.boolean()),
+});
+
+/**
+ * A linked site two re-checks in a row found no longer its government's.
+ * Kept, so it is never vouched again unasked: only a hand line restores it.
+ */
+export const vRevoked = v.object({
+  state: v.literal("revoked"),
+  domain: v.string(),
+});
+
+/**
+ * A site judged not to be a government's: a contractor's, nobody could tell
+ * whose, nothing but the link supports it, or it is too many links from a
+ * site that needs no link.
+ */
+export const vDeclined = v.object({
+  state: v.literal("declined"),
+  domain: v.string(),
+  why: v.union(
+    v.literal("contractor"),
+    v.literal("unsure"),
+    v.literal("unsupported"),
+    v.literal("far"),
+  ),
+});
+
 export default {
   formBlueprints: defineTable({
     editionId: v.id("formEditions"),
@@ -226,7 +389,17 @@ export default {
    */
   formAddresses: defineTable(
     v.union(
-      v.object({ ...addressRow, ...fileAnswer }),
+      v.object({
+        ...addressRow,
+        ...fileAnswer,
+        /**
+         * A row kept before files had `words` has only its `opening`. Make
+         * `words` required and drop `opening` once `wordsFromOpening` has
+         * run everywhere.
+         */
+        words: v.optional(vWords),
+        opening: v.optional(v.string()),
+      }),
       v.object({ ...addressRow, ...pageAnswer }),
       v.object({ ...addressRow, ...failedAnswer }),
     ),
@@ -239,21 +412,23 @@ export default {
     ]),
 
   /**
-   * Who each .gov domain belongs to, from CISA's register (see `sites.ts`):
-   * what decides whether a page or a file is on an authority's own site.
+   * What is kept of sites, by registrable domain (see `sites.ts`): those a
+   * register vouches for, and those on a government's suffix or linked from
+   * its pages as they were judged. `at` is when the register last listed
+   * it, or when it was judged: a linked site's vouch lapses 90 days on.
    */
-  officialSites: defineTable({
-    domain: v.string(),
-    kind: v.string(),
-    organization: v.string(),
-    suborganization: v.optional(v.string()),
-    /** Absent until the weekly import next reads the register. */
-    state: v.optional(v.string()),
-    /** When the register last listed it. */
-    at: v.number(),
-  })
+  sites: defineTable(
+    v.union(
+      v.object({ ...vRegistered.fields, at: v.number() }),
+      v.object({ ...vSuffixed.fields, at: v.number() }),
+      v.object({ ...vLinked.fields, at: v.number() }),
+      v.object({ ...vDeclined.fields, at: v.number() }),
+      v.object({ ...vRevoked.fields, at: v.number() }),
+    ),
+  )
     .index("by_domain", ["domain"])
-    .index("by_at", ["at"]),
+    .index("by_state_and_at", ["state", "at"])
+    .index("by_via_kind_and_at", ["via.kind", "at"]),
 
   /** A hosted browser in use. Expires on its own if its work died. */
   browserLeases: defineTable({ expiresAt: v.number() }).index("by_expiresAt", [

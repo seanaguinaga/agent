@@ -1,5 +1,6 @@
-// What counts as an official address, one address, one form and one file,
-// and when an address is asked again. Pure.
+// What counts as one address, one form and one file, what a page says of
+// its links and of itself, and when an address is asked again. Pure.
+import type { Words } from "./words";
 
 /** How a form's bytes were got. */
 export type Via = "request" | "browser";
@@ -22,24 +23,41 @@ export function carriesNumber(code: string, text: string): boolean {
 }
 
 /**
- * Whether a file is the form `code`. It is if it prints the whole code. It
- * is also if the authority's own page links it as the form and both say so:
- * the page's words for the link (`linkedAs`: the link's own and the heading
- * it sits under, never its file name) carry the form's number, and so does
- * the file. An authority renames a form ("SSA-561-U2" became "SSA-561") and
- * goes on linking its file under the one heading, so the file may no longer
- * print the code as it was asked for; but the page and the file each have
- * to name it, so a link picked wrongly isn't let through by its file alone.
+ * What says a file is a form: its own words, by where they were read from,
+ * or the authority's link alone.
  */
-export function isTheForm(
+export type NamedBy = Exclude<Words["from"], "none"> | "link";
+
+/**
+ * What says a file is the form `code`: undefined if nothing does.
+ *
+ * Its text does if it prints the whole code. It also does if the authority's
+ * own page links it as the form and both say so: the page's words for the
+ * link (`linkedAs`: the link's own and the heading it sits under, never its
+ * file name) carry the form's number, and so does the file. An authority
+ * renames a form ("SSA-561-U2" became "SSA-561") and goes on linking its
+ * file under the one heading, so the file may no longer print the code as
+ * it was asked for; but the page and the file each have to name it, so a
+ * link picked wrongly isn't let through by its file alone.
+ *
+ * The link alone does only for a file with no words to read at all, such as
+ * a scan (`words.from` is "none"): the link has to be `trusted` (see
+ * `VERY_SURE`), and its words have to print the whole code. A file whose
+ * words don't name the form is never the form, whatever links it.
+ */
+export function namedBy(
   code: string,
-  opening: string,
-  linkedAs?: string,
-): boolean {
-  if (namesForm(code, opening)) return true;
-  return (
-    !!linkedAs && carriesNumber(code, linkedAs) && carriesNumber(code, opening)
-  );
+  words: Words,
+  linkedAs = "",
+  trusted = false,
+): NamedBy | undefined {
+  if (words.from === "none") {
+    return trusted && namesForm(code, linkedAs) ? "link" : undefined;
+  }
+  const says =
+    namesForm(code, words.opening) ||
+    (carriesNumber(code, linkedAs) && carriesNumber(code, words.opening));
+  return says ? words.from : undefined;
 }
 
 /** Larger than any form we'd fill, small enough to hold in memory. */
@@ -187,6 +205,29 @@ export type LabelledLink = {
 /** A link, and whether it goes to a PDF or to another page. */
 export type PageLink = LabelledLink & { pdf: boolean };
 
+/** The words of a piece of a page, without its markup. */
+const words = (text: string) =>
+  text
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;|&#160;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&[a-z]+;|&#\d+;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+
+/** What a site says of itself on a page: its title, and its footer's words. */
+export function selfDescribed(html: string) {
+  const piece = (tag: string) =>
+    words(
+      html.match(
+        new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}\\s*>`, "i"),
+      )?.[1] ?? "",
+    );
+  const [title, footer] = [piece("title"), piece("footer")];
+  return { ...(title && { title }), ...(footer && { footer }) };
+}
+
 /**
  * The links on a page, each with the words the page puts on it. Those words
  * are the authority saying what the link is: for a PDF, which form the file
@@ -194,15 +235,6 @@ export type PageLink = LabelledLink & { pdf: boolean };
  * filename; for a page, what a reader would find one link further on.
  */
 export function labelledLinks(html: string, page: string): PageLink[] {
-  const words = (text: string) =>
-    text
-      .replace(/<[^>]*>/g, " ")
-      .replace(/&nbsp;|&#160;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&[a-z]+;|&#\d+;/gi, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 160);
   // Each heading, where it starts: a link sits under the last one before it.
   const headings = [
     ...html.matchAll(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1\s*>/gi),
@@ -353,49 +385,4 @@ export function sameFormCode(a: string, b: string): boolean {
   return (
     x.whole === y.whole || x.bare.includes(y.whole) || y.bare.includes(x.whole)
   );
-}
-
-/**
- * Governments' own sites outside .gov and .mil. No register lists these, so
- * each is added here by hand, once someone has checked that the government
- * itself publishes from it, and is read as the register would list it (see
- * `sites.ts`). Never a site that only looks official, such as dmv.org.
- */
-const UNREGISTERED = [
-  {
-    domain: "acgov.org",
-    kind: "County",
-    organization: "Alameda County",
-    state: "CA",
-  },
-];
-
-/** The hand-kept entry a host is under, if it is one of `UNREGISTERED`. */
-export function unregisteredFor(host: string) {
-  const name = host.toLowerCase();
-  return UNREGISTERED.find(
-    ({ domain }) => name === domain || name.endsWith(`.${domain}`),
-  );
-}
-
-/**
- * Whether an address is on a government's own site: https, on a .gov or
- * .mil host, or on one of the few kept by hand (`UNREGISTERED`). .gov and
- * .mil are only ever registered to verified US government bodies, so the
- * name is the proof; an open name such as .us or .org is not. Which
- * government's site it is, is `sites.ts`'s to say.
- */
-export function isOfficialHost(url: string): boolean {
-  try {
-    const { protocol, hostname, username, password, port } = new URL(url);
-    return (
-      protocol === "https:" &&
-      !username &&
-      !password &&
-      (!port || port === "443") &&
-      (/\.(?:gov|mil)$/.test(hostname) || !!unregisteredFor(hostname))
-    );
-  } catch {
-    return false;
-  }
 }

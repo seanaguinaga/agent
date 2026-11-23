@@ -10,6 +10,7 @@ export const SLICES = [
   "choose",
   "research",
   "forms",
+  "world",
   "draft",
   "suggest",
   "tailor",

@@ -16,6 +16,7 @@ const ABOUT: Record<Slice, string> = {
   choose: "A goal and candidate packs; the right one, or none. Model.",
   research: "A process in; notes from the authority's own site. Live web.",
   forms: "A goal in; the official forms it needs, each fetched. Live web.",
+  world: "The forms step, for countries outside the US. Live web.",
   draft: "Frozen notes in; a checklist and letter out. Model + judge.",
   suggest:
     "What a person said and a form's questions; only stated answers. Model.",
